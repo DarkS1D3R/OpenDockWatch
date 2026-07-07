@@ -104,4 +104,4 @@ function stop() {
   }
 }
 
-module.exports = { start, stop, broadcaster };
+module.exports = { start, stop, broadcaster, parseEventLine };

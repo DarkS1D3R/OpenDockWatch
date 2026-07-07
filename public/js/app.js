@@ -8,13 +8,19 @@ import {
   apiGetHostInfo,
   apiContainerAction,
   logsUrl,
+  downloadLogsUrl,
   apiLogout,
+  apiGetSession,
   apiGetDiskUsage,
   apiGetMetricsHistory,
   apiGetEvents,
   eventsStreamUrl,
   apiGetAlerts,
   apiAckAlert,
+  apiGetWebhookConfig,
+  apiSaveWebhookConfig,
+  apiClearWebhookConfig,
+  apiTestWebhook,
 } from './api.js';
 import { buildElements, createGraph, updateGraph } from './graph.js';
 
@@ -23,6 +29,7 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
+      role: null,
       hosts: [],
       selectedHostId: null,
       containers: [],
@@ -59,9 +66,21 @@ createApp({
       popoutLogLines: [],
       popoutEventSource: null,
       popoutAtBottom: true,
+
+      settingsOpen: false,
+      webhookUrl: '',
+      webhookFormat: '',
+      webhookOverridden: false,
+      webhookSaving: false,
+      webhookTesting: false,
+      webhookError: null,
+      webhookStatus: null,
     };
   },
   computed: {
+    isAdmin() {
+      return this.role === 'admin';
+    },
     filteredContainers() {
       if (this.stateFilter === 'running') return this.containers.filter((c) => c.state === 'running');
       if (this.stateFilter === 'stopped') return this.containers.filter((c) => c.state !== 'running');
@@ -170,6 +189,8 @@ createApp({
   },
   async mounted() {
     try {
+      const session = await apiGetSession();
+      this.role = session.role;
       await this.loadHosts();
     } catch {
       return;
@@ -466,6 +487,10 @@ createApp({
       this.popoutTail = newTail;
       this.startPopoutStream();
     },
+    downloadLogs() {
+      if (!this.selectedContainerId) return;
+      window.location.href = downloadLogsUrl(this.selectedHostId, this.selectedContainerId, this.popoutTail);
+    },
     onPopoutScroll() {
       const el = this.$refs.popoutLogView;
       if (el) this.popoutAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -503,6 +528,65 @@ createApp({
       await apiLogout();
       window.location.href = '/login';
     },
+    async openSettings() {
+      this.settingsOpen = true;
+      this.webhookError = null;
+      this.webhookStatus = null;
+      try {
+        const config = await apiGetWebhookConfig();
+        this.webhookUrl = config.url;
+        this.webhookFormat = config.format;
+        this.webhookOverridden = config.overridden;
+      } catch (err) {
+        this.webhookError = err.message;
+      }
+    },
+    closeSettings() {
+      this.settingsOpen = false;
+    },
+    async saveWebhookConfig() {
+      this.webhookSaving = true;
+      this.webhookError = null;
+      this.webhookStatus = null;
+      try {
+        const config = await apiSaveWebhookConfig(this.webhookUrl, this.webhookFormat);
+        this.webhookOverridden = config.overridden;
+        this.webhookStatus = 'Saved.';
+      } catch (err) {
+        this.webhookError = err.message;
+      } finally {
+        this.webhookSaving = false;
+      }
+    },
+    async clearWebhookConfig() {
+      this.webhookSaving = true;
+      this.webhookError = null;
+      this.webhookStatus = null;
+      try {
+        const config = await apiClearWebhookConfig();
+        this.webhookUrl = config.url;
+        this.webhookFormat = config.format;
+        this.webhookOverridden = config.overridden;
+        this.webhookStatus = 'Cleared - using the .env default.';
+      } catch (err) {
+        this.webhookError = err.message;
+      } finally {
+        this.webhookSaving = false;
+      }
+    },
+    async testWebhook() {
+      this.webhookTesting = true;
+      this.webhookError = null;
+      this.webhookStatus = null;
+      try {
+        await apiTestWebhook();
+        this.webhookStatus = 'Test alert sent.';
+      } catch (err) {
+        this.webhookError = err.message;
+      } finally {
+        this.webhookTesting = false;
+      }
+    },
   },
   template: `
     <div class="app">
@@ -525,6 +609,8 @@ createApp({
           <button :class="{active: stateFilter==='running'}" @click="stateFilter='running'">Running</button>
           <button :class="{active: stateFilter==='stopped'}" @click="stateFilter='stopped'">Stopped</button>
         </div>
+        <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
+        <button v-if="isAdmin" class="settings-btn" @click="openSettings" title="Alert webhook settings">⚙ Settings</button>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
 
@@ -656,9 +742,12 @@ createApp({
                     </td>
                     <td class="muted" :title="c.ports">{{ c.ports }}</td>
                     <td class="actions" @click.stop>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'restart')">Restart</button>
+                      <template v-if="isAdmin">
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'restart')">Restart</button>
+                      </template>
+                      <span v-else class="muted small">read-only</span>
                     </td>
                   </tr>
                 </tbody>
@@ -732,7 +821,7 @@ createApp({
             <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
             <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
 
-            <div class="detail-actions">
+            <div class="detail-actions" v-if="isAdmin">
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'start')">Start</button>
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'stop')">Stop</button>
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'restart')">Restart</button>
@@ -768,12 +857,49 @@ createApp({
               <option :value="5000">Last 5000 lines</option>
               <option value="all">All lines</option>
             </select>
+            <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
             <button @click="closePopout">Close</button>
           </div>
         </div>
         <div class="log-view-wrap">
           <pre class="log-view popout-log" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="(html, i) in filteredPopoutLines" :key="i" v-html="html"></div></pre>
           <button v-show="!popoutAtBottom" class="scroll-bottom-btn" @click="scrollPopoutToBottom" title="Scroll to bottom">&#8595; Bottom</button>
+        </div>
+      </div>
+
+      <div v-if="settingsOpen" class="modal-backdrop" @click.self="closeSettings">
+        <div class="modal-card">
+          <div class="modal-header">
+            <strong>Alert webhook</strong>
+            <button @click="closeSettings">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="muted small">
+              Sets ALERT_WEBHOOK_URL for all hosts. Supports
+              <code>discord://</code>, <code>ntfy://</code>, <code>gotify://</code> / <code>gotifys://</code>, or any
+              <code>http(s)://</code> URL (auto-detected for Slack, generic JSON otherwise).
+            </p>
+            <label class="modal-field">
+              Webhook URL
+              <input type="text" v-model="webhookUrl" placeholder="discord://webhook_id/webhook_token" />
+            </label>
+            <label class="modal-field">
+              Format override
+              <select v-model="webhookFormat">
+                <option value="">Auto</option>
+                <option value="slack">Force Slack {text} shape</option>
+              </select>
+            </label>
+            <p v-if="webhookOverridden" class="muted small">Overriding the .env default.</p>
+            <p v-else class="muted small">Using the .env default (if any) — no override saved yet.</p>
+            <p v-if="webhookError" class="error">{{ webhookError }}</p>
+            <p v-if="webhookStatus" class="muted small">{{ webhookStatus }}</p>
+            <div class="modal-actions">
+              <button :disabled="webhookSaving" @click="saveWebhookConfig">Save</button>
+              <button :disabled="webhookSaving || !webhookOverridden" @click="clearWebhookConfig">Clear override</button>
+              <button :disabled="webhookTesting" @click="testWebhook">Send test alert</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

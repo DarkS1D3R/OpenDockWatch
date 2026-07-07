@@ -69,6 +69,11 @@ db.exec(`
     acknowledged INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 const stmts = {
@@ -103,15 +108,30 @@ const stmts = {
     SELECT COUNT(*) AS n FROM events
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
   `),
+  countRestartsByContainerSince: db.prepare(`
+    SELECT container_id AS containerId, COUNT(*) AS n FROM events
+    WHERE host_id = ? AND ts >= ? AND action IN ('start', 'restart')
+    GROUP BY container_id
+  `),
   countManualStopsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart') AND result = 'ok'
+  `),
+  countManualStartsSince: db.prepare(`
+    SELECT COUNT(*) AS n FROM audit_log
+    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart') AND result = 'ok'
   `),
   pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
   pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
+  getSetting: db.prepare(`SELECT value FROM settings WHERE key = ?`),
+  setSetting: db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `),
+  deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
 };
 
 function insertContainerMetric(sample) {
@@ -149,38 +169,57 @@ function countRestartsSince(hostId, containerId, sinceTs) {
   return stmts.countRestartsSince.get(hostId, containerId, sinceTs).n;
 }
 
+// Batched form of countRestartsSince - one GROUP BY query per host instead of
+// one query per container, for callers (poll loops, /metrics) that need the
+// count for every container on a host at once.
+function getRestartCountsByContainer(hostId, sinceTs) {
+  const rows = stmts.countRestartsByContainerSince.all(hostId, sinceTs);
+  return new Map(rows.map((r) => [r.containerId, r.n]));
+}
+
 function countManualStopsSince(hostId, containerId, sinceTs) {
   return stmts.countManualStopsSince.get(hostId, containerId, sinceTs).n;
 }
 
+function countManualStartsSince(hostId, containerId, sinceTs) {
+  return stmts.countManualStartsSince.get(hostId, containerId, sinceTs).n;
+}
+
 function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
-  return db
-    .prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`)
-    .all(hostId, sinceTs, limit);
+  return db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(hostId, sinceTs, limit);
 }
 
 function getAuditLog(hostId, { limit = 200 } = {}) {
   if (hostId) {
-    return db
-      .prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`)
-      .all(hostId, limit);
+    return db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
   }
   return db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`).all(limit);
 }
 
 function getAlerts(hostId, { limit = 200 } = {}) {
   if (hostId) {
-    return db
-      .prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`)
-      .all(hostId, limit);
+    return db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
   }
   return db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`).all(limit);
 }
 
 function countOpenAlerts(hostId) {
-  return db
-    .prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`)
-    .get(hostId).n;
+  return db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`).get(hostId).n;
+}
+
+// null means "no row" (caller should fall back to a default), distinct from an
+// explicitly-stored empty string.
+function getSetting(key) {
+  const row = stmts.getSetting.get(key);
+  return row ? row.value : null;
+}
+
+function setSetting(key, value) {
+  stmts.setSetting.run(key, value);
+}
+
+function deleteSetting(key) {
+  stmts.deleteSetting.run(key);
 }
 
 // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps
@@ -224,6 +263,10 @@ function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
     .all({ hostId, sinceTs, bucketMs });
 }
 
+function close() {
+  db.close();
+}
+
 function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
   const now = Date.now();
   stmts.pruneContainerMetrics.run(now - metricsRetentionMs);
@@ -234,6 +277,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
 }
 
 module.exports = {
+  client: db,
   insertContainerMetric,
   insertHostMetric,
   insertEvent,
@@ -242,12 +286,18 @@ module.exports = {
   ackAlert,
   getLastAlertFireTs,
   countRestartsSince,
+  getRestartCountsByContainer,
   countManualStopsSince,
+  countManualStartsSince,
   getEvents,
   getAuditLog,
   getAlerts,
   countOpenAlerts,
   getContainerMetricsHistory,
   getHostMetricsHistory,
+  getSetting,
+  setSetting,
+  deleteSetting,
   pruneOld,
+  close,
 };

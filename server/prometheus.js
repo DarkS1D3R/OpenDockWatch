@@ -14,14 +14,17 @@ function render() {
   const alertsLines = [];
 
   for (const [hostId, snap] of metricsCollector.getAllSnapshots()) {
+    const restartCounts = db.getRestartCountsByContainer(hostId, Date.now() - 3_600_000);
     for (const c of snap.containers || []) {
       const stat = snap.stats[c.id] || {};
       const labels = `host="${esc(hostId)}",container="${esc(c.name)}",compose_project="${esc(c.composeProject || '')}"`;
       cpuLines.push(`opendockwatch_container_cpu_percent{${labels}} ${parseFloat(stat.cpuPerc) || 0}`);
       memLines.push(`opendockwatch_container_mem_used_bytes{${labels}} ${Math.round(parseMemUsedBytes(stat.memUsage))}`);
-      restartLines.push(`opendockwatch_container_restarts_1h{${labels}} ${db.countRestartsSince(hostId, c.id, Date.now() - 3_600_000)}`);
+      restartLines.push(`opendockwatch_container_restarts_1h{${labels}} ${restartCounts.get(c.id) || 0}`);
     }
-    hostContainersLines.push(`opendockwatch_host_containers_running{host="${esc(hostId)}"} ${snap.hostInfo ? snap.hostInfo.containersRunning : 0}`);
+    hostContainersLines.push(
+      `opendockwatch_host_containers_running{host="${esc(hostId)}"} ${snap.hostInfo ? snap.hostInfo.containersRunning : 0}`
+    );
     alertsLines.push(`opendockwatch_alerts_open{host="${esc(hostId)}"} ${db.countOpenAlerts(hostId)}`);
   }
 

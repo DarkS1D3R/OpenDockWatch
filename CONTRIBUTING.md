@@ -15,8 +15,8 @@ npm run dev
 ## Before opening a PR
 
 - Keep changes focused — separate unrelated fixes into separate PRs.
-- Run `npm test` (a basic syntax check) locally; CI runs the same check.
-- If you're adding a feature, a short note in the PR description on how you tested it is enough — there's no formal test suite yet.
+- Run `npm test` (syntax check + unit tests), `npm run lint`, and `npm run format:check` locally; CI runs the same checks. `npm run format` applies Prettier's fixes for you.
+- Unit tests (`node:test`, in `test/`) cover the pure parsing/graph functions and the alert rules - add to them when you touch that code. There's no end-to-end test suite, so for feature PRs a short note in the description on how you tested it is still appreciated.
 
 ## Reporting bugs
 

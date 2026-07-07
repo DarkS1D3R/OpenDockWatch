@@ -9,11 +9,11 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
   - **Auto**: containers sharing a custom Docker network are connected (works with zero config for anything started via the same compose file).
   - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
-- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter.
+- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter. The current tail can also be downloaded as a `.txt` file.
 
 ## How it works
 
-The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it sets `DOCKER_HOST=ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
+The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it passes `-H ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
 
 - Local host: no `dockerHost` set, uses the default local socket.
 - Remote hosts: reachable via key-based SSH the same way you'd already `ssh` into them.
@@ -40,7 +40,7 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
    ```
    npm run hash-password -- "your-password"
    ```
-   Put the output in `AUTH_PASS_HASH`, set `AUTH_USER`, and set a random `SESSION_SECRET`.
+   Put the output in `AUTH_PASS_HASH`, set `AUTH_USER`, and set a random `SESSION_SECRET`. To also hand out read-only access (e.g. a wall display, or teammates who shouldn't get start/stop/restart), generate a second hash the same way and set `VIEWER_USER` / `VIEWER_PASS_HASH`.
 5. Run:
    ```
    npm start
@@ -65,12 +65,27 @@ Any host you can `ssh user@host` into (with a key, no password prompt) and that 
 { "id": "prod", "name": "Production", "dockerHost": "ssh://deploy@prod.example.com" }
 ```
 
+## Alerts
+
+OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) when a container crashes, crash-loops, becomes unhealthy, or a host goes unreachable. Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
+
+| Scheme        | Example                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Discord       | `discord://<webhook_id>/<webhook_token>`                                                                                                                                                         |
+| ntfy          | `ntfy://ntfy.sh/mytopic` (or a self-hosted server: `ntfy://ntfy.example.com/mytopic`)                                                                                                            |
+| Gotify        | `gotify://<host>/<token>` (http) or `gotifys://<host>/<token>` (https)                                                                                                                           |
+| Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
+| Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
+
+Instead of (or in addition to) `.env`, an admin account can set the webhook from the UI: the ⚙ Settings button in the topbar opens a panel to save a URL, clear it back to the `.env` default, and send a test alert. A saved-from-the-UI value is stored in the database and takes effect immediately (no restart) — it always wins over `.env`, even if set to empty to deliberately disable a webhook `.env` configured.
+
 ## Notes
 
 - `name` is optional for local (non-SSH) hosts — if omitted, it's auto-filled from the machine's real hostname via `docker info`. Remote SSH hosts still need an explicit `name` since there's no local machine to introspect.
 - `config/hosts.json` is gitignored since it may contain internal hostnames — only `hosts.example.json` is committed.
 - Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
 - Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
+- The optional viewer login (`VIEWER_USER`/`VIEWER_PASS_HASH`) can see everything but gets a 403 from the server (not just a hidden button) on any start/stop/restart request — enforced server-side, not just in the UI.
 
 ## Contributing
 

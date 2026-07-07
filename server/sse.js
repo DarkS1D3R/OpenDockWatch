@@ -1,5 +1,7 @@
 const { EventEmitter } = require('events');
 
+const HEARTBEAT_MS = 30_000;
+
 // Small pub/sub so multiple browser tabs can share one live feed (events, alerts)
 // per host, independent of the existing 1:1 per-container log-stream SSE.
 class Broadcaster {
@@ -25,7 +27,14 @@ class Broadcaster {
     };
     this.emitter.on(hostId, onPayload);
 
-    return () => this.emitter.off(hostId, onPayload);
+    // Behind nginx or any proxy with an idle timeout, a quiet stream gets cut -
+    // a periodic comment line keeps the connection alive without affecting listeners.
+    const heartbeat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS);
+
+    return () => {
+      clearInterval(heartbeat);
+      this.emitter.off(hostId, onPayload);
+    };
   }
 }
 

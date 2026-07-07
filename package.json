@@ -1,6 +1,6 @@
 {
   "name": "opendockwatch",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Simple Docker monitoring dashboard - list containers, start/stop/restart, live log tailing. Local + remote hosts over SSH.",
   "private": true,
   "license": "AGPL-3.0-or-later",
@@ -21,13 +21,25 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "hash-password": "node scripts/hash-password.js",
-    "test": "node scripts/check-syntax.js"
+    "test": "node scripts/check-syntax.js && node --test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.11.1",
+    "better-sqlite3-session-store": "^0.1.0",
     "dotenv": "^17.4.1",
     "express": "^5.2.0",
+    "express-rate-limit": "^8.5.2",
     "express-session": "^1.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.4"
   }
 }

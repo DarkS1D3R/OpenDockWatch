@@ -8,6 +8,7 @@ const DISK_POLL_MS = 60_000;
 
 const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
 const timers = [];
+const pollStates = [];
 
 function getSnapshot(hostId) {
   return snapshots.get(hostId) || null;
@@ -81,28 +82,45 @@ async function pollDiskUsage(host) {
   }
 }
 
+function scheduleHostPolling(host) {
+  const state = { stopped: false, timer: null };
+  pollStates.push(state);
+
+  const tick = async () => {
+    if (state.stopped) return;
+    try {
+      await pollHost(host);
+    } finally {
+      if (!state.stopped) state.timer = setTimeout(tick, POLL_MS);
+    }
+  };
+  state.timer = setTimeout(tick, POLL_MS);
+}
+
 function start() {
   const hosts = loadHosts();
   for (const host of hosts) {
     pollHost(host);
     pollDiskUsage(host);
-    timers.push(setInterval(() => pollHost(host), POLL_MS));
+    scheduleHostPolling(host);
     timers.push(setInterval(() => pollDiskUsage(host), DISK_POLL_MS));
   }
 
   const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
   timers.push(
-    setInterval(
-      () => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }),
-      60 * 60 * 1000
-    )
+    setInterval(() => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }), 60 * 60 * 1000)
   );
 }
 
 function stop() {
   for (const t of timers) clearInterval(t);
   timers.length = 0;
+  for (const state of pollStates) {
+    state.stopped = true;
+    clearTimeout(state.timer);
+  }
+  pollStates.length = 0;
 }
 
 module.exports = { start, stop, getSnapshot, getAllSnapshots, POLL_MS };

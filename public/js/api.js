@@ -49,8 +49,16 @@ export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
 }
 
+export function downloadLogsUrl(hostId, id, tail) {
+  return `/api/hosts/${hostId}/containers/${id}/logs/download?tail=${tail}`;
+}
+
 export async function apiLogout() {
   await fetch('/logout', { method: 'POST' });
+}
+
+export async function apiGetSession() {
+  return jsonOrThrow(await apiFetch('/api/session'));
 }
 
 export async function apiGetDiskUsage(hostId) {
@@ -78,4 +86,26 @@ export async function apiGetAlerts(hostId, limit) {
 
 export async function apiAckAlert(id) {
   return jsonOrThrow(await apiFetch(`/api/alerts/${id}/ack`, { method: 'POST' }));
+}
+
+export async function apiGetWebhookConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/webhook'));
+}
+
+export async function apiSaveWebhookConfig(url, format) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/webhook', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, format }),
+    })
+  );
+}
+
+export async function apiClearWebhookConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/webhook', { method: 'DELETE' }));
+}
+
+export async function apiTestWebhook() {
+  return jsonOrThrow(await apiFetch('/api/settings/webhook/test', { method: 'POST' }));
 }
