@@ -5,7 +5,7 @@ const session = require('express-session');
 const rateLimit = require('express-rate-limit');
 const SqliteStore = require('better-sqlite3-session-store')(session);
 
-const { requireAuth, verifyLogin } = require('./auth');
+const { requireAuth, requireAdmin, verifyLogin } = require('./auth');
 const { loadHosts, getHost } = require('./hosts');
 const {
   checkHost,
@@ -62,8 +62,8 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/login.html'));
 });
 
-// Single-user bcrypt login with no attempt limit is the main exposed surface -
-// cap failed attempts per IP instead of allowing unlimited guesses.
+// Bcrypt login with no attempt limit is the main exposed surface - cap failed
+// attempts per IP instead of allowing unlimited guesses.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -76,11 +76,12 @@ const loginLimiter = rateLimit({
 app.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   try {
-    const ok = await verifyLogin(username, password);
-    if (!ok) return res.status(401).json({ error: 'invalid credentials' });
+    const account = await verifyLogin(username, password);
+    if (!account) return res.status(401).json({ error: 'invalid credentials' });
     req.session.authenticated = true;
-    req.session.username = username;
-    res.json({ ok: true });
+    req.session.username = account.username;
+    req.session.role = account.role;
+    res.json({ ok: true, role: account.role });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -108,6 +109,10 @@ app.get('/', requireAuth, (req, res) => {
 
 const api = express.Router();
 api.use(requireAuth);
+
+api.get('/session', (req, res) => {
+  res.json({ username: req.session.username, role: req.session.role });
+});
 
 api.get('/hosts', async (req, res) => {
   const hosts = loadHosts();
@@ -239,7 +244,7 @@ api.post('/alerts/:id/ack', (req, res) => {
   res.json({ ok: true });
 });
 
-api.post('/hosts/:hostId/containers/:id/:action', async (req, res) => {
+api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);

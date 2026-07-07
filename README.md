@@ -40,7 +40,7 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
    ```
    npm run hash-password -- "your-password"
    ```
-   Put the output in `AUTH_PASS_HASH`, set `AUTH_USER`, and set a random `SESSION_SECRET`.
+   Put the output in `AUTH_PASS_HASH`, set `AUTH_USER`, and set a random `SESSION_SECRET`. To also hand out read-only access (e.g. a wall display, or teammates who shouldn't get start/stop/restart), generate a second hash the same way and set `VIEWER_USER` / `VIEWER_PASS_HASH`.
 5. Run:
    ```
    npm start
@@ -83,6 +83,7 @@ OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/ale
 - `config/hosts.json` is gitignored since it may contain internal hostnames — only `hosts.example.json` is committed.
 - Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
 - Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
+- The optional viewer login (`VIEWER_USER`/`VIEWER_PASS_HASH`) can see everything but gets a 403 from the server (not just a hidden button) on any start/stop/restart request — enforced server-side, not just in the UI.
 
 ## Contributing
 

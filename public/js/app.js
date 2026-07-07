@@ -10,6 +10,7 @@ import {
   logsUrl,
   downloadLogsUrl,
   apiLogout,
+  apiGetSession,
   apiGetDiskUsage,
   apiGetMetricsHistory,
   apiGetEvents,
@@ -24,6 +25,7 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
+      role: null,
       hosts: [],
       selectedHostId: null,
       containers: [],
@@ -63,6 +65,9 @@ createApp({
     };
   },
   computed: {
+    isAdmin() {
+      return this.role === 'admin';
+    },
     filteredContainers() {
       if (this.stateFilter === 'running') return this.containers.filter((c) => c.state === 'running');
       if (this.stateFilter === 'stopped') return this.containers.filter((c) => c.state !== 'running');
@@ -171,6 +176,8 @@ createApp({
   },
   async mounted() {
     try {
+      const session = await apiGetSession();
+      this.role = session.role;
       await this.loadHosts();
     } catch {
       return;
@@ -530,6 +537,7 @@ createApp({
           <button :class="{active: stateFilter==='running'}" @click="stateFilter='running'">Running</button>
           <button :class="{active: stateFilter==='stopped'}" @click="stateFilter='stopped'">Stopped</button>
         </div>
+        <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
 
@@ -661,9 +669,12 @@ createApp({
                     </td>
                     <td class="muted" :title="c.ports">{{ c.ports }}</td>
                     <td class="actions" @click.stop>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
-                      <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'restart')">Restart</button>
+                      <template v-if="isAdmin">
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
+                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'restart')">Restart</button>
+                      </template>
+                      <span v-else class="muted small">read-only</span>
                     </td>
                   </tr>
                 </tbody>
@@ -737,7 +748,7 @@ createApp({
             <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
             <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
 
-            <div class="detail-actions">
+            <div class="detail-actions" v-if="isAdmin">
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'start')">Start</button>
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'stop')">Stop</button>
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'restart')">Restart</button>

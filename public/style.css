@@ -216,6 +216,14 @@ body {
 .logout-btn {
   margin-left: 12px;
 }
+.readonly-badge {
+  margin-left: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
 
 .view-toggle {
   display: flex;

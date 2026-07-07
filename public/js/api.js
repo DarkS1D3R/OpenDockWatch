@@ -57,6 +57,10 @@ export async function apiLogout() {
   await fetch('/logout', { method: 'POST' });
 }
 
+export async function apiGetSession() {
+  return jsonOrThrow(await apiFetch('/api/session'));
+}
+
 export async function apiGetDiskUsage(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage`));
 }
