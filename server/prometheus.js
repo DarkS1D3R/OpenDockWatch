@@ -22,7 +22,9 @@ function render() {
       memLines.push(`opendockwatch_container_mem_used_bytes{${labels}} ${Math.round(parseMemUsedBytes(stat.memUsage))}`);
       restartLines.push(`opendockwatch_container_restarts_1h{${labels}} ${restartCounts.get(c.id) || 0}`);
     }
-    hostContainersLines.push(`opendockwatch_host_containers_running{host="${esc(hostId)}"} ${snap.hostInfo ? snap.hostInfo.containersRunning : 0}`);
+    hostContainersLines.push(
+      `opendockwatch_host_containers_running{host="${esc(hostId)}"} ${snap.hostInfo ? snap.hostInfo.containersRunning : 0}`
+    );
     alertsLines.push(`opendockwatch_alerts_open{host="${esc(hostId)}"} ${db.countOpenAlerts(hostId)}`);
   }
 

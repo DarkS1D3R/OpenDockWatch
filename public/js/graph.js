@@ -3,7 +3,9 @@ import { stateEmoji, iconFor } from './format.js';
 let htmlLabelRegistered = false;
 
 const CY_STYLE = [
-  { selector: 'node.group', style: {
+  {
+    selector: 'node.group',
+    style: {
       'background-color': '#1d2027',
       'border-width': 1,
       'border-color': '#2b2f38',
@@ -14,38 +16,56 @@ const CY_STYLE = [
       'text-halign': 'center',
       padding: '18px',
       shape: 'round-rectangle',
-    } },
-  { selector: 'node.running', style: {
+    },
+  },
+  {
+    selector: 'node.running',
+    style: {
       'background-color': '#1d2027',
       'border-width': 2,
       'border-color': '#3fb950',
       width: 170,
       height: 46,
       shape: 'round-rectangle',
-    } },
-  { selector: 'node.stopped', style: {
+    },
+  },
+  {
+    selector: 'node.stopped',
+    style: {
       'background-color': '#1d2027',
       'border-width': 2,
       'border-color': '#8b909c',
       width: 170,
       height: 46,
       shape: 'round-rectangle',
-    } },
-  { selector: 'node.unhealthy', style: {
+    },
+  },
+  {
+    selector: 'node.unhealthy',
+    style: {
       'border-color': '#f85149',
-    } },
-  { selector: 'node.selected', style: {
+    },
+  },
+  {
+    selector: 'node.selected',
+    style: {
       'border-color': '#4f8cff',
       'border-width': 4,
-    } },
-  { selector: 'edge.edge-network', style: {
+    },
+  },
+  {
+    selector: 'edge.edge-network',
+    style: {
       'line-color': '#2b2f38',
       width: 2,
       'curve-style': 'bezier',
       'line-style': 'dashed',
       'target-arrow-shape': 'none',
-    } },
-  { selector: 'edge.edge-manual', style: {
+    },
+  },
+  {
+    selector: 'edge.edge-manual',
+    style: {
       'line-color': '#4f8cff',
       width: 2,
       'curve-style': 'bezier',
@@ -56,7 +76,8 @@ const CY_STYLE = [
       color: '#4f8cff',
       'text-background-color': '#14161a',
       'text-background-opacity': 1,
-    } },
+    },
+  },
 ];
 
 export function buildElements(nodes, edges, selectedId) {

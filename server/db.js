@@ -175,33 +175,25 @@ function countManualStartsSince(hostId, containerId, sinceTs) {
 }
 
 function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
-  return db
-    .prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`)
-    .all(hostId, sinceTs, limit);
+  return db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(hostId, sinceTs, limit);
 }
 
 function getAuditLog(hostId, { limit = 200 } = {}) {
   if (hostId) {
-    return db
-      .prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`)
-      .all(hostId, limit);
+    return db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
   }
   return db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`).all(limit);
 }
 
 function getAlerts(hostId, { limit = 200 } = {}) {
   if (hostId) {
-    return db
-      .prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`)
-      .all(hostId, limit);
+    return db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
   }
   return db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`).all(limit);
 }
 
 function countOpenAlerts(hostId) {
-  return db
-    .prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`)
-    .get(hostId).n;
+  return db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`).get(hostId).n;
 }
 
 // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps

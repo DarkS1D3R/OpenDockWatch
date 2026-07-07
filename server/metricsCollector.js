@@ -109,10 +109,7 @@ function start() {
   const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
   timers.push(
-    setInterval(
-      () => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }),
-      60 * 60 * 1000
-    )
+    setInterval(() => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }), 60 * 60 * 1000)
   );
 }
 

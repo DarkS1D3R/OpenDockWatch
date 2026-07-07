@@ -17,7 +17,9 @@ async function notify(alert) {
   const format = process.env.ALERT_WEBHOOK_FORMAT || 'generic';
   const body =
     format === 'slack'
-      ? { text: `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}` }
+      ? {
+          text: `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}`,
+        }
       : alert;
   try {
     await fetch(url, {

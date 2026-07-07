@@ -114,7 +114,10 @@ function parseMemUsedBytes(memUsageStr) {
 async function getStats(host) {
   const stdout = await run([...hostArgs(host), 'stats', '--no-stream', '--format', '{{json .}}']);
   const byId = {};
-  for (const line of stdout.split('\n').map((l) => l.trim()).filter(Boolean)) {
+  for (const line of stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     const raw = JSON.parse(line);
     const netIO = parseIOPair(raw.NetIO);
     const blockIO = parseIOPair(raw.BlockIO);
