@@ -1,6 +1,6 @@
 {
   "name": "dockwatch",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Simple Docker monitoring dashboard - list containers, start/stop/restart, live log tailing. Local + remote hosts over SSH.",
   "private": true,
   "license": "AGPL-3.0-or-later",
