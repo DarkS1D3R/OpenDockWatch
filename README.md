@@ -13,7 +13,7 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ## How it works
 
-The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it sets `DOCKER_HOST=ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
+The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it passes `-H ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
 
 - Local host: no `dockerHost` set, uses the default local socket.
 - Remote hosts: reachable via key-based SSH the same way you'd already `ssh` into them.
