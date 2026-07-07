@@ -128,3 +128,63 @@ test('cooldown: does not re-fire the same rule within the cooldown window', (t) 
   });
   assert.equal(fired.length, 0);
 });
+
+const sampleAlert = { hostId: 'h', containerId: 'c', containerName: 'web', severity: 'critical', message: 'boom' };
+
+test('buildDelivery', async (t) => {
+  await t.test('routes discord:// to the Discord webhook API with a content payload', () => {
+    const d = alerts.buildDelivery('discord://123456789012345678/abcDEF_token-XYZ', sampleAlert);
+    assert.equal(d.url, 'https://discord.com/api/webhooks/123456789012345678/abcDEF_token-XYZ');
+    assert.equal(d.headers['Content-Type'], 'application/json');
+    assert.match(JSON.parse(d.body).content, /boom/);
+  });
+
+  await t.test('routes ntfy:// to the given server/topic with a plain-text body', () => {
+    const d = alerts.buildDelivery('ntfy://ntfy.sh/mytopic', sampleAlert);
+    assert.equal(d.url, 'https://ntfy.sh/mytopic');
+    assert.equal(d.body, 'boom');
+    assert.equal(d.headers.Priority, 'urgent');
+  });
+
+  await t.test('ntfy priority reflects a non-critical severity', () => {
+    const d = alerts.buildDelivery('ntfy://ntfy.sh/mytopic', { ...sampleAlert, severity: 'warning' });
+    assert.equal(d.headers.Priority, 'default');
+  });
+
+  await t.test('routes ntfy:// to a self-hosted server', () => {
+    const d = alerts.buildDelivery('ntfy://ntfy.example.com/mytopic', sampleAlert);
+    assert.equal(d.url, 'https://ntfy.example.com/mytopic');
+  });
+
+  await t.test('routes gotify:// over http with a token query param', () => {
+    const d = alerts.buildDelivery('gotify://gotify.example.com/mytoken', sampleAlert);
+    assert.equal(d.url, 'http://gotify.example.com/message?token=mytoken');
+    assert.equal(JSON.parse(d.body).priority, 8);
+  });
+
+  await t.test('routes gotifys:// over https', () => {
+    const d = alerts.buildDelivery('gotifys://gotify.example.com/mytoken', sampleAlert);
+    assert.equal(d.url, 'https://gotify.example.com/message?token=mytoken');
+  });
+
+  await t.test('auto-detects a real Slack incoming webhook by hostname', () => {
+    const d = alerts.buildDelivery('https://hooks.slack.com/services/T000/B000/XXXX', sampleAlert);
+    assert.equal(JSON.parse(d.body).text.includes('boom'), true);
+  });
+
+  await t.test('posts the raw alert as generic JSON for a plain https URL', () => {
+    const d = alerts.buildDelivery('https://example.com/webhook', sampleAlert);
+    assert.deepEqual(JSON.parse(d.body), sampleAlert);
+  });
+
+  await t.test('ALERT_WEBHOOK_FORMAT=slack overrides a non-hooks.slack.com URL', (t) => {
+    const original = process.env.ALERT_WEBHOOK_FORMAT;
+    process.env.ALERT_WEBHOOK_FORMAT = 'slack';
+    t.after(() => {
+      if (original === undefined) delete process.env.ALERT_WEBHOOK_FORMAT;
+      else process.env.ALERT_WEBHOOK_FORMAT = original;
+    });
+    const d = alerts.buildDelivery('https://mattermost.example.com/hooks/xyz', sampleAlert);
+    assert.equal(JSON.parse(d.body).text.includes('boom'), true);
+  });
+});

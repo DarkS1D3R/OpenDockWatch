@@ -9,7 +9,7 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
   - **Auto**: containers sharing a custom Docker network are connected (works with zero config for anything started via the same compose file).
   - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
-- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter.
+- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter. The current tail can also be downloaded as a `.txt` file.
 
 ## How it works
 
@@ -64,6 +64,18 @@ Any host you can `ssh user@host` into (with a key, no password prompt) and that 
 ```json
 { "id": "prod", "name": "Production", "dockerHost": "ssh://deploy@prod.example.com" }
 ```
+
+## Alerts
+
+OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) when a container crashes, crash-loops, becomes unhealthy, or a host goes unreachable. Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
+
+| Scheme        | Example                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Discord       | `discord://<webhook_id>/<webhook_token>`                                                                                                                                                         |
+| ntfy          | `ntfy://ntfy.sh/mytopic` (or a self-hosted server: `ntfy://ntfy.example.com/mytopic`)                                                                                                            |
+| Gotify        | `gotify://<host>/<token>` (http) or `gotifys://<host>/<token>` (https)                                                                                                                           |
+| Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
+| Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
 
 ## Notes
 

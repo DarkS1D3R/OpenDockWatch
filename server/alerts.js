@@ -11,21 +11,88 @@ function shouldFire(hostId, containerId, rule) {
   return Date.now() - last > COOLDOWN_MS;
 }
 
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+function slackText(alert) {
+  return `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}`;
+}
+
+// Route ALERT_WEBHOOK_URL to the right destination and payload shape based on
+// its scheme, apprise-style - one URL picks the service instead of a separate
+// named format per integration:
+//   discord://<webhook_id>/<webhook_token>
+//   ntfy://<server>/<topic>      e.g. ntfy://ntfy.sh/mytopic, or a self-hosted host
+//   gotify://<host>/<token>      (http)
+//   gotifys://<host>/<token>     (https)
+//   https://hooks.slack.com/...  (auto-detected)
+//   any other http(s) URL        (generic JSON POST of the alert, or the Slack
+//                                  {text} shape if ALERT_WEBHOOK_FORMAT=slack -
+//                                  useful for Slack-compatible endpoints, e.g.
+//                                  Mattermost, that don't live on hooks.slack.com)
+function buildDelivery(rawUrl, alert) {
+  const url = new URL(rawUrl);
+
+  if (url.protocol === 'discord:') {
+    const id = url.hostname;
+    const token = url.pathname.replace(/^\//, '');
+    return {
+      url: `https://discord.com/api/webhooks/${id}/${token}`,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ content: slackText(alert) }),
+    };
+  }
+
+  if (url.protocol === 'ntfy:') {
+    const topic = url.pathname.replace(/^\//, '');
+    return {
+      url: `https://${url.host}/${topic}`,
+      headers: {
+        Title: `opendockwatch: ${alert.severity}`,
+        Priority: alert.severity === 'critical' ? 'urgent' : 'default',
+      },
+      body: alert.message,
+    };
+  }
+
+  if (url.protocol === 'gotify:' || url.protocol === 'gotifys:') {
+    const scheme = url.protocol === 'gotifys:' ? 'https' : 'http';
+    const token = url.pathname.replace(/^\//, '');
+    return {
+      url: `${scheme}://${url.host}/message?token=${token}`,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        title: `opendockwatch: ${alert.severity}`,
+        message: alert.message,
+        priority: alert.severity === 'critical' ? 8 : 4,
+      }),
+    };
+  }
+
+  const isSlack = url.hostname === 'hooks.slack.com' || process.env.ALERT_WEBHOOK_FORMAT === 'slack';
+  return {
+    url: rawUrl,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(isSlack ? { text: slackText(alert) } : alert),
+  };
+}
+
 async function notify(alert) {
-  const url = process.env.ALERT_WEBHOOK_URL;
-  if (!url) return;
-  const format = process.env.ALERT_WEBHOOK_FORMAT || 'generic';
-  const body =
-    format === 'slack'
-      ? {
-          text: `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}`,
-        }
-      : alert;
+  const rawUrl = process.env.ALERT_WEBHOOK_URL;
+  if (!rawUrl) return;
+
+  let delivery;
   try {
-    await fetch(url, {
+    delivery = buildDelivery(rawUrl, alert);
+  } catch (err) {
+    console.error(`[opendockwatch] invalid ALERT_WEBHOOK_URL: ${err.message}`);
+    return;
+  }
+
+  try {
+    await fetch(delivery.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: delivery.headers,
+      body: delivery.body,
     });
   } catch (err) {
     console.error(`[opendockwatch] alert webhook delivery failed: ${err.message}`);
@@ -103,4 +170,4 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   }
 }
 
-module.exports = { handleEvent, handleHostReachability };
+module.exports = { handleEvent, handleHostReachability, buildDelivery };
