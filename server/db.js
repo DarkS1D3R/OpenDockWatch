@@ -107,6 +107,10 @@ const stmts = {
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart') AND result = 'ok'
   `),
+  countManualStartsSince: db.prepare(`
+    SELECT COUNT(*) AS n FROM audit_log
+    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart') AND result = 'ok'
+  `),
   pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
   pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
@@ -151,6 +155,10 @@ function countRestartsSince(hostId, containerId, sinceTs) {
 
 function countManualStopsSince(hostId, containerId, sinceTs) {
   return stmts.countManualStopsSince.get(hostId, containerId, sinceTs).n;
+}
+
+function countManualStartsSince(hostId, containerId, sinceTs) {
+  return stmts.countManualStartsSince.get(hostId, containerId, sinceTs).n;
 }
 
 function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
@@ -244,6 +252,7 @@ module.exports = {
   getLastAlertFireTs,
   countRestartsSince,
   countManualStopsSince,
+  countManualStartsSince,
   getEvents,
   getAuditLog,
   getAlerts,

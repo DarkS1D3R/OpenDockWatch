@@ -59,8 +59,12 @@ function handleEvent(event) {
   }
 
   if (action === 'start' || action === 'restart') {
-    const count = db.countRestartsSince(hostId, containerId, ts - CRASH_LOOP_WINDOW_MS);
-    if (count >= CRASH_LOOP_THRESHOLD) {
+    const sinceTs = ts - CRASH_LOOP_WINDOW_MS;
+    const count = db.countRestartsSince(hostId, containerId, sinceTs);
+    // Exclude restarts the user triggered themselves (e.g. clicking Restart a few
+    // times) so a burst of manual actions doesn't read as a crash loop.
+    const manualCount = db.countManualStartsSince(hostId, containerId, sinceTs);
+    if (count - manualCount >= CRASH_LOOP_THRESHOLD) {
       fire({
         hostId,
         containerId,
