@@ -14,6 +14,8 @@ const prometheus = require('./prometheus');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const SSE_HEARTBEAT_MS = 30_000;
+
 const HISTORY_RANGES = {
   '1h': { sinceMs: 3_600_000, bucketMs: 15_000 },
   '24h': { sinceMs: 86_400_000, bucketMs: 5 * 60_000 },
@@ -272,7 +274,12 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
     res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
   });
 
+  // Behind nginx or any proxy with an idle timeout, a quiet log stream gets cut -
+  // a periodic comment line keeps the connection alive.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+
   req.on('close', () => {
+    clearInterval(heartbeat);
     child.kill();
   });
 });
