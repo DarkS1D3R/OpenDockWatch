@@ -251,14 +251,23 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
 
   const child = streamLogs(host, req.params.id, { tail: req.query.tail || 200 });
 
-  const send = (chunk) => {
-    for (const line of chunk.toString('utf8').split('\n')) {
-      if (line.length) res.write(`data: ${line}\n\n`);
-    }
+  // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
+  // streams) so a line split across chunk boundaries isn't emitted as two SSE
+  // events, which breaks timestamps and the frontend's level detection.
+  const makeSender = () => {
+    let buffer = '';
+    return (chunk) => {
+      buffer += chunk.toString('utf8');
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (line.length) res.write(`data: ${line}\n\n`);
+      }
+    };
   };
 
-  child.stdout.on('data', send);
-  child.stderr.on('data', send);
+  child.stdout.on('data', makeSender());
+  child.stderr.on('data', makeSender());
   child.on('error', (err) => {
     res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
   });
