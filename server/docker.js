@@ -228,4 +228,7 @@ module.exports = {
   getDiskUsage,
   parseByteString,
   parseMemUsedBytes,
+  parseLabels,
+  parseHealth,
+  networkEdges,
 };

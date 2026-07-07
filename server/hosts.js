@@ -27,11 +27,13 @@ function getHost(id) {
 
 // Invalidate on any change under config/ - covers editing hosts.json in place
 // and hosts.json being created/removed (which switches the active file) -
-// so config changes apply without restarting the process.
+// so config changes apply without restarting the process. unref() so this
+// background watcher alone doesn't keep the process (or a test run
+// requiring this module) alive.
 try {
   fs.watch(CONFIG_DIR, () => {
     cache = null;
-  });
+  }).unref();
 } catch (err) {
   console.warn(`[opendockwatch] could not watch ${CONFIG_DIR} for changes: ${err.message}`);
 }

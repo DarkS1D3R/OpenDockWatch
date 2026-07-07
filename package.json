@@ -21,7 +21,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "hash-password": "node scripts/hash-password.js",
-    "test": "node scripts/check-syntax.js"
+    "test": "node scripts/check-syntax.js && node --test"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
