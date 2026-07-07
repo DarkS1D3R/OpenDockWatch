@@ -234,6 +234,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
 }
 
 module.exports = {
+  client: db,
   insertContainerMetric,
   insertHostMetric,
   insertEvent,

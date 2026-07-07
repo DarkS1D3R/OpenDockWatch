@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
+const SqliteStore = require('better-sqlite3-session-store')(session);
 
 const { requireAuth, verifyLogin } = require('./auth');
 const { loadHosts, getHost } = require('./hosts');
@@ -26,13 +27,21 @@ if (!process.env.SESSION_SECRET) {
   console.warn('[opendockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
 }
 
+// Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
+// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure.
+app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(
   session({
+    store: new SqliteStore({
+      client: db.client,
+      expired: { clear: true, intervalMs: 15 * 60 * 1000 },
+    }),
     secret: process.env.SESSION_SECRET || 'insecure-dev-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { httpOnly: true, sameSite: 'lax', maxAge: 8 * 60 * 60 * 1000 },
+    cookie: { httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: 8 * 60 * 60 * 1000 },
   })
 );
 
