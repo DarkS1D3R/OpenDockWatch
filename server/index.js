@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
+const rateLimit = require('express-rate-limit');
 const SqliteStore = require('better-sqlite3-session-store')(session);
 
 const { requireAuth, verifyLogin } = require('./auth');
@@ -51,7 +52,18 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/login.html'));
 });
 
-app.post('/login', async (req, res) => {
+// Single-user bcrypt login with no attempt limit is the main exposed surface -
+// cap failed attempts per IP instead of allowing unlimited guesses.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too many login attempts, try again later' },
+});
+
+app.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   try {
     const ok = await verifyLogin(username, password);
