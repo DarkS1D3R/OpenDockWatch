@@ -21,7 +21,7 @@ const HISTORY_RANGES = {
 };
 
 if (!process.env.SESSION_SECRET) {
-  console.warn('[dockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
+  console.warn('[opendockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
 }
 
 app.use(express.json());
@@ -260,7 +260,7 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
   child.stdout.on('data', send);
   child.stderr.on('data', send);
   child.on('error', (err) => {
-    res.write(`data: [dockwatch] failed to stream logs: ${err.message}\n\n`);
+    res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
   });
 
   req.on('close', () => {
@@ -271,7 +271,7 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
 app.use('/api', api);
 
 app.listen(PORT, () => {
-  console.log(`[dockwatch] listening on http://localhost:${PORT}`);
+  console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
   eventWatcher.start();
   metricsCollector.start();
 });

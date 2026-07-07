@@ -407,7 +407,7 @@ createApp({
         }
       };
       this.previewEventSource.onerror = () => {
-        this.previewLogLines.push('[dockwatch] log stream disconnected');
+        this.previewLogLines.push('[opendockwatch] log stream disconnected');
       };
     },
     closePreviewStream() {
@@ -459,7 +459,7 @@ createApp({
         }
       };
       this.popoutEventSource.onerror = () => {
-        this.popoutLogLines.push('[dockwatch] log stream disconnected');
+        this.popoutLogLines.push('[opendockwatch] log stream disconnected');
       };
     },
     changePopoutTail(newTail) {
@@ -507,7 +507,7 @@ createApp({
   template: `
     <div class="app">
       <header class="topbar">
-        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span></h1>
+        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span></h1>
         <select v-model="selectedHostId" @change="selectHost(selectedHostId)">
           <option v-for="h in hosts" :key="h.id" :value="h.id">
             {{ h.name }} {{ h.reachable ? '' : '(unreachable)' }}

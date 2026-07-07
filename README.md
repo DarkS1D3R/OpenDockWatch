@@ -1,4 +1,4 @@
-# dockwatch
+# OpenDockWatch
 
 A small self-hosted Docker dashboard: containers grouped by Compose project, CPU/memory stats, start/stop/restart, live log tailing, and an ArgoCD-style topology view of how containers relate to each other. Works against the local Docker daemon and any number of remote hosts over SSH. No orchestration, no scheduling, no Kubernetes — just visibility and basic control, in the spirit of Dozzle.
 
@@ -49,7 +49,7 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
 
 ## Running as a container
 
-You can also run dockwatch itself in a container, alongside everything else it's monitoring:
+You can also run OpenDockWatch itself in a container, alongside everything else it's monitoring:
 
 ```
 docker compose up -d --build
@@ -78,4 +78,4 @@ Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE). You're free to use, self-host, and modify dockwatch, including internally within an organization. If you distribute a modified version, or run a modified version as a service that other people/users interact with over a network, you must make that modified source available to them under the same license.
+AGPL-3.0-or-later. See [LICENSE](LICENSE). You're free to use, self-host, and modify OpenDockWatch, including internally within an organization. If you distribute a modified version, or run a modified version as a service that other people/users interact with over a network, you must make that modified source available to them under the same license.

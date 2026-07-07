@@ -1,6 +1,6 @@
 # Security Policy
 
-dockwatch mounts the Docker socket and (optionally) your SSH keys, and can start/stop/restart containers on any host you configure. Treat it like any other privileged admin tool — don't expose it directly to the internet without a reverse proxy and additional access controls.
+OpenDockWatch mounts the Docker socket and (optionally) your SSH keys, and can start/stop/restart containers on any host you configure. Treat it like any other privileged admin tool — don't expose it directly to the internet without a reverse proxy and additional access controls.
 
 ## Supported versions
 
@@ -18,4 +18,4 @@ Include what you'd normally include in a report: affected version/commit, reprod
 
 - Auth is a single shared username/password (bcrypt-hashed) plus a signed session cookie — there's no per-user RBAC. Don't share the login broadly.
 - Actions are intentionally limited to `start` / `stop` / `restart` (no `rm`, no arbitrary exec), but anyone with the login can still stop/restart anything on any configured host.
-- Remote hosts are reached via the `docker` CLI over SSH using your local SSH config/keys — anyone who can reach the dockwatch process can act as that SSH identity against those hosts.
+- Remote hosts are reached via the `docker` CLI over SSH using your local SSH config/keys — anyone who can reach the OpenDockWatch process can act as that SSH identity against those hosts.

@@ -67,7 +67,7 @@ async function pollHost(host) {
       });
     }
   } catch (err) {
-    console.error(`[dockwatch] metrics poll failed for host ${host.id}: ${err.message}`);
+    console.error(`[opendockwatch] metrics poll failed for host ${host.id}: ${err.message}`);
   }
 }
 
@@ -77,7 +77,7 @@ async function pollDiskUsage(host) {
   try {
     snapshot.diskUsage = await getDiskUsage(host);
   } catch (err) {
-    console.error(`[dockwatch] disk usage poll failed for host ${host.id}: ${err.message}`);
+    console.error(`[opendockwatch] disk usage poll failed for host ${host.id}: ${err.message}`);
   }
 }
 

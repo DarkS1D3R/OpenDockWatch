@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea for dockwatch
+description: Suggest an idea for OpenDockWatch
 labels: [enhancement]
 body:
   - type: textarea

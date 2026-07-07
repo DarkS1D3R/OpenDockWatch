@@ -1,5 +1,5 @@
 {
-  "name": "dockwatch",
+  "name": "opendockwatch",
   "version": "1.0.0",
   "description": "Simple Docker monitoring dashboard - list containers, start/stop/restart, live log tailing. Local + remote hosts over SSH.",
   "private": true,

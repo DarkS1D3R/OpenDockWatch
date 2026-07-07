@@ -1,8 +1,8 @@
 services:
-  dockwatch:
+  opendockwatch:
     build: .
-    image: dockwatch:local
-    container_name: dockwatch
+    image: opendockwatch:local
+    container_name: opendockwatch
     restart: unless-stopped
     ports:
       - "3000:3000"

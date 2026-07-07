@@ -67,7 +67,7 @@ function startWatcher(host) {
   // Without this handler, a spawn failure (docker not on PATH, bad SSH host, etc.) emits an
   // unhandled 'error' that crashes the whole process - taking down monitoring for every host.
   child.on('error', (err) => {
-    console.error(`[dockwatch] events stream error for host ${host.id}: ${err.message}`);
+    console.error(`[opendockwatch] events stream error for host ${host.id}: ${err.message}`);
   });
 
   const state = watchers.get(host.id) || { restartDelay: RESTART_BASE_DELAY_MS };

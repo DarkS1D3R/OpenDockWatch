@@ -86,6 +86,7 @@ body {
 .topbar h1 { font-size: 20px; margin: 0; flex: none; display: flex; align-items: center; gap: 8px; }
 .brand-logo { width: 52px; height: 52px; flex: none; }
 .brand-name { font-weight: 700; }
+.brand-open { color: var(--muted); font-weight: 600; }
 .brand-dock { color: var(--accent); }
 .brand-watch { color: var(--ok); }
 .topbar select { margin-left: auto; }

@@ -17,7 +17,7 @@ async function notify(alert) {
   const format = process.env.ALERT_WEBHOOK_FORMAT || 'generic';
   const body =
     format === 'slack'
-      ? { text: `*[dockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}` }
+      ? { text: `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}` }
       : alert;
   try {
     await fetch(url, {
@@ -26,7 +26,7 @@ async function notify(alert) {
       body: JSON.stringify(body),
     });
   } catch (err) {
-    console.error(`[dockwatch] alert webhook delivery failed: ${err.message}`);
+    console.error(`[opendockwatch] alert webhook delivery failed: ${err.message}`);
   }
 }
 
