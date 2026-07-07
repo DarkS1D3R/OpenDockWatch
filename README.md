@@ -5,7 +5,7 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 ## Features
 
 - **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns and Start/Stop/Restart actions. Filter by All / Running / Stopped.
-- **Flow view** — a graph of containers (grouped visually by compose project) with zoom/fit controls. Each node shows a state emoji (🟢 running / 🔄 restarting / ⏸️ paused / ⏹️ stopped) in the top-left corner and an uptime/status string in the bottom-right. Edges are drawn two ways:
+- **Flow view** — a graph of containers (grouped visually by compose project) with zoom/fit controls. Each node shows a state indicator (running / restarting / paused / stopped) in the top-left corner and an uptime/status string in the bottom-right. Edges are drawn two ways:
   - **Auto**: containers sharing a custom Docker network are connected (works with zero config for anything started via the same compose file).
   - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
@@ -17,6 +17,12 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
 
 - Local host: no `dockerHost` set, uses the default local socket.
 - Remote hosts: reachable via key-based SSH the same way you'd already `ssh` into them.
+
+## Requirements
+
+- Node.js 20+
+- `docker` CLI available on PATH, with access to the Docker socket
+- For remote hosts: key-based SSH access (no password prompt) to a Docker socket on that host
 
 ## Setup
 
@@ -41,15 +47,15 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
    ```
    Visit http://localhost:3000
 
-## Running as a container (recommended for WSL)
+## Running as a container
 
-Since Docker actually runs inside WSL in this environment, running dockwatch itself as a container there (with the socket mounted) keeps everything in one place:
+You can also run dockwatch itself in a container, alongside everything else it's monitoring:
 
 ```
 docker compose up -d --build
 ```
 
-This mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH exactly like your WSL user can.
+This mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH the same way your host user would. If Docker runs inside WSL (rather than Docker Desktop), run this from within your WSL distro so the socket path lines up.
 
 ## Remote hosts
 
