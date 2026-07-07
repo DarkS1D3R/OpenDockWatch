@@ -1,0 +1,14 @@
+services:
+  dockwatch:
+    build: .
+    image: dockwatch:local
+    container_name: dockwatch
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.ssh:/root/.ssh:ro
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./.env:/app/.env:ro

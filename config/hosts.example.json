@@ -1,0 +1,22 @@
+[
+  {
+    "id": "local",
+    "dockerHost": null,
+    "edges": [
+      { "from": "api", "to": "database", "label": "JDBC" },
+      { "from": "web", "to": "api", "label": "REST API" }
+    ]
+  },
+  {
+    "id": "prod",
+    "name": "Production",
+    "dockerHost": "ssh://deploy@prod.example.com",
+    "edges": []
+  },
+  {
+    "id": "staging",
+    "name": "Staging",
+    "dockerHost": "ssh://deploy@staging.example.com",
+    "edges": []
+  }
+]
