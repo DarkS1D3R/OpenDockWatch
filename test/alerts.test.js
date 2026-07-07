@@ -13,6 +13,7 @@ function mockDb(t, overrides = {}) {
     countManualStopsSince: () => 0,
     countManualStartsSince: () => 0,
     countRestartsSince: () => 0,
+    getSetting: () => null,
   };
   for (const [name, impl] of Object.entries({ ...defaults, ...overrides })) {
     t.mock.method(db, name, impl);
@@ -177,14 +178,81 @@ test('buildDelivery', async (t) => {
     assert.deepEqual(JSON.parse(d.body), sampleAlert);
   });
 
-  await t.test('ALERT_WEBHOOK_FORMAT=slack overrides a non-hooks.slack.com URL', (t) => {
-    const original = process.env.ALERT_WEBHOOK_FORMAT;
+  await t.test('format "slack" overrides a non-hooks.slack.com URL', () => {
+    const d = alerts.buildDelivery('https://mattermost.example.com/hooks/xyz', sampleAlert, 'slack');
+    assert.equal(JSON.parse(d.body).text.includes('boom'), true);
+  });
+});
+
+test('webhook config (DB override vs .env default)', async (t) => {
+  await t.test('falls back to env vars when no DB override exists', (t) => {
+    mockDb(t, { getSetting: () => null });
+    const original = { url: process.env.ALERT_WEBHOOK_URL, format: process.env.ALERT_WEBHOOK_FORMAT };
+    process.env.ALERT_WEBHOOK_URL = 'https://example.com/from-env';
     process.env.ALERT_WEBHOOK_FORMAT = 'slack';
     t.after(() => {
-      if (original === undefined) delete process.env.ALERT_WEBHOOK_FORMAT;
-      else process.env.ALERT_WEBHOOK_FORMAT = original;
+      if (original.url === undefined) delete process.env.ALERT_WEBHOOK_URL;
+      else process.env.ALERT_WEBHOOK_URL = original.url;
+      if (original.format === undefined) delete process.env.ALERT_WEBHOOK_FORMAT;
+      else process.env.ALERT_WEBHOOK_FORMAT = original.format;
     });
-    const d = alerts.buildDelivery('https://mattermost.example.com/hooks/xyz', sampleAlert);
-    assert.equal(JSON.parse(d.body).text.includes('boom'), true);
+
+    const config = alerts.getWebhookConfig();
+    assert.deepEqual(config, { url: 'https://example.com/from-env', format: 'slack', overridden: false });
+  });
+
+  await t.test('a DB row - even an empty one - takes priority over .env', (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? '' : null) });
+    process.env.ALERT_WEBHOOK_URL = 'https://example.com/from-env';
+    t.after(() => delete process.env.ALERT_WEBHOOK_URL);
+
+    const config = alerts.getWebhookConfig();
+    assert.deepEqual(config, { url: '', format: '', overridden: true });
+  });
+
+  await t.test('setWebhookConfig persists both keys and clearWebhookConfig removes them', (t) => {
+    const store = new Map();
+    mockDb(t, {
+      getSetting: (key) => (store.has(key) ? store.get(key) : null),
+      setSetting: (key, value) => store.set(key, value),
+      deleteSetting: (key) => store.delete(key),
+    });
+
+    const saved = alerts.setWebhookConfig({ url: 'discord://1/2', format: '' });
+    assert.deepEqual(saved, { url: 'discord://1/2', format: '', overridden: true });
+
+    const cleared = alerts.clearWebhookConfig();
+    assert.equal(cleared.overridden, false);
+  });
+});
+
+test('sendTestAlert', async (t) => {
+  await t.test('throws when no webhook is configured', async (t) => {
+    mockDb(t, { getSetting: () => null });
+    await assert.rejects(() => alerts.sendTestAlert(), /no webhook URL configured/);
+  });
+
+  await t.test('delivers a synthetic alert through the configured webhook', async (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null) });
+    const originalFetch = global.fetch;
+    let captured = null;
+    global.fetch = async (url, opts) => {
+      captured = { url, opts };
+      return { ok: true };
+    };
+    t.after(() => (global.fetch = originalFetch));
+
+    await alerts.sendTestAlert();
+    assert.equal(captured.url, 'https://discord.com/api/webhooks/1/2');
+    assert.match(JSON.parse(captured.opts.body).content, /test alert/i);
+  });
+
+  await t.test('throws when the webhook responds with a non-2xx status', async (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null) });
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 500 });
+    t.after(() => (global.fetch = originalFetch));
+
+    await assert.rejects(() => alerts.sendTestAlert(), /HTTP 500/);
   });
 });

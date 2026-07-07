@@ -69,6 +69,11 @@ db.exec(`
     acknowledged INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 const stmts = {
@@ -121,6 +126,12 @@ const stmts = {
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
+  getSetting: db.prepare(`SELECT value FROM settings WHERE key = ?`),
+  setSetting: db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `),
+  deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
 };
 
 function insertContainerMetric(sample) {
@@ -196,6 +207,21 @@ function countOpenAlerts(hostId) {
   return db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`).get(hostId).n;
 }
 
+// null means "no row" (caller should fall back to a default), distinct from an
+// explicitly-stored empty string.
+function getSetting(key) {
+  const row = stmts.getSetting.get(key);
+  return row ? row.value : null;
+}
+
+function setSetting(key, value) {
+  stmts.setSetting.run(key, value);
+}
+
+function deleteSetting(key) {
+  stmts.deleteSetting.run(key);
+}
+
 // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps
 // chart payloads small over long ranges without a separate downsampling job.
 function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
@@ -269,6 +295,9 @@ module.exports = {
   countOpenAlerts,
   getContainerMetricsHistory,
   getHostMetricsHistory,
+  getSetting,
+  setSetting,
+  deleteSetting,
   pruneOld,
   close,
 };

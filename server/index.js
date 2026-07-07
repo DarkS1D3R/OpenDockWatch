@@ -19,6 +19,7 @@ const {
   getDiskUsage,
 } = require('./docker');
 const db = require('./db');
+const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
 const prometheus = require('./prometheus');
@@ -242,6 +243,46 @@ api.get('/alerts', (req, res) => {
 api.post('/alerts/:id/ack', (req, res) => {
   db.ackAlert(Number(req.params.id));
   res.json({ ok: true });
+});
+
+// Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as
+// container control.
+const ALLOWED_WEBHOOK_SCHEMES = new Set(['http:', 'https:', 'discord:', 'ntfy:', 'gotify:', 'gotifys:']);
+
+api.get('/settings/webhook', requireAdmin, (req, res) => {
+  res.json(alerts.getWebhookConfig());
+});
+
+api.put('/settings/webhook', requireAdmin, (req, res) => {
+  const { url = '', format = '' } = req.body || {};
+  if (url) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return res.status(400).json({ error: 'invalid webhook URL' });
+    }
+    if (!ALLOWED_WEBHOOK_SCHEMES.has(parsed.protocol)) {
+      return res.status(400).json({ error: `unsupported scheme "${parsed.protocol}" - use http(s), discord, ntfy, gotify, or gotifys` });
+    }
+  }
+  if (format && format !== 'slack') {
+    return res.status(400).json({ error: 'format must be empty or "slack"' });
+  }
+  res.json(alerts.setWebhookConfig({ url, format }));
+});
+
+api.delete('/settings/webhook', requireAdmin, (req, res) => {
+  res.json(alerts.clearWebhookConfig());
+});
+
+api.post('/settings/webhook/test', requireAdmin, async (req, res) => {
+  try {
+    await alerts.sendTestAlert();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {

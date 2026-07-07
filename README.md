@@ -77,6 +77,8 @@ OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/ale
 | Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
 | Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
 
+Instead of (or in addition to) `.env`, an admin account can set the webhook from the UI: the ⚙ Settings button in the topbar opens a panel to save a URL, clear it back to the `.env` default, and send a test alert. A saved-from-the-UI value is stored in the database and takes effect immediately (no restart) — it always wins over `.env`, even if set to empty to deliberately disable a webhook `.env` configured.
+
 ## Notes
 
 - `name` is optional for local (non-SSH) hosts — if omitted, it's auto-filled from the machine's real hostname via `docker info`. Remote SSH hosts still need an explicit `name` since there's no local machine to introspect.

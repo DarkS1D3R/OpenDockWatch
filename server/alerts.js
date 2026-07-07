@@ -26,10 +26,10 @@ function slackText(alert) {
 //   gotifys://<host>/<token>     (https)
 //   https://hooks.slack.com/...  (auto-detected)
 //   any other http(s) URL        (generic JSON POST of the alert, or the Slack
-//                                  {text} shape if ALERT_WEBHOOK_FORMAT=slack -
-//                                  useful for Slack-compatible endpoints, e.g.
+//                                  {text} shape if format is 'slack' - useful
+//                                  for Slack-compatible endpoints, e.g.
 //                                  Mattermost, that don't live on hooks.slack.com)
-function buildDelivery(rawUrl, alert) {
+function buildDelivery(rawUrl, alert, format) {
   const url = new URL(rawUrl);
 
   if (url.protocol === 'discord:') {
@@ -68,7 +68,7 @@ function buildDelivery(rawUrl, alert) {
     };
   }
 
-  const isSlack = url.hostname === 'hooks.slack.com' || process.env.ALERT_WEBHOOK_FORMAT === 'slack';
+  const isSlack = url.hostname === 'hooks.slack.com' || format === 'slack';
   return {
     url: rawUrl,
     headers: JSON_HEADERS,
@@ -76,27 +76,77 @@ function buildDelivery(rawUrl, alert) {
   };
 }
 
+const WEBHOOK_URL_KEY = 'alertWebhookUrl';
+const WEBHOOK_FORMAT_KEY = 'alertWebhookFormat';
+
+// The webhook can be set two ways: ALERT_WEBHOOK_URL/FORMAT in .env (requires
+// a restart to change), or from the UI (Settings, admin-only), which persists
+// to the settings table and takes effect immediately. A DB row - even one
+// holding an empty string, e.g. to deliberately disable a webhook configured
+// in .env - always wins once it exists; db.getSetting returns null only when
+// no override has ever been saved.
+function getWebhookConfig() {
+  const dbUrl = db.getSetting(WEBHOOK_URL_KEY);
+  const overridden = dbUrl !== null;
+  const url = overridden ? dbUrl : process.env.ALERT_WEBHOOK_URL || '';
+  const format = overridden ? db.getSetting(WEBHOOK_FORMAT_KEY) || '' : process.env.ALERT_WEBHOOK_FORMAT || '';
+  return { url, format, overridden };
+}
+
+function setWebhookConfig({ url, format }) {
+  db.setSetting(WEBHOOK_URL_KEY, url || '');
+  db.setSetting(WEBHOOK_FORMAT_KEY, format || '');
+  return getWebhookConfig();
+}
+
+function clearWebhookConfig() {
+  db.deleteSetting(WEBHOOK_URL_KEY);
+  db.deleteSetting(WEBHOOK_FORMAT_KEY);
+  return getWebhookConfig();
+}
+
+async function deliverWebhook(rawUrl, alert, format) {
+  const delivery = buildDelivery(rawUrl, alert, format);
+  const res = await fetch(delivery.url, {
+    method: 'POST',
+    headers: delivery.headers,
+    body: delivery.body,
+  });
+  if (!res.ok) {
+    throw new Error(`webhook responded with HTTP ${res.status}`);
+  }
+}
+
 async function notify(alert) {
-  const rawUrl = process.env.ALERT_WEBHOOK_URL;
+  const { url: rawUrl, format } = getWebhookConfig();
   if (!rawUrl) return;
 
-  let delivery;
   try {
-    delivery = buildDelivery(rawUrl, alert);
-  } catch (err) {
-    console.error(`[opendockwatch] invalid ALERT_WEBHOOK_URL: ${err.message}`);
-    return;
-  }
-
-  try {
-    await fetch(delivery.url, {
-      method: 'POST',
-      headers: delivery.headers,
-      body: delivery.body,
-    });
+    await deliverWebhook(rawUrl, alert, format);
   } catch (err) {
     console.error(`[opendockwatch] alert webhook delivery failed: ${err.message}`);
   }
+}
+
+// Fires a synthetic alert through the current webhook config, bypassing
+// insertAlert/cooldown - lets the Settings UI give immediate feedback instead
+// of waiting for a real crash/unhealthy/etc. event.
+async function sendTestAlert() {
+  const { url: rawUrl, format } = getWebhookConfig();
+  if (!rawUrl) {
+    throw new Error('no webhook URL configured');
+  }
+  const testAlert = {
+    id: 0,
+    ts: Date.now(),
+    hostId: 'test',
+    containerId: null,
+    containerName: 'test-container',
+    rule: 'test',
+    severity: 'warning',
+    message: 'This is a test alert from OpenDockWatch.',
+  };
+  await deliverWebhook(rawUrl, testAlert, format);
 }
 
 function fire({ hostId, containerId, containerName, rule, severity, message }) {
@@ -170,4 +220,12 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   }
 }
 
-module.exports = { handleEvent, handleHostReachability, buildDelivery };
+module.exports = {
+  handleEvent,
+  handleHostReachability,
+  buildDelivery,
+  getWebhookConfig,
+  setWebhookConfig,
+  clearWebhookConfig,
+  sendTestAlert,
+};
