@@ -126,8 +126,9 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
   try {
     const containers = await listContainers(host);
     const sinceTs = Date.now() - 3_600_000;
+    const restartCounts = db.getRestartCountsByContainer(req.params.hostId, sinceTs);
     for (const c of containers) {
-      c.restartCount1h = db.countRestartsSince(req.params.hostId, c.id, sinceTs);
+      c.restartCount1h = restartCounts.get(c.id) || 0;
     }
     res.json(containers);
   } catch (err) {

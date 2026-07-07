@@ -103,6 +103,11 @@ const stmts = {
     SELECT COUNT(*) AS n FROM events
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
   `),
+  countRestartsByContainerSince: db.prepare(`
+    SELECT container_id AS containerId, COUNT(*) AS n FROM events
+    WHERE host_id = ? AND ts >= ? AND action IN ('start', 'restart')
+    GROUP BY container_id
+  `),
   countManualStopsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart') AND result = 'ok'
@@ -151,6 +156,14 @@ function getLastAlertFireTs(hostId, containerId, rule) {
 
 function countRestartsSince(hostId, containerId, sinceTs) {
   return stmts.countRestartsSince.get(hostId, containerId, sinceTs).n;
+}
+
+// Batched form of countRestartsSince - one GROUP BY query per host instead of
+// one query per container, for callers (poll loops, /metrics) that need the
+// count for every container on a host at once.
+function getRestartCountsByContainer(hostId, sinceTs) {
+  const rows = stmts.countRestartsByContainerSince.all(hostId, sinceTs);
+  return new Map(rows.map((r) => [r.containerId, r.n]));
 }
 
 function countManualStopsSince(hostId, containerId, sinceTs) {
@@ -255,6 +268,7 @@ module.exports = {
   ackAlert,
   getLastAlertFireTs,
   countRestartsSince,
+  getRestartCountsByContainer,
   countManualStopsSince,
   countManualStartsSince,
   getEvents,
