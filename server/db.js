@@ -232,6 +232,10 @@ function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
     .all({ hostId, sinceTs, bucketMs });
 }
 
+function close() {
+  db.close();
+}
+
 function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
   const now = Date.now();
   stmts.pruneContainerMetrics.run(now - metricsRetentionMs);
@@ -260,4 +264,5 @@ module.exports = {
   getContainerMetricsHistory,
   getHostMetricsHistory,
   pruneOld,
+  close,
 };

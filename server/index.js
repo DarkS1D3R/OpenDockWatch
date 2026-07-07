@@ -307,8 +307,32 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
 
 app.use('/api', api);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
   eventWatcher.start();
   metricsCollector.start();
 });
+
+// Without this, `docker stop` sends SIGTERM and the default handler kills the
+// process immediately - potentially mid-write to the sqlite db.
+function shutdown(signal) {
+  console.log(`[opendockwatch] received ${signal}, shutting down`);
+  metricsCollector.stop();
+  eventWatcher.stop();
+
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    db.close();
+    process.exit(0);
+  };
+
+  // server.close() waits for open connections to end, but log/event SSE streams
+  // are intentionally long-lived - don't let them block shutdown indefinitely.
+  server.close(finish);
+  setTimeout(finish, 5000);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
