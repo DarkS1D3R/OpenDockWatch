@@ -20,7 +20,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "hash-password": "node scripts/hash-password.js"
+    "hash-password": "node scripts/hash-password.js",
+    "test": "node scripts/check-syntax.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

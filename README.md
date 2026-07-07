@@ -66,6 +66,10 @@ Any host you can `ssh user@host` into (with a key, no password prompt) and that 
 - Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
 - Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
 
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE). You're free to use, self-host, and modify dockwatch, including internally within an organization. If you distribute a modified version, or run a modified version as a service that other people/users interact with over a network, you must make that modified source available to them under the same license.
