@@ -199,6 +199,11 @@ function streamLogs(host, id, { tail = 200 } = {}) {
   return spawn('docker', [...hostArgs(host), 'logs', '-f', '--timestamps', '--tail', String(tail), id]);
 }
 
+// Same as streamLogs but without -f, for a one-shot download instead of a live tail.
+function downloadLogs(host, id, { tail = 1000 } = {}) {
+  return spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--tail', String(tail), id]);
+}
+
 function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
@@ -224,6 +229,7 @@ module.exports = {
   listContainers,
   containerAction,
   streamLogs,
+  downloadLogs,
   streamEvents,
   getStats,
   getTopology,

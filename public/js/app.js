@@ -8,6 +8,7 @@ import {
   apiGetHostInfo,
   apiContainerAction,
   logsUrl,
+  downloadLogsUrl,
   apiLogout,
   apiGetDiskUsage,
   apiGetMetricsHistory,
@@ -466,6 +467,10 @@ createApp({
       this.popoutTail = newTail;
       this.startPopoutStream();
     },
+    downloadLogs() {
+      if (!this.selectedContainerId) return;
+      window.location.href = downloadLogsUrl(this.selectedHostId, this.selectedContainerId, this.popoutTail);
+    },
     onPopoutScroll() {
       const el = this.$refs.popoutLogView;
       if (el) this.popoutAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -768,6 +773,7 @@ createApp({
               <option :value="5000">Last 5000 lines</option>
               <option value="all">All lines</option>
             </select>
+            <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
             <button @click="closePopout">Close</button>
           </div>
         </div>

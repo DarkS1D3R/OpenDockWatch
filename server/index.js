@@ -7,7 +7,17 @@ const SqliteStore = require('better-sqlite3-session-store')(session);
 
 const { requireAuth, verifyLogin } = require('./auth');
 const { loadHosts, getHost } = require('./hosts');
-const { checkHost, listContainers, containerAction, streamLogs, getStats, getTopology, getHostInfo, getDiskUsage } = require('./docker');
+const {
+  checkHost,
+  listContainers,
+  containerAction,
+  streamLogs,
+  downloadLogs,
+  getStats,
+  getTopology,
+  getHostInfo,
+  getDiskUsage,
+} = require('./docker');
 const db = require('./db');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
@@ -304,6 +314,38 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
     clearInterval(heartbeat);
     child.kill();
   });
+});
+
+api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+
+  const tail = req.query.tail || 5000;
+  const child = downloadLogs(host, req.params.id, { tail });
+
+  res.set({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${req.params.hostId}-${req.params.id}-logs.txt"`,
+  });
+
+  // Two independent stdio streams feeding one response - don't let either one's
+  // end() race the other; end the response once, when the process itself closes.
+  child.stdout.pipe(res, { end: false });
+  child.stderr.pipe(res, { end: false });
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    res.end();
+  };
+  child.on('close', finish);
+  child.on('error', (err) => {
+    if (!res.headersSent) res.status(502);
+    res.write(`[opendockwatch] failed to fetch logs: ${err.message}\n`);
+    finish();
+  });
+
+  req.on('close', () => child.kill());
 });
 
 app.use('/api', api);

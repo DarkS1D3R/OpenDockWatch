@@ -49,6 +49,10 @@ export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
 }
 
+export function downloadLogsUrl(hostId, id, tail) {
+  return `/api/hosts/${hostId}/containers/${id}/logs/download?tail=${tail}`;
+}
+
 export async function apiLogout() {
   await fetch('/logout', { method: 'POST' });
 }
