@@ -11,6 +11,24 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
 - **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter. The current tail can also be downloaded as a `.txt` file.
 
+## Screenshots
+
+**List view** — containers grouped by Compose project, live CPU/memory columns
+
+![List view, containers grouped by Compose project](screenshots/list-view.png)
+
+**Flow view** — a topology graph of containers
+
+![Flow view, a topology graph of containers](screenshots/flow-view.png)
+
+**Details panel** — status, image, CPU/mem, ports, networks, actions, and a live log preview
+
+![Container details panel with a live log preview](screenshots/details-panel.png)
+
+**Log viewer** — full-width pop-out with level filters and download
+
+![Full-width log viewer pop-out with level filters](screenshots/log-viewer.png)
+
 ## How it works
 
 The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it passes `-H ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
