@@ -57,6 +57,15 @@ async function pollHost(host) {
         blockWriteBytes: Math.round(s.blockWriteBytes || 0),
       });
       memSum += memUsedBytes;
+      alerts.handleSample({
+        hostId: host.id,
+        containerId: c.id,
+        containerName: c.name,
+        cpuPerc,
+        memPerc,
+        ts,
+        alertsDisabled: c.alertsDisabled,
+      });
     }
 
     if (hostInfo && hostInfo.ncpu) {
@@ -65,6 +74,13 @@ async function pollHost(host) {
         ts,
         cpuPercent: cpuSum / hostInfo.ncpu,
         memUsedBytes: memSum,
+      });
+      alerts.handleHostSample({
+        hostId: host.id,
+        hostName: host.name || host.id,
+        cpuPercent: cpuSum / hostInfo.ncpu,
+        memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
+        ts,
       });
     }
   } catch (err) {
@@ -77,6 +93,7 @@ async function pollDiskUsage(host) {
   if (!snapshot || !snapshot.reachable) return;
   try {
     snapshot.diskUsage = await getDiskUsage(host);
+    alerts.handleDiskUsage({ hostId: host.id, hostName: host.name || host.id, rows: snapshot.diskUsage });
   } catch (err) {
     console.error(`[opendockwatch] disk usage poll failed for host ${host.id}: ${err.message}`);
   }

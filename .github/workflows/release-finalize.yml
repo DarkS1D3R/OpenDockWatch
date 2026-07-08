@@ -1,0 +1,60 @@
+name: Release Finalize
+
+# Phase 2 of 2: runs when a release/* PR is merged into main (see release.yml).
+# Tags the merge commit, publishes the GitHub Release, merges main back into
+# develop so the version bump isn't left behind, and deletes the release branch.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-finalize-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Read released version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the release merge commit
+        run: |
+          git tag -a "${{ steps.version.outputs.value }}" -m "${{ steps.version.outputs.value }}"
+          git push origin "${{ steps.version.outputs.value }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.value }}" \
+            --title "${{ steps.version.outputs.value }}" \
+            --target main \
+            --generate-notes
+
+      - name: Merge main back into develop
+        run: |
+          git fetch origin develop
+          git checkout -B develop origin/develop
+          git merge --no-ff main -m "Merge main back into develop after ${{ steps.version.outputs.value }} release"
+          git push origin develop
+
+      - name: Delete release branch
+        run: git push origin --delete "${{ github.event.pull_request.head.ref }}" || true

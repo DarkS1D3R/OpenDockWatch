@@ -86,6 +86,7 @@ async function listContainers(host) {
         networks,
         composeProject: labels['com.docker.compose.project'] || null,
         composeService: labels['com.docker.compose.service'] || null,
+        alertsDisabled: labels['opendockwatch.alerts'] === 'off',
       };
     });
 }

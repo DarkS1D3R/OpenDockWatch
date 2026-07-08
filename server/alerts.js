@@ -1,4 +1,5 @@
 const db = require('./db');
+const { parseByteString } = require('./docker');
 
 const COOLDOWN_MS = 10 * 60 * 1000;
 const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000;
@@ -103,6 +104,71 @@ function clearWebhookConfig() {
   db.deleteSetting(WEBHOOK_URL_KEY);
   db.deleteSetting(WEBHOOK_FORMAT_KEY);
   return getWebhookConfig();
+}
+
+// Resource-threshold rules (container_cpu/container_mem/host_cpu/host_mem/docker_disk).
+// Same env-default + DB-override precedent as the webhook config above. All
+// thresholds ship disabled (0) by default - existing users shouldn't get
+// surprise webhook noise after upgrading. sustainMinutes is shared between the
+// cpu and mem rules since both are evaluated from the same 5s stats poll.
+const THRESHOLD_KEYS = {
+  cpuThreshold: { settingKey: 'alertCpuThreshold', envVar: 'ALERT_CPU_THRESHOLD' },
+  memThreshold: { settingKey: 'alertMemThreshold', envVar: 'ALERT_MEM_THRESHOLD' },
+  sustainMinutes: { settingKey: 'alertSustainMinutes', envVar: 'ALERT_SUSTAIN_MINUTES', default: 5 },
+  diskThresholdGb: { settingKey: 'alertDiskThresholdGb', envVar: 'ALERT_DISK_THRESHOLD_GB' },
+};
+
+function numSetting(settingKey, envVar, defaultValue = 0) {
+  const dbVal = db.getSetting(settingKey);
+  if (dbVal !== null) return dbVal === '' ? defaultValue : Number(dbVal);
+  const envVal = process.env[envVar];
+  return envVal !== undefined && envVal !== '' ? Number(envVal) : defaultValue;
+}
+
+function getThresholdConfig() {
+  const config = { overridden: false };
+  for (const [field, { settingKey, envVar, default: def }] of Object.entries(THRESHOLD_KEYS)) {
+    if (db.getSetting(settingKey) !== null) config.overridden = true;
+    config[field] = numSetting(settingKey, envVar, def);
+  }
+  return config;
+}
+
+function setThresholdConfig(values) {
+  for (const [field, { settingKey }] of Object.entries(THRESHOLD_KEYS)) {
+    db.setSetting(settingKey, String(values[field] ?? 0));
+  }
+  return getThresholdConfig();
+}
+
+function clearThresholdConfig() {
+  for (const { settingKey } of Object.values(THRESHOLD_KEYS)) {
+    db.deleteSetting(settingKey);
+  }
+  return getThresholdConfig();
+}
+
+// Consecutive-breach tracking, keyed by "hostId:containerId:rule". A single
+// sample over threshold is noise (image builds, cron jobs, JVM startup) - the
+// rule only fires once the breach has been continuous for sustainMs. Storing
+// the timestamp of the *first* breaching sample (rather than a sample count)
+// means this is independent of the poll interval and trivially testable with
+// synthetic timestamps. Resets the moment a sample dips back under threshold,
+// which doubles as hysteresis. In-memory only - counters reset on restart,
+// worst case an alert fires a few minutes later than it would have.
+const breachStarts = new Map();
+
+function checkSustained(key, breached, sustainMs, ts) {
+  if (!breached) {
+    breachStarts.delete(key);
+    return false;
+  }
+  let start = breachStarts.get(key);
+  if (start === undefined) {
+    start = ts;
+    breachStarts.set(key, start);
+  }
+  return ts - start >= sustainMs;
 }
 
 async function deliverWebhook(rawUrl, alert, format) {
@@ -220,12 +286,118 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   }
 }
 
+// Called once per running container on every stats poll (~5s). cpuPerc is raw
+// docker-stats CPU% (per-core cumulative, so a container using 4 cores fully
+// reads 400% - matches what the UI already shows, so the threshold isn't
+// normalized). memPerc is docker's MemPerc, which is computed against the
+// container's own memory limit - containers with no limit set read low against
+// host total and rarely trip this, which in practice focuses the rule on
+// containers that have limits, i.e. where mem pressure actually OOMKills.
+function handleSample({ hostId, containerId, containerName, cpuPerc, memPerc, ts, alertsDisabled }) {
+  if (alertsDisabled) return;
+  const cfg = getThresholdConfig();
+  const sustainMs = cfg.sustainMinutes * 60_000;
+
+  if (cfg.cpuThreshold > 0) {
+    const breached = cpuPerc >= cfg.cpuThreshold;
+    if (checkSustained(`${hostId}:${containerId}:container_cpu`, breached, sustainMs, ts)) {
+      fire({
+        hostId,
+        containerId,
+        containerName,
+        rule: 'container_cpu',
+        severity: 'warning',
+        message: `Container ${containerName || containerId} CPU at ${cpuPerc.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+      });
+    }
+  }
+
+  if (cfg.memThreshold > 0) {
+    const breached = memPerc >= cfg.memThreshold;
+    if (checkSustained(`${hostId}:${containerId}:container_mem`, breached, sustainMs, ts)) {
+      fire({
+        hostId,
+        containerId,
+        containerName,
+        rule: 'container_mem',
+        severity: 'warning',
+        message: `Container ${containerName || containerId} memory at ${memPerc.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+      });
+    }
+  }
+}
+
+// Called once per host per stats poll. cpuPercent is host-normalized (cpuSum /
+// ncpu, so 100% means all cores busy); memPercent is sum-of-container-usage
+// over host total memory.
+function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
+  const cfg = getThresholdConfig();
+  const sustainMs = cfg.sustainMinutes * 60_000;
+
+  if (cfg.cpuThreshold > 0) {
+    const breached = cpuPercent >= cfg.cpuThreshold;
+    if (checkSustained(`${hostId}:host:host_cpu`, breached, sustainMs, ts)) {
+      fire({
+        hostId,
+        containerId: null,
+        containerName: null,
+        rule: 'host_cpu',
+        severity: 'warning',
+        message: `Host ${hostName || hostId} CPU at ${cpuPercent.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+      });
+    }
+  }
+
+  if (cfg.memThreshold > 0) {
+    const breached = memPercent >= cfg.memThreshold;
+    if (checkSustained(`${hostId}:host:host_mem`, breached, sustainMs, ts)) {
+      fire({
+        hostId,
+        containerId: null,
+        containerName: null,
+        rule: 'host_mem',
+        severity: 'warning',
+        message: `Host ${hostName || hostId} memory at ${memPercent.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+      });
+    }
+  }
+}
+
+// Called once per host per disk-usage poll (~60s). `docker system df` reports
+// Docker's own footprint (images/containers/volumes/build cache), not host
+// filesystem free space - Docker doesn't expose that - so this is honestly a
+// "Docker is using more than X GB, consider pruning" reminder rather than a
+// disk-full alert. Already coarse at a 60s poll interval, so no sustain window;
+// the existing 10-minute cooldown is enough to keep it from spamming.
+function handleDiskUsage({ hostId, hostName, rows }) {
+  const cfg = getThresholdConfig();
+  if (!(cfg.diskThresholdGb > 0)) return;
+
+  const totalGb = (rows || []).reduce((sum, r) => sum + parseByteString(r.size), 0) / 1024 ** 3;
+  if (totalGb >= cfg.diskThresholdGb) {
+    fire({
+      hostId,
+      containerId: null,
+      containerName: null,
+      rule: 'docker_disk',
+      severity: 'warning',
+      message: `Docker disk usage on ${hostName || hostId} is ${totalGb.toFixed(1)} GB (threshold ${cfg.diskThresholdGb} GB)`,
+    });
+  }
+}
+
 module.exports = {
   handleEvent,
   handleHostReachability,
+  handleSample,
+  handleHostSample,
+  handleDiskUsage,
   buildDelivery,
   getWebhookConfig,
   setWebhookConfig,
   clearWebhookConfig,
+  getThresholdConfig,
+  setThresholdConfig,
+  clearThresholdConfig,
   sendTestAlert,
 };

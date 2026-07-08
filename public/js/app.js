@@ -21,6 +21,9 @@ import {
   apiSaveWebhookConfig,
   apiClearWebhookConfig,
   apiTestWebhook,
+  apiGetThresholdConfig,
+  apiSaveThresholdConfig,
+  apiClearThresholdConfig,
 } from './api.js';
 import { buildElements, createGraph, updateGraph } from './graph.js';
 
@@ -75,6 +78,12 @@ createApp({
       webhookTesting: false,
       webhookError: null,
       webhookStatus: null,
+
+      thresholds: { cpuThreshold: 0, memThreshold: 0, sustainMinutes: 5, diskThresholdGb: 0 },
+      thresholdsOverridden: false,
+      thresholdsSaving: false,
+      thresholdsError: null,
+      thresholdsStatus: null,
     };
   },
   computed: {
@@ -532,6 +541,8 @@ createApp({
       this.settingsOpen = true;
       this.webhookError = null;
       this.webhookStatus = null;
+      this.thresholdsError = null;
+      this.thresholdsStatus = null;
       try {
         const config = await apiGetWebhookConfig();
         this.webhookUrl = config.url;
@@ -539,6 +550,13 @@ createApp({
         this.webhookOverridden = config.overridden;
       } catch (err) {
         this.webhookError = err.message;
+      }
+      try {
+        const config = await apiGetThresholdConfig();
+        this.thresholds = config;
+        this.thresholdsOverridden = config.overridden;
+      } catch (err) {
+        this.thresholdsError = err.message;
       }
     },
     closeSettings() {
@@ -585,6 +603,36 @@ createApp({
         this.webhookError = err.message;
       } finally {
         this.webhookTesting = false;
+      }
+    },
+    async saveThresholds() {
+      this.thresholdsSaving = true;
+      this.thresholdsError = null;
+      this.thresholdsStatus = null;
+      try {
+        const config = await apiSaveThresholdConfig(this.thresholds);
+        this.thresholds = config;
+        this.thresholdsOverridden = config.overridden;
+        this.thresholdsStatus = 'Saved.';
+      } catch (err) {
+        this.thresholdsError = err.message;
+      } finally {
+        this.thresholdsSaving = false;
+      }
+    },
+    async clearThresholds() {
+      this.thresholdsSaving = true;
+      this.thresholdsError = null;
+      this.thresholdsStatus = null;
+      try {
+        const config = await apiClearThresholdConfig();
+        this.thresholds = config;
+        this.thresholdsOverridden = config.overridden;
+        this.thresholdsStatus = 'Cleared - using the .env default.';
+      } catch (err) {
+        this.thresholdsError = err.message;
+      } finally {
+        this.thresholdsSaving = false;
       }
     },
   },
@@ -898,6 +946,41 @@ createApp({
               <button :disabled="webhookSaving" @click="saveWebhookConfig">Save</button>
               <button :disabled="webhookSaving || !webhookOverridden" @click="clearWebhookConfig">Clear override</button>
               <button :disabled="webhookTesting" @click="testWebhook">Send test alert</button>
+            </div>
+
+            <hr />
+
+            <strong>Resource thresholds</strong>
+            <p class="muted small">
+              Alert when a value stays over threshold for the sustain window. Leave a threshold at 0 to disable that
+              rule. CPU% is raw <code>docker stats</code> CPU (per-core cumulative, so 4 cores fully busy reads 400%).
+              Mem% needs a container memory limit set to mean much. Docker disk usage is Docker's own footprint
+              (images/containers/volumes/cache), not host free disk space — it's a prune reminder, not a disk-full alert.
+              Skip a container entirely with the <code>opendockwatch.alerts=off</code> label.
+            </p>
+            <label class="modal-field">
+              Container/host CPU threshold (%)
+              <input type="number" min="0" max="100" v-model.number="thresholds.cpuThreshold" />
+            </label>
+            <label class="modal-field">
+              Container/host memory threshold (%)
+              <input type="number" min="0" max="100" v-model.number="thresholds.memThreshold" />
+            </label>
+            <label class="modal-field">
+              Sustain window (minutes)
+              <input type="number" min="0" v-model.number="thresholds.sustainMinutes" />
+            </label>
+            <label class="modal-field">
+              Docker disk usage threshold (GB)
+              <input type="number" min="0" v-model.number="thresholds.diskThresholdGb" />
+            </label>
+            <p v-if="thresholdsOverridden" class="muted small">Overriding the .env defaults.</p>
+            <p v-else class="muted small">Using the .env defaults (if any) — no override saved yet.</p>
+            <p v-if="thresholdsError" class="error">{{ thresholdsError }}</p>
+            <p v-if="thresholdsStatus" class="muted small">{{ thresholdsStatus }}</p>
+            <div class="modal-actions">
+              <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
+              <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
             </div>
           </div>
         </div>
