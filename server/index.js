@@ -176,7 +176,10 @@ api.get('/hosts/:hostId/topology', async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   try {
-    res.json(await getTopology(host));
+    const topology = await getTopology(host);
+    const alertCounts = db.getOpenAlertCountsByContainer(host.id);
+    for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
+    res.json(topology);
   } catch (err) {
     res.status(502).json({ error: err.stderr || err.message });
   }

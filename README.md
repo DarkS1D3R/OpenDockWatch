@@ -5,8 +5,9 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 ## Features
 
 - **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns and Start/Stop/Restart actions. Filter by All / Running / Stopped.
-- **Flow view** — a graph of containers (grouped visually by compose project) with zoom/fit controls. Each node shows a state indicator (running / restarting / paused / stopped) in the top-left corner and an uptime/status string in the bottom-right. Edges are drawn two ways:
-  - **Auto**: containers sharing a custom Docker network are connected (works with zero config for anything started via the same compose file).
+- **Flow view** — a graph of containers (grouped visually by compose project) with zoom/fit controls, a name filter, per-edge-kind toggles, and PNG export. Nodes show a state indicator (running / restarting / paused / stopped) in the top-left corner, an uptime/status string in the bottom-right, live CPU/mem bars, published ports, and a badge for open alerts. Selecting a node dims everything outside its immediate neighborhood. Edges are drawn three ways:
+  - **Depends-on**: read straight from Compose's own `com.docker.compose.depends_on` label (service + startup condition), so it reflects the real `depends_on:` block — no compose file parsing needed, and it works for remote SSH hosts too.
+  - **Auto (network)**: containers sharing a custom Docker network are connected — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
   - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
 - **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter. The current tail can also be downloaded as a `.txt` file.

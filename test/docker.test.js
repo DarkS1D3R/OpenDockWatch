@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseByteString, parseMemUsedBytes, parseLabels, parseHealth, networkEdges } = require('../server/docker');
+const { parseByteString, parseMemUsedBytes, parseLabels, parseHealth, networkEdges, dependsOnEdges } = require('../server/docker');
 
 test('parseByteString', async (t) => {
   await t.test('parses decimal (SI) units', () => {
@@ -86,6 +86,82 @@ test('networkEdges', async (t) => {
       { id: 'a', networks: ['net1'] },
       { id: 'b', networks: ['net2'] },
     ]);
+    assert.equal(edges.length, 0);
+  });
+
+  await t.test('suppresses the edge when both containers are in the same compose project', () => {
+    const edges = networkEdges([
+      { id: 'a', networks: ['app-net'], composeProject: 'shop' },
+      { id: 'b', networks: ['app-net'], composeProject: 'shop' },
+    ]);
+    assert.equal(edges.length, 0);
+  });
+
+  await t.test('still connects containers from different compose projects', () => {
+    const edges = networkEdges([
+      { id: 'a', networks: ['proxy-net'], composeProject: 'shop' },
+      { id: 'b', networks: ['proxy-net'], composeProject: 'esb' },
+    ]);
+    assert.equal(edges.length, 1);
+  });
+
+  await t.test('still connects when only one side is grouped', () => {
+    const edges = networkEdges([
+      { id: 'a', networks: ['app-net'], composeProject: 'shop' },
+      { id: 'b', networks: ['app-net'], composeProject: null },
+    ]);
+    assert.equal(edges.length, 1);
+  });
+});
+
+test('dependsOnEdges', async (t) => {
+  await t.test('emits an edge for a single dependency', () => {
+    const containers = [
+      { id: 'a', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', composeProject: 'shop', composeService: 'db' },
+    ];
+    const edges = dependsOnEdges(containers, 'a\tdb:service_healthy:false');
+    assert.equal(edges.length, 1);
+    assert.deepEqual(edges[0], { source: 'a', target: 'b', kind: 'depends_on', label: 'service_healthy' });
+  });
+
+  await t.test('handles multiple comma-separated dependencies without truncating', () => {
+    const containers = [
+      { id: 'a', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', composeProject: 'shop', composeService: 'db' },
+      { id: 'c', composeProject: 'shop', composeService: 'redis' },
+    ];
+    const edges = dependsOnEdges(containers, 'a\tdb:service_healthy:false,redis:service_started:false');
+    assert.equal(edges.length, 2);
+    assert.deepEqual(edges.map((e) => e.target).sort(), ['b', 'c']);
+  });
+
+  await t.test('resolves a scaled service to all of its replica containers', () => {
+    const containers = [
+      { id: 'a', composeProject: 'shop', composeService: 'api' },
+      { id: 'w1', composeProject: 'shop', composeService: 'worker' },
+      { id: 'w2', composeProject: 'shop', composeService: 'worker' },
+    ];
+    const edges = dependsOnEdges(containers, 'a\tworker:service_started:false');
+    assert.equal(edges.length, 2);
+    assert.deepEqual(edges.map((e) => e.target).sort(), ['w1', 'w2']);
+  });
+
+  await t.test('produces no edges for a container with no depends_on label', () => {
+    const containers = [
+      { id: 'a', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', composeProject: 'shop', composeService: 'db' },
+    ];
+    const edges = dependsOnEdges(containers, 'a\t\nb\t');
+    assert.equal(edges.length, 0);
+  });
+
+  await t.test('does not cross compose projects', () => {
+    const containers = [
+      { id: 'a', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', composeProject: 'esb', composeService: 'db' },
+    ];
+    const edges = dependsOnEdges(containers, 'a\tdb:service_healthy:false');
     assert.equal(edges.length, 0);
   });
 });

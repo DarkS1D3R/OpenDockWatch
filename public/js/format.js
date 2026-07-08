@@ -59,6 +59,17 @@ export function formatGB(bytes) {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
+// Docker's Ports string looks like "0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp" - only the
+// "->" entries are actually published to the host; the rest are just exposed. IPv4/IPv6 both
+// publish the same host port, hence the dedup. Returns a short display string, e.g. ":8080, :443".
+export function parsePublishedPorts(portsStr) {
+  if (!portsStr) return '';
+  const hostPorts = [...new Set([...portsStr.matchAll(/:(\d+)->/g)].map((m) => m[1]))];
+  if (!hostPorts.length) return '';
+  const shown = hostPorts.slice(0, 2).map((p) => `:${p}`);
+  return hostPorts.length > 2 ? `${shown.join(', ')}…` : shown.join(', ');
+}
+
 const HEALTH_COLOR = { healthy: '#3fb950', unhealthy: '#f85149', starting: '#d29922' };
 
 export function healthColor(health) {
