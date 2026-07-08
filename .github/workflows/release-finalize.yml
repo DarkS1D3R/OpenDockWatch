@@ -1,8 +1,10 @@
 name: Release Finalize
 
 # Phase 2 of 2: runs when a release/* PR is merged into main (see release.yml).
-# Tags the merge commit, publishes the GitHub Release, merges main back into
-# develop so the version bump isn't left behind, and deletes the release branch.
+# Tags the merge commit, publishes the GitHub Release, opens a PR to sync main
+# back into develop (auto-merged - develop is protected, so this goes through
+# the same required-PR path as everything else instead of a bypass), and
+# deletes the release branch.
 
 on:
   pull_request:
@@ -11,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: release-finalize-${{ github.event.pull_request.number }}
@@ -49,12 +52,25 @@ jobs:
             --target main \
             --generate-notes
 
-      - name: Merge main back into develop
+      - name: Open a PR to sync develop with the released main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch origin develop
-          git checkout -B develop origin/develop
-          git merge --no-ff main -m "Merge main back into develop after ${{ steps.version.outputs.value }} release"
-          git push origin develop
+          if git diff --quiet origin/develop main; then
+            echo "develop already matches main, nothing to sync"
+            exit 0
+          fi
+
+          SYNC_BRANCH="chore/sync-develop-${{ steps.version.outputs.value }}"
+          git checkout -b "$SYNC_BRANCH" main
+          git push origin "$SYNC_BRANCH"
+          gh pr create \
+            --base develop \
+            --head "$SYNC_BRANCH" \
+            --title "Sync develop after ${{ steps.version.outputs.value }} release" \
+            --body "Automated merge-back of \`main\` into \`develop\` after the ${{ steps.version.outputs.value }} release (mainly the version bump commit), so \`develop\` doesn't drift from what was just released. Opened by release-finalize.yml, set to auto-merge."
+          gh pr merge "$SYNC_BRANCH" --auto --merge
 
       - name: Delete release branch
         run: git push origin --delete "${{ github.event.pull_request.head.ref }}" || true
