@@ -285,6 +285,36 @@ api.post('/settings/webhook/test', requireAdmin, async (req, res) => {
   }
 });
 
+// Resource-threshold rules (container/host CPU & mem, Docker disk footprint) -
+// same env-default + DB-override + admin-only shape as the webhook settings above.
+const THRESHOLD_FIELDS = ['cpuThreshold', 'memThreshold', 'sustainMinutes', 'diskThresholdGb'];
+
+api.get('/settings/thresholds', requireAdmin, (req, res) => {
+  res.json(alerts.getThresholdConfig());
+});
+
+api.put('/settings/thresholds', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const values = {};
+  for (const field of THRESHOLD_FIELDS) {
+    const raw = body[field];
+    if (raw === undefined || raw === null || raw === '') {
+      values[field] = 0;
+      continue;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      return res.status(400).json({ error: `${field} must be a non-negative number` });
+    }
+    values[field] = n;
+  }
+  res.json(alerts.setThresholdConfig(values));
+});
+
+api.delete('/settings/thresholds', requireAdmin, (req, res) => {
+  res.json(alerts.clearThresholdConfig());
+});
+
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
@@ -369,9 +399,10 @@ api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
   const tail = req.query.tail || 5000;
   const child = downloadLogs(host, req.params.id, { tail });
 
+  const safeName = (s) => s.replace(/[^a-zA-Z0-9_.-]/g, '_');
   res.set({
     'Content-Type': 'text/plain; charset=utf-8',
-    'Content-Disposition': `attachment; filename="${req.params.hostId}-${req.params.id}-logs.txt"`,
+    'Content-Disposition': `attachment; filename="${safeName(req.params.hostId)}-${safeName(req.params.id)}-logs.txt"`,
   });
 
   // Two independent stdio streams feeding one response - don't let either one's

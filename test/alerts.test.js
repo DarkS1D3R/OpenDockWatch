@@ -26,6 +26,24 @@ function captureFired(t, extraOverrides = {}) {
   return fired;
 }
 
+const THRESHOLD_SETTING_KEYS = {
+  cpuThreshold: 'alertCpuThreshold',
+  memThreshold: 'alertMemThreshold',
+  sustainMinutes: 'alertSustainMinutes',
+  diskThresholdGb: 'alertDiskThresholdGb',
+};
+
+// Builds a db.getSetting stand-in from the friendly field names used by
+// getThresholdConfig, so tests can write { cpuThreshold: 90 } instead of the
+// raw settings-table key.
+function mockThresholdSettings(overrides = {}) {
+  const map = {};
+  for (const [field, value] of Object.entries(overrides)) {
+    map[THRESHOLD_SETTING_KEYS[field]] = String(value);
+  }
+  return (key) => (key in map ? map[key] : null);
+}
+
 test('handleEvent: container_crashed', async (t) => {
   await t.test('fires when a container dies with a non-zero exit code', () => {
     const fired = captureFired(t);
@@ -254,5 +272,167 @@ test('sendTestAlert', async (t) => {
     t.after(() => (global.fetch = originalFetch));
 
     await assert.rejects(() => alerts.sendTestAlert(), /HTTP 500/);
+  });
+});
+
+test('threshold config (DB override vs .env default)', async (t) => {
+  await t.test('falls back to env vars / built-in defaults when no DB override exists', (t) => {
+    mockDb(t, { getSetting: () => null });
+    const original = process.env.ALERT_CPU_THRESHOLD;
+    process.env.ALERT_CPU_THRESHOLD = '85';
+    t.after(() => {
+      if (original === undefined) delete process.env.ALERT_CPU_THRESHOLD;
+      else process.env.ALERT_CPU_THRESHOLD = original;
+    });
+
+    const config = alerts.getThresholdConfig();
+    assert.equal(config.cpuThreshold, 85);
+    assert.equal(config.memThreshold, 0);
+    assert.equal(config.sustainMinutes, 5);
+    assert.equal(config.diskThresholdGb, 0);
+    assert.equal(config.overridden, false);
+  });
+
+  await t.test('a DB row - even "0" - takes priority over .env', (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertCpuThreshold' ? '0' : null) });
+    process.env.ALERT_CPU_THRESHOLD = '85';
+    t.after(() => delete process.env.ALERT_CPU_THRESHOLD);
+
+    const config = alerts.getThresholdConfig();
+    assert.equal(config.cpuThreshold, 0);
+    assert.equal(config.overridden, true);
+  });
+
+  await t.test('setThresholdConfig persists all four keys and clearThresholdConfig removes them', (t) => {
+    const store = new Map();
+    mockDb(t, {
+      getSetting: (key) => (store.has(key) ? store.get(key) : null),
+      setSetting: (key, value) => store.set(key, value),
+      deleteSetting: (key) => store.delete(key),
+    });
+
+    const saved = alerts.setThresholdConfig({ cpuThreshold: 90, memThreshold: 90, sustainMinutes: 5, diskThresholdGb: 50 });
+    assert.deepEqual(saved, { cpuThreshold: 90, memThreshold: 90, sustainMinutes: 5, diskThresholdGb: 50, overridden: true });
+
+    const cleared = alerts.clearThresholdConfig();
+    assert.equal(cleared.overridden, false);
+  });
+});
+
+test('handleSample: container_cpu / container_mem', async (t) => {
+  await t.test('does not fire on the first breaching sample, fires once sustained for the configured window', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-sustain-fire', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    assert.equal(fired.length, 0);
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c-sustain-fire',
+      containerName: 'web',
+      cpuPerc: 95,
+      memPerc: 10,
+      ts: start + 5 * 60_000,
+    });
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'container_cpu');
+  });
+
+  await t.test('resets the sustain window on a dip below threshold', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-sustain-reset', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c-sustain-reset',
+      containerName: 'web',
+      cpuPerc: 50,
+      memPerc: 10,
+      ts: start + 60_000,
+    });
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c-sustain-reset',
+      containerName: 'web',
+      cpuPerc: 95,
+      memPerc: 10,
+      ts: start + 5 * 60_000 + 1,
+    });
+    // breach restarted at start+60_000, so only ~4 minutes sustained by the last sample
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('does not fire when the rule is disabled (threshold 0)', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 0 }) });
+    alerts.handleSample({ hostId: 'h', containerId: 'c-disabled', containerName: 'web', cpuPerc: 100, memPerc: 100, ts: Date.now() });
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('skips containers labeled opendockwatch.alerts=off', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 1, sustainMinutes: 0 }) });
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c-alerts-off',
+      containerName: 'web',
+      cpuPerc: 100,
+      memPerc: 100,
+      ts: Date.now(),
+      alertsDisabled: true,
+    });
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('fires container_mem independently of container_cpu', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ memThreshold: 80, sustainMinutes: 0 }) });
+    alerts.handleSample({ hostId: 'h', containerId: 'c-mem-only', containerName: 'web', cpuPerc: 10, memPerc: 85, ts: Date.now() });
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'container_mem');
+  });
+});
+
+test('handleHostSample: host_cpu / host_mem', async (t) => {
+  await t.test('fires host_cpu once sustained', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 0 }) });
+    alerts.handleHostSample({ hostId: 'h-host-cpu', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: Date.now() });
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'host_cpu');
+  });
+
+  await t.test('fires host_mem once sustained', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ memThreshold: 90, sustainMinutes: 0 }) });
+    alerts.handleHostSample({ hostId: 'h-host-mem', hostName: 'Host', cpuPercent: 10, memPercent: 95, ts: Date.now() });
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'host_mem');
+  });
+
+  await t.test('does not fire below threshold', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, memThreshold: 90, sustainMinutes: 0 }) });
+    alerts.handleHostSample({ hostId: 'h-host-ok', hostName: 'Host', cpuPercent: 10, memPercent: 10, ts: Date.now() });
+    assert.equal(fired.length, 0);
+  });
+});
+
+test('handleDiskUsage', async (t) => {
+  await t.test('fires when the summed Size across df rows exceeds the threshold', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ diskThresholdGb: 10 }) });
+    alerts.handleDiskUsage({
+      hostId: 'h',
+      hostName: 'Host',
+      rows: [{ size: '5GB' }, { size: '3GB' }, { size: '4GB' }],
+      ts: Date.now(),
+    });
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'docker_disk');
+  });
+
+  await t.test('does not fire below the threshold', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ diskThresholdGb: 100 }) });
+    alerts.handleDiskUsage({ hostId: 'h', hostName: 'Host', rows: [{ size: '5GB' }], ts: Date.now() });
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('does not fire when disabled (threshold 0)', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ diskThresholdGb: 0 }) });
+    alerts.handleDiskUsage({ hostId: 'h', hostName: 'Host', rows: [{ size: '999GB' }], ts: Date.now() });
+    assert.equal(fired.length, 0);
   });
 });

@@ -109,3 +109,21 @@ export async function apiClearWebhookConfig() {
 export async function apiTestWebhook() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook/test', { method: 'POST' }));
 }
+
+export async function apiGetThresholdConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/thresholds'));
+}
+
+export async function apiSaveThresholdConfig(values) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/thresholds', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(values),
+    })
+  );
+}
+
+export async function apiClearThresholdConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/thresholds', { method: 'DELETE' }));
+}

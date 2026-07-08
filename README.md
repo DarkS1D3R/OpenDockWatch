@@ -67,7 +67,30 @@ Any host you can `ssh user@host` into (with a key, no password prompt) and that 
 
 ## Alerts
 
-OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) when a container crashes, crash-loops, becomes unhealthy, or a host goes unreachable. Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
+OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) for these rules:
+
+| Rule                | Fires when                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `container_crashed` | a container exits with a non-zero code (not from a manual stop/restart just before it) |
+| `crash_loop`        | a container restarts 3+ times in 5 minutes, excluding manual restarts                  |
+| `unhealthy`         | a container's healthcheck reports unhealthy                                            |
+| `host_unreachable`  | a host stops responding to `docker version`                                            |
+| `container_cpu`     | a container's CPU % stays over threshold for the sustain window                        |
+| `container_mem`     | a container's mem % stays over threshold for the sustain window                        |
+| `host_cpu`          | a host's normalized CPU % (sum of container CPU / core count) stays over threshold     |
+| `host_mem`          | a host's summed container memory usage vs. total host memory stays over threshold      |
+| `docker_disk`       | `docker system df`'s total footprint exceeds a threshold — see caveat below            |
+
+The five threshold-based rules (`container_cpu`/`container_mem`/`host_cpu`/`host_mem`/`docker_disk`) are opt-in and disabled by default — set `ALERT_CPU_THRESHOLD`, `ALERT_MEM_THRESHOLD`, and/or `ALERT_DISK_THRESHOLD_GB` in `.env` (or from the Settings panel, see below) to enable them. `ALERT_SUSTAIN_MINUTES` (default 5, shared between the CPU and mem rules) avoids alerting on a single spike from an image build, cron job, or JVM startup — a value has to stay over threshold continuously for that long before it fires.
+
+Some caveats worth knowing:
+
+- CPU % is raw `docker stats` CPU (per-core cumulative) — a container fully using 4 cores reads 400%, matching what the UI already shows. It is not normalized by core count.
+- Mem % is `docker stats` MemPerc, computed against a container's own memory limit. A container with no limit set reads low against host total and rarely trips `container_mem` — in practice this focuses the rule on containers that do have limits, which is where memory pressure actually OOMKills.
+- `docker_disk` is Docker's own footprint (images, containers, volumes, build cache) — Docker doesn't report host filesystem free space, so this can't be a true "disk almost full" alert. Treat it as a prune reminder.
+- Skip threshold alerts for a single container entirely with the `opendockwatch.alerts=off` label (`docker run --label opendockwatch.alerts=off ...` or the equivalent in a compose file).
+
+Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification on any of the rules above. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
 
 | Scheme        | Example                                                                                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -77,7 +100,7 @@ OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/ale
 | Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
 | Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
 
-Instead of (or in addition to) `.env`, an admin account can set the webhook from the UI: the ⚙ Settings button in the topbar opens a panel to save a URL, clear it back to the `.env` default, and send a test alert. A saved-from-the-UI value is stored in the database and takes effect immediately (no restart) — it always wins over `.env`, even if set to empty to deliberately disable a webhook `.env` configured.
+Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a panel to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured.
 
 ## Notes
 

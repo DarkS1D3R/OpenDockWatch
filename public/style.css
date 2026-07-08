@@ -845,3 +845,8 @@ table.containers td:nth-child(7) {
   margin-top: 12px;
   flex-wrap: wrap;
 }
+.modal-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
