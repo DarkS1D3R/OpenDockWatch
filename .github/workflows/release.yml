@@ -1,0 +1,101 @@
+name: Release
+
+# Phase 1 of 2: prepares a release branch off develop and opens a PR into main.
+# A human merges that PR (branch protection on main gets to do its job); the
+# release-finalize workflow then tags the resulting merge commit and publishes
+# the GitHub Release. See release-finalize.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, plain semver, no leading "v" (e.g. 1.2.0)'
+        required: true
+      dry_run:
+        description: 'Validate and build the release locally in the job, but do not push a branch or open a PR'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be plain semver (e.g. 1.2.0), got '${{ inputs.version }}'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Check the tag and release branch don't already exist
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/${{ inputs.version }}$"; then
+            echo "::error::tag ${{ inputs.version }} already exists on origin"
+            exit 1
+          fi
+          if git ls-remote --heads origin | grep -q "refs/heads/release/${{ inputs.version }}$"; then
+            echo "::error::branch release/${{ inputs.version }} already exists on origin"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Same checks as ci.yml - a release is only as trustworthy as what it merges,
+      # and develop could in principle have moved since its last CI run.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: docker build -t opendockwatch:release-check .
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create release branch and bump version
+        run: |
+          git checkout -b "release/${{ inputs.version }}"
+          npm version "${{ inputs.version }}" --no-git-tag-version
+          git add package.json package-lock.json
+          git commit -m "Bump version to ${{ inputs.version }}"
+
+      - name: Push release branch
+        if: inputs.dry_run == false
+        run: git push origin "release/${{ inputs.version }}"
+
+      - name: Open release PR
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "release/${{ inputs.version }}" \
+            --title "Release ${{ inputs.version }}" \
+            --body "Automated release PR for **${{ inputs.version }}**, prepared from \`develop\` (lint/tests/format/docker build already passed above).
+
+          Merge with **Create a merge commit** (not squash/rebase) so \`main\` keeps an explicit release point. Once merged, the [release-finalize workflow](../../actions/workflows/release-finalize.yml) tags the merge commit, publishes the GitHub Release, and merges \`main\` back into \`develop\` automatically."
+
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "Dry run - nothing was pushed and no PR was opened. Local result:"
+          git log --oneline --graph -5
+          git diff origin/develop --stat
