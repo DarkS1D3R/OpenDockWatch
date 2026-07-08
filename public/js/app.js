@@ -25,7 +25,7 @@ import {
   apiSaveThresholdConfig,
   apiClearThresholdConfig,
 } from './api.js';
-import { buildElements, createGraph, updateGraph } from './graph.js';
+import { buildElements, createGraph, updateGraph, applyFading, exportPng } from './graph.js';
 
 const { createApp } = Vue;
 
@@ -47,6 +47,9 @@ createApp({
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       cy: null,
+      edgeFilters: { dependsOn: true, network: true, manual: true },
+      flowFilterText: '',
+      edgeInfoText: null,
 
       hostInfo: null,
       diskUsage: [],
@@ -108,7 +111,10 @@ createApp({
       if (this.stateFilter === 'running') nodes = nodes.filter((n) => n.state === 'running');
       else if (this.stateFilter === 'stopped') nodes = nodes.filter((n) => n.state !== 'running');
       const ids = new Set(nodes.map((n) => n.id));
-      const edges = this.topology.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+      const kindKey = { depends_on: 'dependsOn', network: 'network', manual: 'manual' };
+      const edges = this.topology.edges.filter(
+        (e) => ids.has(e.source) && ids.has(e.target) && this.edgeFilters[kindKey[e.kind] || 'network']
+      );
       return { nodes, edges };
     },
     selectedContainer() {
@@ -189,11 +195,21 @@ createApp({
       if (this.cy) {
         this.cy.nodes().removeClass('selected');
         if (newId) this.cy.$id(newId).addClass('selected');
+        if (this.view === 'flow') this.applyFlowFading();
       }
       if (newId) this.openPreviewStream(newId);
     },
     stateFilter() {
       if (this.view === 'flow') this.renderGraph();
+    },
+    flowFilterText() {
+      if (this.view === 'flow') this.applyFlowFading();
+    },
+    edgeFilters: {
+      deep: true,
+      handler() {
+        if (this.view === 'flow') this.renderGraph();
+      },
     },
   },
   async mounted() {
@@ -233,6 +249,7 @@ createApp({
         this.cy.destroy();
         this.cy = null;
       }
+      this.edgeInfoText = null;
       this.stopPolling();
       this.fetchHostInfo();
       this.fetchDiskUsage();
@@ -391,8 +408,36 @@ createApp({
       if (this.cy) {
         updateGraph(this.cy, elements);
       } else {
-        this.cy = createGraph(this.$refs.cy, elements, (id) => this.selectContainerById(id));
+        this.cy = createGraph(
+          this.$refs.cy,
+          elements,
+          (id) => this.selectContainerById(id),
+          (edgeData) => this.showEdgeInfo(edgeData)
+        );
       }
+      this.applyFlowFading();
+    },
+    applyFlowFading() {
+      if (this.cy) applyFading(this.cy, { selectedId: this.selectedContainerId, filterText: this.flowFilterText });
+    },
+    showEdgeInfo(edgeData) {
+      if (!edgeData) {
+        this.edgeInfoText = null;
+        return;
+      }
+      const nameOf = (id) => this.topology.nodes.find((n) => n.id === id)?.name || id;
+      const from = nameOf(edgeData.source);
+      const to = nameOf(edgeData.target);
+      if (edgeData.kind === 'depends_on') {
+        this.edgeInfoText = `${from} depends on ${to}${edgeData.label ? ` (${edgeData.label})` : ''}`;
+      } else if (edgeData.kind === 'manual') {
+        this.edgeInfoText = `${from} → ${to}${edgeData.label ? `: ${edgeData.label}` : ''} (declared in hosts.json)`;
+      } else {
+        this.edgeInfoText = `${from} and ${to} share a Docker network`;
+      }
+    },
+    exportFlowPng() {
+      exportPng(this.cy);
     },
     zoomBy(factor) {
       if (!this.cy) return;
@@ -809,13 +854,21 @@ createApp({
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>
               <button @click="zoomFit">Fit</button>
+              <button @click="exportFlowPng">Export PNG</button>
+              <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
+              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
+              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.network" /> network</label>
+              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.manual" /> manual</label>
+              <span v-if="edgeInfoText" class="edge-info-text">{{ edgeInfoText }}</span>
             </div>
             <div ref="cy" class="cy-container"></div>
             <p class="muted legend">
               <span class="legend-item"><span class="swatch swatch-running"></span> running</span>
               <span class="legend-item"><span class="swatch swatch-stopped"></span> stopped</span>
               <span class="legend-item"><span class="line line-network"></span> shared network</span>
+              <span class="legend-item"><span class="line line-depends-on"></span> depends-on</span>
               <span class="legend-item"><span class="line line-manual"></span> declared dependency</span>
+              <span class="legend-item"><span class="swatch swatch-alert"></span> open alert</span>
             </p>
           </div>
 

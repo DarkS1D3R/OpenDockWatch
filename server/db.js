@@ -113,6 +113,11 @@ const stmts = {
     WHERE host_id = ? AND ts >= ? AND action IN ('start', 'restart')
     GROUP BY container_id
   `),
+  countOpenAlertsByContainer: db.prepare(`
+    SELECT container_id AS containerId, COUNT(*) AS n FROM alerts
+    WHERE host_id = ? AND acknowledged = 0
+    GROUP BY container_id
+  `),
   countManualStopsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart') AND result = 'ok'
@@ -207,6 +212,13 @@ function countOpenAlerts(hostId) {
   return db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`).get(hostId).n;
 }
 
+// Batched form of countOpenAlerts, per-container - for the topology route, which needs an open
+// alert count for every container on a host at once.
+function getOpenAlertCountsByContainer(hostId) {
+  const rows = stmts.countOpenAlertsByContainer.all(hostId);
+  return new Map(rows.map((r) => [r.containerId, r.n]));
+}
+
 // null means "no row" (caller should fall back to a default), distinct from an
 // explicitly-stored empty string.
 function getSetting(key) {
@@ -293,6 +305,7 @@ module.exports = {
   getAuditLog,
   getAlerts,
   countOpenAlerts,
+  getOpenAlertCountsByContainer,
   getContainerMetricsHistory,
   getHostMetricsHistory,
   getSetting,

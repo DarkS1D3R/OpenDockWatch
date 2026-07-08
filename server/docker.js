@@ -137,23 +137,72 @@ async function getStats(host) {
   return byId;
 }
 
+// Emits an edge for a network-sharing pair unless they're both in the same compose project -
+// that relationship is already conveyed by the group box, and drawing it again is most of the
+// hairball in a typical multi-service compose stack. Cross-project or ungrouped pairs still get
+// an edge, since that's a genuinely useful signal (e.g. two separate stacks sharing a proxy net).
 function networkEdges(containers) {
   const byNetwork = new Map();
   for (const c of containers) {
     for (const net of c.networks) {
       if (!byNetwork.has(net)) byNetwork.set(net, []);
-      byNetwork.get(net).push(c.id);
+      byNetwork.get(net).push(c);
     }
   }
   const seen = new Set();
   const edges = [];
-  for (const ids of byNetwork.values()) {
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const key = [ids[i], ids[j]].sort().join('|');
+  for (const members of byNetwork.values()) {
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        const a = members[i];
+        const b = members[j];
+        if (a.composeProject && b.composeProject && a.composeProject === b.composeProject) continue;
+        const key = [a.id, b.id].sort().join('|');
         if (seen.has(key)) continue;
         seen.add(key);
-        edges.push({ source: ids[i], target: ids[j], kind: 'network' });
+        edges.push({ source: a.id, target: b.id, kind: 'network' });
+      }
+    }
+  }
+  return edges;
+}
+
+// Resolves com.docker.compose.depends_on into real dependency edges. That label is a
+// comma-separated list of "service:condition:restart" triples, which is why it's fetched via a
+// dedicated `docker ps` format rather than pulled out of the general Labels string already parsed
+// by parseLabels - that field is comma-split for the *whole* labels blob, so a multi-dependency
+// depends_on value would get silently truncated to its first entry.
+//
+// dependsOnRaw is tab-separated "<containerId>\t<depends_on value>" lines, one per container
+// (value may be empty). Arrow direction: source is the dependent container, target is what it
+// depends on - matches "A depends_on B" read as an edge from A to B.
+function dependsOnEdges(containers, dependsOnRaw) {
+  const byProjectService = new Map();
+  for (const c of containers) {
+    if (!c.composeProject || !c.composeService) continue;
+    const key = `${c.composeProject}::${c.composeService}`;
+    if (!byProjectService.has(key)) byProjectService.set(key, []);
+    byProjectService.get(key).push(c.id);
+  }
+  const byId = new Map(containers.map((c) => [c.id, c]));
+
+  const edges = [];
+  for (const line of (dependsOnRaw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIdx = trimmed.indexOf('\t');
+    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
+    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+    if (!value) continue;
+    const source = byId.get(id);
+    if (!source || !source.composeProject) continue;
+    for (const entry of value.split(',')) {
+      const [service, condition] = entry.split(':');
+      if (!service) continue;
+      const targets = byProjectService.get(`${source.composeProject}::${service}`) || [];
+      for (const targetId of targets) {
+        if (targetId === id) continue;
+        edges.push({ source: id, target: targetId, kind: 'depends_on', label: condition || null });
       }
     }
   }
@@ -175,17 +224,27 @@ function manualEdges(containers, declared = []) {
 
 async function getTopology(host) {
   const containers = await listContainers(host);
-  const nodes = containers.map((c) => ({
-    id: c.id,
-    name: c.name,
-    group: c.composeProject || 'ungrouped',
-    state: c.state,
-    status: c.status,
-    health: c.health,
-    image: c.image,
-    composeService: c.composeService,
-  }));
-  const edges = [...networkEdges(containers), ...manualEdges(containers, host.edges)];
+  const [stats, dependsOnRaw] = await Promise.all([
+    getStats(host).catch(() => ({})),
+    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
+  ]);
+  const nodes = containers.map((c) => {
+    const s = stats[c.id];
+    return {
+      id: c.id,
+      name: c.name,
+      group: c.composeProject || 'ungrouped',
+      state: c.state,
+      status: c.status,
+      health: c.health,
+      image: c.image,
+      composeService: c.composeService,
+      ports: c.ports,
+      cpuPerc: s ? parseFloat(s.cpuPerc) || 0 : null,
+      memPerc: s ? parseFloat(s.memPerc) || 0 : null,
+    };
+  });
+  const edges = [...networkEdges(containers), ...dependsOnEdges(containers, dependsOnRaw), ...manualEdges(containers, host.edges)];
   return { nodes, edges };
 }
 
@@ -241,4 +300,5 @@ module.exports = {
   parseLabels,
   parseHealth,
   networkEdges,
+  dependsOnEdges,
 };
