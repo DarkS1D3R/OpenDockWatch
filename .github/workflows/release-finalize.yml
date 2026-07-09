@@ -1,20 +1,23 @@
 name: Release Finalize
 
 # Phase 2 of 2: runs when a release/* PR is merged into main (see release.yml).
-# Tags the merge commit, builds and pushes the Docker image to Docker Hub,
-# publishes the GitHub Release, opens a PR to sync main back into develop
-# (auto-merged - develop is protected, so this goes through the same
-# required-PR path as everything else instead of a bypass), and deletes the
-# release branch.
+#
+# 1. finalize: tags the merge commit, publishes the GitHub Release, opens a PR
+#    to sync main back into develop (auto-merged - develop is protected, so
+#    this goes through the same required-PR path as everything else instead
+#    of a bypass), and deletes the release branch.
+# 2. docker-build: builds and pushes the Docker image for each platform on a
+#    native runner for that arch (no QEMU) - node:20-alpine has no prebuilt
+#    musl binary for better-sqlite3, so it always compiles from source, and
+#    doing that under QEMU emulation for arm64 is extremely slow. Each arch
+#    is pushed by digest only, not a final tag.
+# 3. docker-manifest: combines the per-arch digests into the real
+#    darks1d3r/opendockwatch:<version> and :latest multi-arch tags.
 
 on:
   pull_request:
     types: [closed]
     branches: [main]
-
-permissions:
-  contents: write
-  pull-requests: write
 
 concurrency:
   group: release-finalize-${{ github.event.pull_request.number }}
@@ -24,6 +27,11 @@ jobs:
   finalize:
     if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,27 +51,6 @@ jobs:
         run: |
           git tag -a "${{ steps.version.outputs.value }}" -m "${{ steps.version.outputs.value }}"
           git push origin "${{ steps.version.outputs.value }}"
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            darks1d3r/opendockwatch:${{ steps.version.outputs.value }}
-            darks1d3r/opendockwatch:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Create GitHub Release
         env:
@@ -96,3 +83,86 @@ jobs:
 
       - name: Delete release branch
         run: git push origin --delete "${{ github.event.pull_request.head.ref }}" || true
+
+  docker-build:
+    needs: finalize
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.finalize.outputs.version }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=darks1d3r/opendockwatch,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-manifest:
+    needs: [finalize, docker-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t darks1d3r/opendockwatch:${{ needs.finalize.outputs.version }} \
+            -t darks1d3r/opendockwatch:latest \
+            $(printf 'darks1d3r/opendockwatch@sha256:%s ' *)
+
+      - name: Verify pushed tags
+        run: |
+          docker buildx imagetools inspect darks1d3r/opendockwatch:${{ needs.finalize.outputs.version }}
