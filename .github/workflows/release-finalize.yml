@@ -78,8 +78,16 @@ jobs:
             --base develop \
             --head "$SYNC_BRANCH" \
             --title "Sync develop after ${{ steps.version.outputs.value }} release" \
-            --body "Automated merge-back of \`main\` into \`develop\` after the ${{ steps.version.outputs.value }} release (mainly the version bump commit), so \`develop\` doesn't drift from what was just released. Opened by release-finalize.yml, set to auto-merge."
-          gh pr merge "$SYNC_BRANCH" --auto --merge
+            --body "Automated merge-back of \`main\` into \`develop\` after the ${{ steps.version.outputs.value }} release (mainly the version bump commit), so \`develop\` doesn't drift from what was just released. Opened by release-finalize.yml."
+
+          # Best-effort: requires "Allow auto-merge" under Settings -> General -> Pull Requests.
+          # The PR itself is already open and safe to merge manually either way, so a repo where
+          # that setting is off (or an org policy blocks it) shouldn't fail this job over it.
+          if gh pr merge "$SYNC_BRANCH" --auto --merge; then
+            echo "auto-merge enabled on $SYNC_BRANCH"
+          else
+            echo "::warning::Could not enable auto-merge on $SYNC_BRANCH (likely 'Allow auto-merge' is off under Settings -> General -> Pull Requests). The PR is open - merge it manually."
+          fi
 
       - name: Delete release branch
         run: git push origin --delete "${{ github.event.pull_request.head.ref }}" || true
