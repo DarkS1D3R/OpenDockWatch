@@ -68,13 +68,26 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
 
 ## Running as a container
 
-You can also run OpenDockWatch itself in a container, alongside everything else it's monitoring:
+You can also run OpenDockWatch itself in a container, alongside everything else it's monitoring. A prebuilt image is published to Docker Hub as [`darks1d3r/opendockwatch`](https://hub.docker.com/r/darks1d3r/opendockwatch) (`linux/amd64` + `linux/arm64`, tagged per release and `latest`):
+
+```
+docker run -d --name opendockwatch \
+  -p 3000:3000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v ~/.ssh:/root/.ssh:ro \
+  -v ./config:/app/config \
+  -v ./data:/app/data \
+  -v ./.env:/app/.env:ro \
+  darks1d3r/opendockwatch
+```
+
+Or build it yourself from a checkout:
 
 ```
 docker compose up -d --build
 ```
 
-This mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH the same way your host user would. If Docker runs inside WSL (rather than Docker Desktop), run this from within your WSL distro so the socket path lines up.
+Either way, this mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH the same way your host user would. If Docker runs inside WSL (rather than Docker Desktop), run this from within your WSL distro so the socket path lines up.
 
 ## Remote hosts
 
