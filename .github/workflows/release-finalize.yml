@@ -1,10 +1,11 @@
 name: Release Finalize
 
 # Phase 2 of 2: runs when a release/* PR is merged into main (see release.yml).
-# Tags the merge commit, publishes the GitHub Release, opens a PR to sync main
-# back into develop (auto-merged - develop is protected, so this goes through
-# the same required-PR path as everything else instead of a bypass), and
-# deletes the release branch.
+# Tags the merge commit, builds and pushes the Docker image to Docker Hub,
+# publishes the GitHub Release, opens a PR to sync main back into develop
+# (auto-merged - develop is protected, so this goes through the same
+# required-PR path as everything else instead of a bypass), and deletes the
+# release branch.
 
 on:
   pull_request:
@@ -42,6 +43,27 @@ jobs:
         run: |
           git tag -a "${{ steps.version.outputs.value }}" -m "${{ steps.version.outputs.value }}"
           git push origin "${{ steps.version.outputs.value }}"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            darks1d3r/opendockwatch:${{ steps.version.outputs.value }}
+            darks1d3r/opendockwatch:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Create GitHub Release
         env:
