@@ -39,7 +39,7 @@ The server shells out to the `docker` CLI rather than talking to the Engine API 
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+
 - `docker` CLI available on PATH, with access to the Docker socket
 - For remote hosts: key-based SSH access (no password prompt) to a Docker socket on that host
 

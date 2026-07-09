@@ -1,4 +1,4 @@
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 
 # better-sqlite3 has no prebuilt musl binary for this arch/version, so it compiles from
 # source here; the toolchain stays in this stage and isn't copied into the final image.
@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-FROM node:20-alpine
+FROM node:24-alpine
 
 RUN apk add --no-cache docker-cli openssh-client
 
