@@ -824,6 +824,33 @@ table.containers td:nth-child(7) {
 .log-view-wrap {
   position: relative;
 }
+.log-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(13, 14, 17, 0.85);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  z-index: 1;
+  pointer-events: none;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .scroll-bottom-btn {
   position: absolute;
   bottom: 14px;

@@ -67,6 +67,7 @@ createApp({
       previewLogLines: [],
       previewEventSource: null,
       previewAtBottom: true,
+      previewLoading: false,
 
       popoutOpen: false,
       popoutTail: 200,
@@ -76,6 +77,7 @@ createApp({
       popoutLogLines: [],
       popoutEventSource: null,
       popoutAtBottom: true,
+      popoutLoading: false,
 
       settingsOpen: false,
       webhookUrl: '',
@@ -216,13 +218,13 @@ createApp({
       const testRegex = this.popoutTestRegex;
       return this.popoutLogLines
         .filter((line) => {
-          const level = detectLogLevel(line);
+          const level = detectLogLevel(line.text);
           if (level && !this.popoutLevels[level]) return false;
           if (!filterText) return true;
-          if (regexMode) return testRegex ? testRegex.test(line) : true;
-          return line.toLowerCase().includes(filterLower);
+          if (regexMode) return testRegex ? testRegex.test(line.text) : true;
+          return line.text.toLowerCase().includes(filterLower);
         })
-        .map((line) => highlightLine(line, filterText, regexMode && !!testRegex));
+        .map((line) => ({ id: line.id, html: highlightLine(line.text, filterText, regexMode && !!testRegex) }));
     },
   },
   watch: {
@@ -230,6 +232,9 @@ createApp({
       this.closePreviewStream();
       this.closePopout();
       this.previewLogLines = [];
+      this._previewBuffer = [];
+      this._previewFlushPending = false;
+      this.previewLoading = false;
       if (this.cy) {
         this.cy.nodes().removeClass('selected');
         if (newId) this.cy.$id(newId).addClass('selected');
@@ -249,6 +254,19 @@ createApp({
         if (this.view === 'flow') this.renderGraph();
       },
     },
+  },
+  created() {
+    // Plain (non-reactive) buffers for batching high-volume log streams - see
+    // queuePreviewLine/queuePopoutLine. Keeping these off the reactive `data()`
+    // object avoids Vue tracking every push into them.
+    this._previewBuffer = [];
+    this._previewFlushPending = false;
+    this._previewNextId = 0;
+    this._previewLoadingTimer = null;
+    this._popoutBuffer = [];
+    this._popoutFlushPending = false;
+    this._popoutNextId = 0;
+    this._popoutLoadingTimer = null;
   },
   async mounted() {
     try {
@@ -507,27 +525,55 @@ createApp({
     },
     openPreviewStream(id) {
       this.previewAtBottom = true;
+      this.previewLoading = true;
+      this._previewBuffer = [];
+      clearTimeout(this._previewLoadingTimer);
+      // A container with no log output at all would otherwise never clear the
+      // spinner, since that only happens once a line actually arrives.
+      this._previewLoadingTimer = setTimeout(() => {
+        this.previewLoading = false;
+      }, 2000);
       this.previewEventSource = new EventSource(logsUrl(this.selectedHostId, id, PREVIEW_TAIL));
       this.previewEventSource.onmessage = (e) => {
-        this.previewLogLines.push(e.data);
-        if (this.previewLogLines.length > MAX_LOG_LINES) {
-          this.previewLogLines.splice(0, this.previewLogLines.length - MAX_LOG_LINES);
-        }
-        if (this.previewAtBottom) {
-          this.$nextTick(() => {
-            const el = this.$refs.previewLogView;
-            if (el) el.scrollTop = el.scrollHeight;
-          });
-        }
+        this.queuePreviewLine(e.data);
       };
       this.previewEventSource.onerror = () => {
-        this.previewLogLines.push('[opendockwatch] log stream disconnected');
+        this.queuePreviewLine('[opendockwatch] log stream disconnected');
       };
     },
     closePreviewStream() {
+      clearTimeout(this._previewLoadingTimer);
       if (this.previewEventSource) {
         this.previewEventSource.close();
         this.previewEventSource = null;
+      }
+    },
+    // Log lines can arrive in a fast burst (e.g. a large tail on open), and each one
+    // used to trigger its own reactive push + array-splice + render. On a big backlog
+    // that was thousands of full-list re-renders in a row and froze the tab. Buffering
+    // them and flushing once per animation frame turns that into a handful of renders.
+    queuePreviewLine(text) {
+      this._previewBuffer.push(text);
+      if (this._previewFlushPending) return;
+      this._previewFlushPending = true;
+      requestAnimationFrame(() => this.flushPreviewLines());
+    },
+    flushPreviewLines() {
+      this._previewFlushPending = false;
+      const lines = this._previewBuffer;
+      this._previewBuffer = [];
+      if (!lines.length) return;
+      for (const text of lines) this.previewLogLines.push({ id: this._previewNextId++, text });
+      if (this.previewLogLines.length > MAX_LOG_LINES) {
+        this.previewLogLines.splice(0, this.previewLogLines.length - MAX_LOG_LINES);
+      }
+      clearTimeout(this._previewLoadingTimer);
+      this.previewLoading = false;
+      if (this.previewAtBottom) {
+        this.$nextTick(() => {
+          const el = this.$refs.previewLogView;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
       }
     },
     onPreviewScroll() {
@@ -548,33 +594,59 @@ createApp({
     },
     closePopout() {
       this.popoutOpen = false;
+      clearTimeout(this._popoutLoadingTimer);
       if (this.popoutEventSource) {
         this.popoutEventSource.close();
         this.popoutEventSource = null;
       }
       this.popoutLogLines = [];
+      this._popoutBuffer = [];
+      this._popoutFlushPending = false;
+      this.popoutLoading = false;
     },
     startPopoutStream() {
       if (!this.selectedContainerId) return;
       if (this.popoutEventSource) this.popoutEventSource.close();
       this.popoutLogLines = [];
+      this._popoutBuffer = [];
+      this._popoutNextId = 0;
       this.popoutAtBottom = true;
+      this.popoutLoading = true;
+      clearTimeout(this._popoutLoadingTimer);
+      this._popoutLoadingTimer = setTimeout(() => {
+        this.popoutLoading = false;
+      }, 2000);
       this.popoutEventSource = new EventSource(logsUrl(this.selectedHostId, this.selectedContainerId, this.popoutTail));
       this.popoutEventSource.onmessage = (e) => {
-        this.popoutLogLines.push(e.data);
-        if (this.popoutLogLines.length > MAX_LOG_LINES) {
-          this.popoutLogLines.splice(0, this.popoutLogLines.length - MAX_LOG_LINES);
-        }
-        if (this.popoutAtBottom) {
-          this.$nextTick(() => {
-            const el = this.$refs.popoutLogView;
-            if (el) el.scrollTop = el.scrollHeight;
-          });
-        }
+        this.queuePopoutLine(e.data);
       };
       this.popoutEventSource.onerror = () => {
-        this.popoutLogLines.push('[opendockwatch] log stream disconnected');
+        this.queuePopoutLine('[opendockwatch] log stream disconnected');
       };
+    },
+    queuePopoutLine(text) {
+      this._popoutBuffer.push(text);
+      if (this._popoutFlushPending) return;
+      this._popoutFlushPending = true;
+      requestAnimationFrame(() => this.flushPopoutLines());
+    },
+    flushPopoutLines() {
+      this._popoutFlushPending = false;
+      const lines = this._popoutBuffer;
+      this._popoutBuffer = [];
+      if (!lines.length) return;
+      for (const text of lines) this.popoutLogLines.push({ id: this._popoutNextId++, text });
+      if (this.popoutLogLines.length > MAX_LOG_LINES) {
+        this.popoutLogLines.splice(0, this.popoutLogLines.length - MAX_LOG_LINES);
+      }
+      clearTimeout(this._popoutLoadingTimer);
+      this.popoutLoading = false;
+      if (this.popoutAtBottom) {
+        this.$nextTick(() => {
+          const el = this.$refs.popoutLogView;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      }
     },
     changePopoutTail(newTail) {
       this.popoutTail = newTail;
@@ -981,7 +1053,8 @@ createApp({
               <button class="small-btn" @click="openPopout" title="Open larger log view with filtering">Log Viewer ⤢</button>
             </div>
             <div class="log-view-wrap">
-              <pre class="log-view detail-log" ref="previewLogView" @scroll="onPreviewScroll"><div v-for="(line, i) in previewLogLines" :key="i">{{ line }}</div></pre>
+              <div v-if="previewLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
+              <pre class="log-view detail-log" ref="previewLogView" @scroll="onPreviewScroll"><div v-for="line in previewLogLines" :key="line.id">{{ line.text }}</div></pre>
               <button v-show="!previewAtBottom" class="scroll-bottom-btn" @click="scrollPreviewToBottom" title="Scroll to bottom">&#8595; Bottom</button>
             </div>
           </div>
@@ -1031,7 +1104,8 @@ createApp({
           </div>
         </div>
         <div class="log-view-wrap">
-          <pre class="log-view popout-log" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="(html, i) in filteredPopoutLines" :key="i" v-html="html"></div></pre>
+          <div v-if="popoutLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
+          <pre class="log-view popout-log" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="line in filteredPopoutLines" :key="line.id" v-html="line.html"></div></pre>
           <button v-show="!popoutAtBottom" class="scroll-bottom-btn" @click="scrollPopoutToBottom" title="Scroll to bottom">&#8595; Bottom</button>
         </div>
       </div>
