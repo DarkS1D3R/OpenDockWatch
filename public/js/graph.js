@@ -25,7 +25,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#3fb950',
       width: 170,
-      height: 46,
+      height: 76,
       shape: 'round-rectangle',
     },
   },
@@ -36,7 +36,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#8b909c',
       width: 170,
-      height: 46,
+      height: 76,
       shape: 'round-rectangle',
     },
   },
@@ -107,12 +107,12 @@ function clampPct(pct) {
   return Math.max(0, Math.min(100, pct));
 }
 
-function bandColor(pct) {
-  if (pct == null) return 'transparent';
-  if (pct >= 90) return '#f85149';
-  if (pct >= 70) return '#d29922';
-  return '#3fb950';
-}
+// Matches the CPU/mem color convention used everywhere else in the app (host tiles,
+// list-view sparklines): CPU is always --accent, mem is always --seq-mem, regardless of
+// value - magnitude is shown by bar length, not color, so the two bars stay identifiable
+// at a glance instead of both turning the same red/amber/green as they fill up.
+const CPU_COLOR = '#4f8cff';
+const MEM_COLOR = '#199e70';
 
 export function buildElements(nodes, edges, selectedId) {
   const groupIds = new Set(nodes.map((n) => n.group));
@@ -128,6 +128,8 @@ export function buildElements(nodes, edges, selectedId) {
         icon: iconFor(n.image, n.composeService),
         cpuPerc: n.cpuPerc,
         memPerc: n.memPerc,
+        netIO: n.netIO || '—',
+        blockIO: n.blockIO || '—',
         ports: parsePublishedPorts(n.ports),
         openAlerts: n.openAlerts || 0,
       },
@@ -152,7 +154,7 @@ export function buildElements(nodes, edges, selectedId) {
 const LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 30, rankSep: 90 };
 const GROUP_COLUMNS = 2;
 const NODE_COL_GAP = 200;
-const NODE_ROW_GAP = 66;
+const NODE_ROW_GAP = 96;
 
 // Compose groups with many members and no internal edges otherwise get laid out as one tall
 // single-file column (dagre has nothing to rank sibling containers by). Re-flow those into a
@@ -306,12 +308,26 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap) {
         valignBox: 'center',
         tpl: (data) => `
           <div class="cy-node-box${data.faded ? ' faded' : ''}">
-            <span class="cy-node-cpu-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${bandColor(data.cpuPerc)}"></span></span>
-            <span class="cy-node-mem-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${bandColor(data.memPerc)}"></span></span>
             <span class="cy-node-emoji">${data.emoji}</span>
             <span class="cy-node-status">${data.status}</span>
             <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
             <span class="cy-node-name">${data.name}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">NET</span>
+                <span class="cy-node-metric-value">${data.netIO}</span>
+                <span class="cy-node-metric-label">DISK</span>
+                <span class="cy-node-metric-value">${data.blockIO}</span>
+              </div>
+            </div>
             ${data.ports ? `<span class="cy-node-port-badge">${data.ports}</span>` : ''}
             ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
           </div>

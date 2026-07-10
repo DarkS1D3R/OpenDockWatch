@@ -416,7 +416,7 @@ table.containers td:nth-child(7) {
 .cy-node-box {
   position: relative;
   width: 170px;
-  height: 46px;
+  height: 76px;
   pointer-events: none;
   transition: opacity 0.15s ease;
 }
@@ -454,8 +454,7 @@ table.containers td:nth-child(7) {
 .cy-node-icon {
   position: absolute;
   left: 6px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 16px;
   width: 17px;
   height: 17px;
   border-radius: 50%;
@@ -469,7 +468,7 @@ table.containers td:nth-child(7) {
 }
 .cy-node-name {
   position: absolute;
-  top: 50%;
+  top: 24.5px;
   left: 50%;
   transform: translate(-50%, -50%);
   font-size: 11px;
@@ -479,27 +478,50 @@ table.containers td:nth-child(7) {
   text-overflow: ellipsis;
   max-width: 118px;
 }
-.cy-node-cpu-track,
-.cy-node-mem-track {
+.cy-node-metrics {
   position: absolute;
-  left: 5px;
-  right: 5px;
-  height: 2px;
-  border-radius: 1px;
+  left: 8px;
+  right: 8px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cy-node-metric-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cy-node-metric-label {
+  flex: none;
+  width: 20px;
+  font-size: 5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  line-height: 1;
+}
+.cy-node-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 1.5px;
   background: rgba(255, 255, 255, 0.07);
   overflow: hidden;
-}
-.cy-node-cpu-track {
-  top: 0;
-}
-.cy-node-mem-track {
-  bottom: 0;
 }
 .cy-node-bar-fill {
   display: block;
   height: 100%;
-  border-radius: 1px;
+  border-radius: 1.5px;
   transition: width 0.3s ease;
+}
+.cy-node-metric-value {
+  flex: 1;
+  font-size: 5px;
+  color: var(--muted);
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cy-node-port-badge {
   position: absolute;
@@ -562,6 +584,18 @@ table.containers td:nth-child(7) {
 }
 .line-manual {
   border-top: 2px solid var(--accent);
+}
+.bar-swatch {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.bar-swatch-cpu {
+  background: var(--accent);
+}
+.bar-swatch-mem {
+  background: var(--seq-mem);
 }
 
 .detail-panel {
