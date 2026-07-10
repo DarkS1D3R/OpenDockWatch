@@ -106,23 +106,121 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Escapes the line for safe innerHTML use, then wraps case-insensitive matches of
-// `filterText` in <mark> so v-html can render the highlight. When `isRegex` is set,
-// `filterText` is compiled as a regex instead of matched literally; an invalid pattern
-// just falls back to no highlighting (filteredPopoutLines already leaves unfiltered
-// lines visible in that case, so this keeps highlighting consistent with that).
-export function highlightLine(line, filterText, isRegex = false) {
-  const escaped = escapeHtml(line);
-  if (!filterText) return escaped;
-  let re;
-  if (isRegex) {
-    try {
-      re = new RegExp(filterText, 'gi');
-    } catch {
-      return escaped;
+// Many containers (e.g. Java apps logging to a color-aware console) emit raw ANSI SGR
+// escapes like "\x1b[34mINFO\x1b[0;39m" - fine in a real terminal, but shown as literal
+// garbage `[34m...[0;39m` text once docker logs pipes them through a non-terminal reader.
+// Maps the common 8/16-color foreground codes; anything else (background, cursor moves,
+// etc.) is simply dropped since log output never legitimately needs it.
+const ANSI_COLOR_MAP = {
+  30: '#6e7681',
+  31: '#f85149',
+  32: '#3fb950',
+  33: '#d29922',
+  34: '#58a6ff',
+  35: '#bc8cff',
+  36: '#39c5cf',
+  37: '#c9d1d9',
+  90: '#6e7681',
+  91: '#ff7b72',
+  92: '#56d364',
+  93: '#e3b341',
+  94: '#79c0ff',
+  95: '#d2a8ff',
+  96: '#56d4dd',
+  97: '#f0f6fc',
+};
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[([0-9;]*)m/g;
+// eslint-disable-next-line no-control-regex
+const ANSI_STRIP_RE = /\x1b\[[0-9;]*m/g;
+
+// Plain-text version of a line with ANSI codes removed - needed anywhere a line is
+// matched against a word-boundary regex (detectLogLevel's \b*), since e.g. "\x1b[34mINFO"
+// has a word character ("m") sitting directly against "INFO" with no boundary between
+// them, silently breaking \b there.
+export function stripAnsi(str) {
+  return str.includes('\x1b[') ? str.replace(ANSI_STRIP_RE, '') : str;
+}
+
+// Splits a line on ANSI SGR escape codes into styled segments the caller can turn into
+// <span style="..."> chunks. Segments carry the color/bold state active at that point;
+// unstyled runs have color:null, bold:false.
+export function parseAnsiSegments(line) {
+  if (!line.includes('\x1b[')) return [{ text: line, color: null, bold: false }];
+  const segments = [];
+  let color = null;
+  let bold = false;
+  let lastIndex = 0;
+  ANSI_RE.lastIndex = 0;
+  let match;
+  while ((match = ANSI_RE.exec(line))) {
+    if (match.index > lastIndex) {
+      segments.push({ text: line.slice(lastIndex, match.index), color, bold });
     }
-  } else {
-    re = new RegExp(escapeRegExp(filterText), 'gi');
+    const codes = match[1].length ? match[1].split(';').map(Number) : [0];
+    for (const code of codes) {
+      if (code === 0) {
+        color = null;
+        bold = false;
+      } else if (code === 1) bold = true;
+      else if (code === 22) bold = false;
+      else if (code === 39) color = null;
+      else if (ANSI_COLOR_MAP[code]) color = ANSI_COLOR_MAP[code];
+    }
+    lastIndex = ANSI_RE.lastIndex;
   }
-  return escaped.replace(re, (match) => (match ? `<mark class="log-highlight">${match}</mark>` : match));
+  if (lastIndex < line.length) segments.push({ text: line.slice(lastIndex), color, bold });
+  return segments;
+}
+
+// `docker logs --timestamps` prepends a full-precision RFC3339Nano timestamp
+// ("2026-07-10T17:03:33.492059335Z") to every line. Trimmed to HH:MM:SS.mmm - still
+// sortable and precise to the millisecond, without dwarfing the log message itself
+// (many apps, like the one in the example this was built against, already log their
+// own timestamp too).
+const DOCKER_TS_RE = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})\.(\d{3})\d*Z /;
+
+export function splitDockerTimestamp(line) {
+  const m = line.match(DOCKER_TS_RE);
+  if (!m) return { ts: null, rest: line };
+  return { ts: `${m[1]}.${m[2]}`, rest: line.slice(m[0].length) };
+}
+
+// Escapes the line for safe innerHTML use, renders ANSI color codes as <span>s, and
+// wraps case-insensitive matches of `filterText` in <mark> so v-html can render the
+// highlight. When `isRegex` is set, `filterText` is compiled as a regex instead of
+// matched literally; an invalid pattern just falls back to no highlighting
+// (filteredPopoutLines already leaves unfiltered lines visible in that case, so this
+// keeps highlighting consistent with that).
+export function highlightLine(line, filterText, isRegex = false) {
+  const { ts, rest } = splitDockerTimestamp(line);
+  const tsHtml = ts ? `<span class="log-ts">${ts}</span>` : '';
+
+  let matcher = null;
+  if (filterText) {
+    if (isRegex) {
+      try {
+        matcher = new RegExp(filterText, 'gi');
+      } catch {
+        matcher = null;
+      }
+    } else {
+      matcher = new RegExp(escapeRegExp(filterText), 'gi');
+    }
+  }
+
+  const bodyHtml = parseAnsiSegments(rest)
+    .map((seg) => {
+      let html = escapeHtml(seg.text);
+      if (matcher) {
+        matcher.lastIndex = 0;
+        html = html.replace(matcher, (m) => (m ? `<mark class="log-highlight">${m}</mark>` : m));
+      }
+      const style = [seg.color ? `color:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
+      return style ? `<span style="${style}">${html}</span>` : html;
+    })
+    .join('');
+
+  return tsHtml + bodyHtml;
 }

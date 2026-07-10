@@ -1,5 +1,5 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
-import { parseMemUsedBytes, formatGB, healthColor, healthLabel, detectLogLevel, highlightLine } from './format.js';
+import { parseMemUsedBytes, formatGB, healthColor, healthLabel, detectLogLevel, highlightLine, stripAnsi } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -78,6 +78,8 @@ createApp({
       popoutEventSource: null,
       popoutAtBottom: true,
       popoutLoading: false,
+      popoutFullscreen: false,
+      popoutShowTimestamps: true,
 
       settingsOpen: false,
       webhookUrl: '',
@@ -218,7 +220,7 @@ createApp({
       const testRegex = this.popoutTestRegex;
       return this.popoutLogLines
         .filter((line) => {
-          const level = detectLogLevel(line.text);
+          const level = detectLogLevel(stripAnsi(line.text));
           if (level && !this.popoutLevels[level]) return false;
           if (!filterText) return true;
           if (regexMode) return testRegex ? testRegex.test(line.text) : true;
@@ -585,6 +587,9 @@ createApp({
       const el = this.$refs.previewLogView;
       if (el) el.scrollTop = el.scrollHeight;
     },
+    formatPreviewLine(text) {
+      return highlightLine(text, '', false);
+    },
     async openPopout() {
       if (!this.selectedContainerId) return;
       this.popoutOpen = true;
@@ -594,6 +599,7 @@ createApp({
     },
     closePopout() {
       this.popoutOpen = false;
+      this.popoutFullscreen = false;
       clearTimeout(this._popoutLoadingTimer);
       if (this.popoutEventSource) {
         this.popoutEventSource.close();
@@ -820,7 +826,7 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-if="hostInfo && !popoutFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
         <div class="host-card-header">
           <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
           <strong>{{ currentHostName }}</strong>
@@ -876,7 +882,7 @@ createApp({
         </div>
       </div>
 
-      <div class="layout" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer }">
         <div class="main">
           <div v-show="view === 'list'">
             <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
@@ -1054,14 +1060,19 @@ createApp({
             </div>
             <div class="log-view-wrap">
               <div v-if="previewLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-              <pre class="log-view detail-log" ref="previewLogView" @scroll="onPreviewScroll"><div v-for="line in previewLogLines" :key="line.id">{{ line.text }}</div></pre>
+              <pre class="log-view detail-log" ref="previewLogView" @scroll="onPreviewScroll"><div v-for="line in previewLogLines" :key="line.id" v-html="formatPreviewLine(line.text)"></div></pre>
               <button v-show="!previewAtBottom" class="scroll-bottom-btn" @click="scrollPreviewToBottom" title="Scroll to bottom">&#8595; Bottom</button>
             </div>
           </div>
         </aside>
       </div>
 
-      <div v-if="popoutOpen" ref="logPanel" class="log-panel" :class="{ 'with-detail': !!selectedContainer }">
+      <div
+        v-if="popoutOpen"
+        ref="logPanel"
+        class="log-panel"
+        :class="{ 'with-detail': !!selectedContainer && !popoutFullscreen, fullscreen: popoutFullscreen }"
+      >
         <div class="log-panel-header">
           <strong>{{ selectedContainer ? selectedContainer.name : '' }}</strong>
           <div class="log-panel-controls">
@@ -1100,12 +1111,27 @@ createApp({
               <option value="all">All lines</option>
             </select>
             <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
+            <button
+              class="small-btn"
+              :class="{ active: popoutShowTimestamps }"
+              @click="popoutShowTimestamps = !popoutShowTimestamps"
+              title="Toggle the docker timestamp shown at the start of each line"
+            >
+              🕐 Time
+            </button>
+            <button
+              class="small-btn"
+              @click="popoutFullscreen = !popoutFullscreen"
+              :title="popoutFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'"
+            >
+              {{ popoutFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
+            </button>
             <button @click="closePopout">Close</button>
           </div>
         </div>
         <div class="log-view-wrap">
           <div v-if="popoutLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-          <pre class="log-view popout-log" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="line in filteredPopoutLines" :key="line.id" v-html="line.html"></div></pre>
+          <pre class="log-view popout-log" :class="{ 'hide-ts': !popoutShowTimestamps }" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="line in filteredPopoutLines" :key="line.id" v-html="line.html"></div></pre>
           <button v-show="!popoutAtBottom" class="scroll-bottom-btn" @click="scrollPopoutToBottom" title="Scroll to bottom">&#8595; Bottom</button>
         </div>
       </div>

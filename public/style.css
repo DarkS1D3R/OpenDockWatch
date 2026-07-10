@@ -688,6 +688,12 @@ table.containers td:nth-child(7) {
 .log-panel.with-detail {
   margin-right: 520px;
 }
+.log-panel.fullscreen {
+  margin-top: 8px;
+}
+.log-panel.fullscreen .popout-log {
+  height: calc(100vh - 176px);
+}
 .log-panel-header {
   display: flex;
   justify-content: space-between;
@@ -697,6 +703,8 @@ table.containers td:nth-child(7) {
 }
 .log-panel-controls {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   align-items: center;
 }
@@ -737,7 +745,8 @@ table.containers td:nth-child(7) {
   font-family: monospace;
   font-weight: 700;
 }
-.regex-toggle-btn.active {
+.regex-toggle-btn.active,
+.small-btn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -819,6 +828,14 @@ table.containers td:nth-child(7) {
 }
 .detail-log {
   height: 600px;
+}
+.log-ts {
+  color: var(--muted);
+  margin-right: 8px;
+  user-select: none;
+}
+.hide-ts .log-ts {
+  display: none;
 }
 
 .log-view-wrap {
