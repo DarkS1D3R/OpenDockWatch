@@ -496,8 +496,8 @@ createApp({
         this.edgeInfoText = `${from} and ${to} share a Docker network`;
       }
     },
-    exportFlowPng() {
-      exportPng(this.cy);
+    async exportFlowPng() {
+      await exportPng(this.cy);
     },
     zoomBy(factor) {
       if (!this.cy) return;

@@ -22,6 +22,7 @@ module.exports = [
         cytoscape: 'readonly',
         dagre: 'readonly',
         cytoscapeNodeHtmlLabel: 'readonly',
+        html2canvas: 'readonly',
       },
     },
   },

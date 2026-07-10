@@ -325,15 +325,33 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
   });
 }
 
-export function exportPng(cy) {
-  if (!cy) return;
-  const dataUrl = cy.png({ full: true, scale: 2, bg: '#14161a' });
-  const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = `opendockwatch-flow-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+// cy.png() only rasterizes cytoscape's own <canvas> layer - it has no way to see the
+// node-html-label plugin's DOM overlay, which is what actually renders everything inside
+// a node box (name, icon, CPU/RAM bars, badges). html2canvas screenshots the real on-screen
+// DOM instead, canvas included, so the export matches what's actually visible.
+export async function exportPng(cy) {
+  if (!cy || typeof html2canvas !== 'function') return;
+  const container = cy.container();
+
+  // html2canvas captures whatever's currently in view, unlike the old cy.png({ full: true })
+  // which always exported the whole graph regardless of zoom/pan. Fit-to-all before
+  // capturing to keep that behavior, then restore exactly what the user had - the
+  // html-label overlay's own reflow needs a frame to catch up with the new positions.
+  const savedViewport = { zoom: cy.zoom(), pan: { ...cy.pan() } };
+  cy.fit(undefined, 30);
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+
+  try {
+    const canvas = await html2canvas(container, { backgroundColor: '#14161a', scale: 2 });
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `opendockwatch-flow-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    cy.viewport(savedViewport);
+  }
 }
 
 export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
