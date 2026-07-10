@@ -688,6 +688,12 @@ table.containers td:nth-child(7) {
 .log-panel.with-detail {
   margin-right: 520px;
 }
+.log-panel.fullscreen {
+  margin-top: 8px;
+}
+.log-panel.fullscreen .popout-log {
+  height: calc(100vh - 176px);
+}
 .log-panel-header {
   display: flex;
   justify-content: space-between;
@@ -697,6 +703,8 @@ table.containers td:nth-child(7) {
 }
 .log-panel-controls {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   align-items: center;
 }
@@ -737,7 +745,8 @@ table.containers td:nth-child(7) {
   font-family: monospace;
   font-weight: 700;
 }
-.regex-toggle-btn.active {
+.regex-toggle-btn.active,
+.small-btn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -820,9 +829,44 @@ table.containers td:nth-child(7) {
 .detail-log {
   height: 600px;
 }
+.log-ts {
+  color: var(--muted);
+  margin-right: 8px;
+  user-select: none;
+}
+.hide-ts .log-ts {
+  display: none;
+}
 
 .log-view-wrap {
   position: relative;
+}
+.log-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(13, 14, 17, 0.85);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  z-index: 1;
+  pointer-events: none;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .scroll-bottom-btn {
   position: absolute;
