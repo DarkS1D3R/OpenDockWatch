@@ -465,13 +465,14 @@ createApp({
       if (!this.$refs.cy) return;
       const elements = buildElements(this.filteredTopology.nodes, this.filteredTopology.edges, this.selectedContainerId);
       if (this.cy) {
-        updateGraph(this.cy, elements);
+        updateGraph(this.cy, elements, this.selectedHostId);
       } else {
         this.cy = createGraph(
           this.$refs.cy,
           elements,
           (id) => this.selectContainerById(id),
-          (edgeData) => this.showEdgeInfo(edgeData)
+          (edgeData) => this.showEdgeInfo(edgeData),
+          this.selectedHostId
         );
       }
       this.applyFlowFading();

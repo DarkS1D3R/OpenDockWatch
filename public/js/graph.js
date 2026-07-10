@@ -156,6 +156,59 @@ const GROUP_COLUMNS = 2;
 const NODE_COL_GAP = 200;
 const NODE_ROW_GAP = 96;
 
+// Per-host node positions (from dragging) and camera (zoom/pan) - kept in localStorage so
+// a manually-arranged layout survives both a page reload and the next poll cycle's
+// structure-changed re-layout (a container starting/stopping elsewhere in the topology
+// would otherwise wipe every dragged position, since dagre lays the whole graph out fresh).
+const POSITIONS_KEY_PREFIX = 'odw:flow:positions:';
+const VIEWPORT_KEY_PREFIX = 'odw:flow:viewport:';
+
+function loadPositions(hostId) {
+  if (!hostId) return {};
+  try {
+    return JSON.parse(localStorage.getItem(POSITIONS_KEY_PREFIX + hostId)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveNodePosition(hostId, nodeId, position) {
+  if (!hostId) return;
+  try {
+    const positions = loadPositions(hostId);
+    positions[nodeId] = position;
+    localStorage.setItem(POSITIONS_KEY_PREFIX + hostId, JSON.stringify(positions));
+  } catch {
+    /* localStorage unavailable/full - dragging still works, it just won't persist */
+  }
+}
+
+function applySavedPositions(cy, hostId) {
+  const positions = loadPositions(hostId);
+  for (const [id, pos] of Object.entries(positions)) {
+    const node = cy.$id(id);
+    if (node.length && !node.hasClass('group')) node.position(pos);
+  }
+}
+
+function loadViewport(hostId) {
+  if (!hostId) return null;
+  try {
+    return JSON.parse(localStorage.getItem(VIEWPORT_KEY_PREFIX + hostId));
+  } catch {
+    return null;
+  }
+}
+
+function saveViewport(hostId, viewport) {
+  if (!hostId) return;
+  try {
+    localStorage.setItem(VIEWPORT_KEY_PREFIX + hostId, JSON.stringify(viewport));
+  } catch {
+    /* ignore */
+  }
+}
+
 // Compose groups with many members and no internal edges otherwise get laid out as one tall
 // single-file column (dagre has nothing to rank sibling containers by). Re-flow those into a
 // fixed-column grid after layout so tall groups stay compact. Groups that DO have internal edges
@@ -183,24 +236,34 @@ function arrangeGroupsInColumns(cy) {
   });
 }
 
-// Runs a fresh dagre pass, then re-flows tall groups into columns, then (optionally) refits the
-// viewport to the result. layoutstop fires synchronously for a non-animated layout like this, so
-// this stays synchronous end-to-end.
-function runLayout(cy, { fit }) {
+// Runs a fresh dagre pass, then re-flows tall groups into columns, then re-applies any
+// positions the user has dragged nodes to (dagre lays out the whole graph from scratch,
+// so without this a container starting/stopping elsewhere would silently undo every drag).
+// The camera is restored from the last saved zoom/pan instead of fitting whenever one
+// exists - only a host with no saved viewport yet (or `fit: false`) gets auto-fit.
+// layoutstop fires synchronously for a non-animated layout like this, so this stays
+// synchronous end-to-end.
+function runLayout(cy, { fit, hostId }) {
   const layout = cy.layout({ ...LAYOUT, fit: false });
   layout.one('layoutstop', () => {
     arrangeGroupsInColumns(cy);
-    if (fit) cy.fit(undefined, 30);
+    applySavedPositions(cy, hostId);
+    const savedViewport = loadViewport(hostId);
+    if (savedViewport) {
+      cy.viewport(savedViewport);
+    } else if (fit) {
+      cy.fit(undefined, 30);
+    }
   });
   layout.run();
 }
 
 // Updates an existing cytoscape instance in place instead of recreating it, so pan/zoom set by
 // the user survives the next poll's refresh. Layout only re-runs when the set of nodes/edges
-// actually changed, in which case the viewport is refit/recentered on the new layout (positions
-// shift when nodes are added/removed, so keeping the old pan/zoom would leave the view pointed
-// at empty space). Pure data/class updates (status text, selection) never touch the viewport.
-export function updateGraph(cy, elements) {
+// actually changed, in which case runLayout re-applies any saved (dragged) positions and
+// restores the saved camera - or fits, only if there's no saved camera yet for this host.
+// Pure data/class updates (status text, selection) never touch the viewport at all.
+export function updateGraph(cy, elements, hostId) {
   const newIds = new Set(elements.map((el) => el.data.id));
   let structureChanged = false;
 
@@ -223,7 +286,7 @@ export function updateGraph(cy, elements) {
   }
 
   if (structureChanged) {
-    runLayout(cy, { fit: true });
+    runLayout(cy, { fit: true, hostId });
   }
 }
 
@@ -273,13 +336,26 @@ export function exportPng(cy) {
   a.remove();
 }
 
-export function createGraph(container, elements, onNodeTap, onEdgeTap) {
+export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
   const cy = cytoscape({
     container,
     elements,
     style: CY_STYLE,
   });
-  runLayout(cy, { fit: true });
+  runLayout(cy, { fit: true, hostId });
+
+  cy.on('dragfree', 'node', (evt) => {
+    const node = evt.target;
+    if (!node.hasClass('group')) saveNodePosition(hostId, node.id(), node.position());
+  });
+
+  let viewportSaveTimer = null;
+  cy.on('viewport', () => {
+    clearTimeout(viewportSaveTimer);
+    viewportSaveTimer = setTimeout(() => {
+      saveViewport(hostId, { zoom: cy.zoom(), pan: cy.pan() });
+    }, 300);
+  });
 
   cy.on('tap', 'node', (evt) => {
     const id = evt.target.id();
