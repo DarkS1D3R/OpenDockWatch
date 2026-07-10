@@ -58,7 +58,9 @@ createApp({
       containerMetricsHistory: {},
 
       alerts: [],
+      alertSearch: '',
       activityEvents: [],
+      eventSearch: '',
       activityEventSource: null,
 
       selectedContainerId: null,
@@ -133,6 +135,23 @@ createApp({
     },
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
+    },
+    searchedAlerts() {
+      const q = this.alertSearch.trim().toLowerCase();
+      if (!q) return this.alerts;
+      return this.alerts.filter(
+        (a) =>
+          (a.rule || '').toLowerCase().includes(q) ||
+          (a.message || '').toLowerCase().includes(q) ||
+          (a.containerName || '').toLowerCase().includes(q)
+      );
+    },
+    searchedActivityEvents() {
+      const q = this.eventSearch.trim().toLowerCase();
+      if (!q) return this.activityEvents;
+      return this.activityEvents.filter(
+        (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
+      );
     },
     cpuChartSlots() {
       const pad = HOST_METRICS_HISTORY_LEN - this.cpuSamples.length;
@@ -879,29 +898,36 @@ createApp({
           <div v-show="view === 'activity'" class="activity-wrap">
             <div class="activity-column">
               <h3>Alerts</h3>
-              <p v-if="!alerts.length" class="muted">No alerts.</p>
-              <div v-for="a in alerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
-                <div class="alert-row-main">
-                  <strong>{{ a.rule }}</strong>
-                  <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+              <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
+              <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
+              <div v-else class="activity-list">
+                <div v-for="a in searchedAlerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
+                  <div class="alert-row-main">
+                    <strong>{{ a.rule }}</strong>
+                    <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+                  </div>
+                  <div class="alert-message">{{ a.message }}</div>
+                  <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
+                  <span v-else class="ack-tick">✓ Acknowledged</span>
                 </div>
-                <div class="alert-message">{{ a.message }}</div>
-                <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
               </div>
             </div>
             <div class="activity-column">
               <h3>Events</h3>
-              <p v-if="!activityEvents.length" class="muted">No events yet.</p>
-              <table class="containers" v-if="activityEvents.length">
-                <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
-                <tbody>
-                  <tr v-for="(e, i) in activityEvents" :key="i">
-                    <td class="muted">{{ formatEventTime(e.ts) }}</td>
-                    <td>{{ e.containerName || e.containerId || '—' }}</td>
-                    <td class="muted">{{ e.action }}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
+              <p v-if="!searchedActivityEvents.length" class="muted">{{ activityEvents.length ? 'No matching events.' : 'No events yet.' }}</p>
+              <div v-else class="activity-list">
+                <table class="containers">
+                  <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(e, i) in searchedActivityEvents" :key="i">
+                      <td class="muted">{{ formatEventTime(e.ts) }}</td>
+                      <td>{{ e.containerName || e.containerId || '—' }}</td>
+                      <td class="muted">{{ e.action }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>

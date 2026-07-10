@@ -887,6 +887,27 @@ table.containers td:nth-child(7) {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.activity-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 100%;
+  margin-bottom: 10px;
+}
+.activity-list {
+  max-height: calc(100vh - 480px);
+  min-height: 200px;
+  overflow-y: auto;
+}
+.ack-tick {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ok);
+}
 .alert-row {
   border-bottom: 1px solid var(--border);
   border-left: 3px solid var(--border);
