@@ -210,6 +210,13 @@ body {
 .brand-watch {
   color: var(--ok);
 }
+.brand-version {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
 .topbar select {
   margin-left: auto;
 }
@@ -442,11 +449,11 @@ table.containers td:nth-child(7) {
 }
 .cy-node-status {
   position: absolute;
-  bottom: 2px;
-  right: 5px;
+  top: 2px;
+  left: 18px;
+  right: 20px;
   font-size: 9px;
   color: var(--muted);
-  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -696,6 +703,55 @@ table.containers td:nth-child(7) {
 .log-panel-controls input {
   width: 220px;
 }
+.log-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.log-filter-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.log-filter-input-wrap input {
+  padding-right: 22px;
+}
+.log-filter-input-wrap input.filter-invalid {
+  border-color: var(--danger);
+}
+.filter-clear-btn {
+  position: absolute;
+  right: 4px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.filter-clear-btn:hover {
+  color: var(--text);
+}
+.regex-toggle-btn {
+  font-family: monospace;
+  font-weight: 700;
+}
+.regex-toggle-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.filter-error-text {
+  font-size: 11px;
+  color: var(--danger);
+  white-space: nowrap;
+}
+.filter-count-text {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
 .popout-log {
   height: 320px;
   border-radius: 0;
@@ -879,6 +935,27 @@ table.containers td:nth-child(7) {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.activity-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 100%;
+  margin-bottom: 10px;
+}
+.activity-list {
+  max-height: calc(100vh - 480px);
+  min-height: 200px;
+  overflow-y: auto;
+}
+.ack-tick {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ok);
 }
 .alert-row {
   border-bottom: 1px solid var(--border);

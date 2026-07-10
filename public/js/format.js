@@ -107,10 +107,22 @@ function escapeRegExp(str) {
 }
 
 // Escapes the line for safe innerHTML use, then wraps case-insensitive matches of
-// `filterText` in <mark> so v-html can render the highlight.
-export function highlightLine(line, filterText) {
+// `filterText` in <mark> so v-html can render the highlight. When `isRegex` is set,
+// `filterText` is compiled as a regex instead of matched literally; an invalid pattern
+// just falls back to no highlighting (filteredPopoutLines already leaves unfiltered
+// lines visible in that case, so this keeps highlighting consistent with that).
+export function highlightLine(line, filterText, isRegex = false) {
   const escaped = escapeHtml(line);
   if (!filterText) return escaped;
-  const re = new RegExp(escapeRegExp(filterText), 'gi');
-  return escaped.replace(re, (match) => `<mark class="log-highlight">${match}</mark>`);
+  let re;
+  if (isRegex) {
+    try {
+      re = new RegExp(filterText, 'gi');
+    } catch {
+      return escaped;
+    }
+  } else {
+    re = new RegExp(escapeRegExp(filterText), 'gi');
+  }
+  return escaped.replace(re, (match) => (match ? `<mark class="log-highlight">${match}</mark>` : match));
 }

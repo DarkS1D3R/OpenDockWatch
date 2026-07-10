@@ -33,6 +33,7 @@ createApp({
   data() {
     return {
       role: null,
+      appVersion: null,
       hosts: [],
       selectedHostId: null,
       containers: [],
@@ -57,7 +58,9 @@ createApp({
       containerMetricsHistory: {},
 
       alerts: [],
+      alertSearch: '',
       activityEvents: [],
+      eventSearch: '',
       activityEventSource: null,
 
       selectedContainerId: null,
@@ -68,6 +71,7 @@ createApp({
       popoutOpen: false,
       popoutTail: 200,
       popoutFilter: '',
+      popoutRegexMode: false,
       popoutLevels: { error: true, warn: true, info: true, debug: true },
       popoutLogLines: [],
       popoutEventSource: null,
@@ -133,6 +137,23 @@ createApp({
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
     },
+    searchedAlerts() {
+      const q = this.alertSearch.trim().toLowerCase();
+      if (!q) return this.alerts;
+      return this.alerts.filter(
+        (a) =>
+          (a.rule || '').toLowerCase().includes(q) ||
+          (a.message || '').toLowerCase().includes(q) ||
+          (a.containerName || '').toLowerCase().includes(q)
+      );
+    },
+    searchedActivityEvents() {
+      const q = this.eventSearch.trim().toLowerCase();
+      if (!q) return this.activityEvents;
+      return this.activityEvents.filter(
+        (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
+      );
+    },
     cpuChartSlots() {
       const pad = HOST_METRICS_HISTORY_LEN - this.cpuSamples.length;
       return pad > 0 ? [...Array(pad).fill(null), ...this.cpuSamples] : this.cpuSamples;
@@ -174,17 +195,34 @@ createApp({
       }
       return out;
     },
+    popoutTestRegex() {
+      if (!this.popoutRegexMode) return null;
+      const pattern = this.popoutFilter.trim();
+      if (!pattern) return null;
+      try {
+        return new RegExp(pattern, 'i');
+      } catch {
+        return null;
+      }
+    },
+    popoutRegexError() {
+      if (!this.popoutRegexMode || !this.popoutFilter.trim()) return null;
+      return this.popoutTestRegex ? null : 'Invalid regex';
+    },
     filteredPopoutLines() {
       const filterText = this.popoutFilter.trim();
       const filterLower = filterText.toLowerCase();
+      const regexMode = this.popoutRegexMode;
+      const testRegex = this.popoutTestRegex;
       return this.popoutLogLines
         .filter((line) => {
           const level = detectLogLevel(line);
           if (level && !this.popoutLevels[level]) return false;
-          if (filterText && !line.toLowerCase().includes(filterLower)) return false;
-          return true;
+          if (!filterText) return true;
+          if (regexMode) return testRegex ? testRegex.test(line) : true;
+          return line.toLowerCase().includes(filterLower);
         })
-        .map((line) => highlightLine(line, filterText));
+        .map((line) => highlightLine(line, filterText, regexMode && !!testRegex));
     },
   },
   watch: {
@@ -216,6 +254,7 @@ createApp({
     try {
       const session = await apiGetSession();
       this.role = session.role;
+      this.appVersion = session.version;
       await this.loadHosts();
     } catch {
       return;
@@ -684,7 +723,7 @@ createApp({
   template: `
     <div class="app">
       <header class="topbar">
-        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span></h1>
+        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
         <select v-model="selectedHostId" @change="selectHost(selectedHostId)">
           <option v-for="h in hosts" :key="h.id" :value="h.id">
             {{ h.name }} {{ h.reachable ? '' : '(unreachable)' }}
@@ -877,29 +916,36 @@ createApp({
           <div v-show="view === 'activity'" class="activity-wrap">
             <div class="activity-column">
               <h3>Alerts</h3>
-              <p v-if="!alerts.length" class="muted">No alerts.</p>
-              <div v-for="a in alerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
-                <div class="alert-row-main">
-                  <strong>{{ a.rule }}</strong>
-                  <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+              <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
+              <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
+              <div v-else class="activity-list">
+                <div v-for="a in searchedAlerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
+                  <div class="alert-row-main">
+                    <strong>{{ a.rule }}</strong>
+                    <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+                  </div>
+                  <div class="alert-message">{{ a.message }}</div>
+                  <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
+                  <span v-else class="ack-tick">✓ Acknowledged</span>
                 </div>
-                <div class="alert-message">{{ a.message }}</div>
-                <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
               </div>
             </div>
             <div class="activity-column">
               <h3>Events</h3>
-              <p v-if="!activityEvents.length" class="muted">No events yet.</p>
-              <table class="containers" v-if="activityEvents.length">
-                <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
-                <tbody>
-                  <tr v-for="(e, i) in activityEvents" :key="i">
-                    <td class="muted">{{ formatEventTime(e.ts) }}</td>
-                    <td>{{ e.containerName || e.containerId || '—' }}</td>
-                    <td class="muted">{{ e.action }}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
+              <p v-if="!searchedActivityEvents.length" class="muted">{{ activityEvents.length ? 'No matching events.' : 'No events yet.' }}</p>
+              <div v-else class="activity-list">
+                <table class="containers">
+                  <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(e, i) in searchedActivityEvents" :key="i">
+                      <td class="muted">{{ formatEventTime(e.ts) }}</td>
+                      <td>{{ e.containerName || e.containerId || '—' }}</td>
+                      <td class="muted">{{ e.action }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -952,7 +998,27 @@ createApp({
               <button :class="{active: popoutLevels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
               <button :class="{active: popoutLevels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
             </div>
-            <input type="text" v-model="popoutFilter" placeholder="Filter logs…" />
+            <div class="log-filter-group">
+              <div class="log-filter-input-wrap">
+                <input
+                  type="text"
+                  v-model="popoutFilter"
+                  :placeholder="popoutRegexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
+                  :class="{ 'filter-invalid': popoutRegexError }"
+                />
+                <button v-if="popoutFilter" class="filter-clear-btn" @click="popoutFilter = ''" title="Clear filter">✕</button>
+              </div>
+              <button
+                class="small-btn regex-toggle-btn"
+                :class="{ active: popoutRegexMode }"
+                @click="popoutRegexMode = !popoutRegexMode"
+                title="Treat filter text as a regular expression"
+              >
+                .*
+              </button>
+              <span v-if="popoutRegexError" class="filter-error-text">{{ popoutRegexError }}</span>
+              <span v-else-if="popoutFilter" class="filter-count-text">{{ filteredPopoutLines.length }} / {{ popoutLogLines.length }}</span>
+            </div>
             <select :value="popoutTail" @change="changePopoutTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
               <option :value="100">Last 100 lines</option>
               <option :value="200">Last 200 lines</option>
