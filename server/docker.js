@@ -242,6 +242,8 @@ async function getTopology(host) {
       ports: c.ports,
       cpuPerc: s ? parseFloat(s.cpuPerc) || 0 : null,
       memPerc: s ? parseFloat(s.memPerc) || 0 : null,
+      netIO: s ? s.netIO : null,
+      blockIO: s ? s.blockIO : null,
     };
   });
   const edges = [...networkEdges(containers), ...dependsOnEdges(containers, dependsOnRaw), ...manualEdges(containers, host.edges)];
