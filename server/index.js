@@ -23,6 +23,7 @@ const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
 const prometheus = require('./prometheus');
+const { version: appVersion } = require('../package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -112,7 +113,7 @@ const api = express.Router();
 api.use(requireAuth);
 
 api.get('/session', (req, res) => {
-  res.json({ username: req.session.username, role: req.session.role });
+  res.json({ username: req.session.username, role: req.session.role, version: appVersion });
 });
 
 api.get('/hosts', async (req, res) => {

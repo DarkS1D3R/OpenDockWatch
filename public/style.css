@@ -210,6 +210,13 @@ body {
 .brand-watch {
   color: var(--ok);
 }
+.brand-version {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
 .topbar select {
   margin-left: auto;
 }
@@ -442,11 +449,11 @@ table.containers td:nth-child(7) {
 }
 .cy-node-status {
   position: absolute;
-  bottom: 2px;
-  right: 5px;
+  top: 2px;
+  left: 18px;
+  right: 20px;
   font-size: 9px;
   color: var(--muted);
-  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
