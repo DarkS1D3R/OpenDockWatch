@@ -10,8 +10,8 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
   - **Auto (network)**: containers sharing a custom Docker network are connected — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
   - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
-- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history) and a live text filter. The current tail can also be downloaded as a `.txt` file.
-- **Activity view** — alerts and the raw container event log (start/stop/die/oom, etc.) side by side, with an unread-alert count badge on the tab itself. See [Alerts](#alerts) below for the rule list and webhook setup.
+- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file.
+- **Activity view** — alerts and the raw container event log (start/stop/die/oom, etc.) side by side, each independently searchable and scrollable, with an unread-alert count badge on the tab itself and a checkmark on any alert you've acknowledged. See [Alerts](#alerts) below for the rule list and webhook setup.
 
 ## Screenshots
 
@@ -27,13 +27,13 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ![Container details panel with a live log preview](screenshots/details-panel.png)
 
-**Log viewer** — full-width pop-out with level filters and download
+**Log viewer** — full-width pop-out with level filters, regex search, and download
 
-![Full-width log viewer pop-out with level filters](screenshots/log-viewer.png)
+![Full-width log viewer pop-out with a regex filter matching ERROR and WARN lines](screenshots/log-viewer.png)
 
-**Activity view** — alerts and the container event log side by side
+**Activity view** — searchable, scrollable alerts and container event log side by side
 
-![Activity view, alerts and the container event log](screenshots/activity-view.png)
+![Activity view, searchable alerts with an acknowledged checkmark and a filtered event log](screenshots/activity-view.png)
 
 ## How it works
 
