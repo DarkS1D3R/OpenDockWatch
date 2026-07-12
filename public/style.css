@@ -25,7 +25,10 @@ body {
 .app {
   width: 100%;
   margin: 0;
-  padding: 24px clamp(16px, 3vw, 48px);
+  /* Top padding lives on .topbar instead (see its comment) - keeping it here would only apply
+     while the topbar is unstuck, since position:sticky pins to the scroll container's edge and
+     ignores an ancestor's padding once stuck, so the two states would render at different heights. */
+  padding: 0 clamp(16px, 3vw, 48px) 24px;
 }
 
 .layout {
@@ -86,7 +89,7 @@ body {
 }
 .host-tile {
   flex: 1;
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 12px 14px;
   background: #171a20;
   border: 1px solid var(--border);
@@ -96,21 +99,29 @@ body {
   color: var(--muted);
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   margin-bottom: 6px;
 }
 .tile-icon {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex: none;
 }
 .tile-icon-cpu {
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .tile-icon-mem {
   color: var(--seq-mem);
+  background: color-mix(in srgb, var(--seq-mem) 15%, transparent);
 }
 .tile-icon svg {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
 }
 .host-tile-value {
   font-size: 26px;
@@ -123,30 +134,47 @@ body {
   margin: 3px 0 10px;
 }
 .sparkline {
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
+  position: relative;
   height: 64px;
   width: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
-.spark-bar {
-  flex: 1 1 0;
-  min-width: 1px;
-  border-radius: 1px 1px 0 0;
-  opacity: 0.55;
-  min-height: 3px;
+.spark-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
 }
-.spark-bar.current {
-  opacity: 1;
+.spark-line {
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
-.spark-bar.empty {
-  min-height: 0;
-  opacity: 0;
+.spark-line-cpu {
+  stroke: var(--accent);
 }
-.spark-cpu {
+.spark-line-mem {
+  stroke: var(--seq-mem);
+}
+.spark-area-cpu {
+  fill: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.spark-area-mem {
+  fill: color-mix(in srgb, var(--seq-mem) 22%, transparent);
+}
+.spark-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--panel) 100%, transparent);
+}
+.spark-dot-cpu {
   background: var(--accent);
 }
-.spark-mem {
+.spark-dot-mem {
   background: var(--seq-mem);
 }
 
@@ -183,6 +211,19 @@ body {
   align-items: center;
   gap: 16px;
   margin-bottom: 20px;
+  /* Top padding normally lives on .app, but that only holds up while this bar is unstuck -
+     position:sticky pins to the scroll container's edge (top:0) and ignores an ancestor's
+     padding once stuck, so the bar would jump up and leave a gap above .detail-panel (which is
+     fixed at a top offset sized to match this bar's full height) the moment you scroll. Owning
+     the padding here keeps the bar's rendered height - and therefore that offset - identical
+     whether it's sitting in flow or pinned. Bottom padding is just breathing room above the
+     divider line so it doesn't crowd the buttons. */
+  padding: 24px 0 14px;
+  position: sticky;
+  top: 0;
+  z-index: 21;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 .topbar h1 {
   font-size: 20px;
@@ -234,17 +275,20 @@ body {
 
 .view-toggle {
   display: flex;
-  gap: 0;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
 }
 .view-toggle button {
-  border-radius: 0;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
 }
-.view-toggle button:first-child {
-  border-radius: 6px 0 0 6px;
-}
-.view-toggle button:last-child {
-  border-radius: 0 6px 6px 0;
-  border-left: none;
+.view-toggle button:hover:not(.active):not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
 }
 .view-toggle button.active {
   background: var(--accent);
@@ -285,9 +329,13 @@ button {
 }
 button {
   cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not(.active) {
   border-color: var(--accent);
+  background: #23262e;
 }
 button:disabled {
   opacity: 0.5;
@@ -403,6 +451,13 @@ table.containers td:nth-child(7) {
   flex-wrap: wrap;
   gap: 8px;
   padding: 4px 4px 8px;
+}
+.toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 20px;
+  background: var(--border);
+  flex: none;
 }
 .flow-filter-input {
   background: var(--bg);
@@ -669,14 +724,15 @@ table.containers td:nth-child(7) {
   width: 520px;
   flex: none;
   position: fixed;
-  /* Matches .topbar's rendered height (24px .app padding-top + 52px content) - starting at the
-     very top of the viewport would draw this panel's own header (title + close button) right
-     over the app's Settings/Logout/nav buttons, hiding and click-blocking them at once. Used for
-     both the container detail panel and the settings panel, so this has to hold for both. */
-  top: 76px;
+  /* Matches .topbar's rendered height (its own top/bottom padding + content + border - see the
+     comment there) - starting at the very top of the viewport would draw this panel's own header
+     (title + close button) right over the app's Settings/Logout/nav buttons, hiding and
+     click-blocking them at once. Used for both the container detail panel and the settings
+     panel, so this has to hold for both. */
+  top: 91px;
   right: 0;
   bottom: 0;
-  height: calc(100vh - 76px);
+  height: calc(100vh - 91px);
   overflow-y: auto;
   background: var(--panel);
   border: none;
@@ -785,7 +841,7 @@ table.containers td:nth-child(7) {
   margin-top: 8px;
 }
 .log-panel.fullscreen .popout-log {
-  height: calc(100vh - 176px);
+  height: calc(100vh - 191px);
 }
 .log-panel-header {
   display: flex;
@@ -1039,6 +1095,7 @@ table.containers td:nth-child(7) {
 
 .tile-icon-disk {
   color: #d29922;
+  background: color-mix(in srgb, #d29922 15%, transparent);
 }
 .disk-usage-rows {
   display: flex;

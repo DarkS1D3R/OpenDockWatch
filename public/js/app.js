@@ -196,6 +196,12 @@ createApp({
     memPeak() {
       return this.memSamples.length ? Math.max(...this.memSamples) : 0;
     },
+    cpuSparkPaths() {
+      return this.sparkPaths(this.cpuChartSlots, this.cpuPeak);
+    },
+    memSparkPaths() {
+      return this.sparkPaths(this.memChartSlots, this.memPeak);
+    },
     containerMetricsView() {
       const out = {};
       for (const id of Object.keys(this.containerMetricsHistory)) {
@@ -387,6 +393,27 @@ createApp({
     },
     diskRow(type) {
       return this.diskUsage.find((r) => r.type === type) || null;
+    },
+    sparkPaths(slots, peak) {
+      const w = 100;
+      const h = 30;
+      const topPad = 3;
+      const usable = h - topPad;
+      const n = slots.length;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const v = slots[i];
+        if (v === null) continue;
+        const x = n > 1 ? (i / (n - 1)) * w : w;
+        const y = peak ? topPad + usable - (v / peak) * usable : h;
+        pts.push([x, y]);
+      }
+      if (!pts.length) return { line: '', area: '', dot: null };
+      const line = 'M' + pts.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' L');
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      const area = `${line} L${last[0].toFixed(2)},${h} L${first[0].toFixed(2)},${h} Z`;
+      return { line, area, dot: { x: last[0], y: last[1] } };
     },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
@@ -902,14 +929,16 @@ createApp({
             <div class="host-tile-value">{{ cpuNow.toFixed(1) }}%</div>
             <div class="host-tile-sub">avg {{ cpuAvg.toFixed(1) }}% &bull; pk {{ cpuPeak.toFixed(1) }}%</div>
             <div class="sparkline">
-              <div
-                v-for="(v, i) in cpuChartSlots"
-                :key="i"
-                class="spark-bar spark-cpu"
-                :class="{ current: i === cpuChartSlots.length - 1, empty: v === null }"
-                :style="{ height: (v === null ? 0 : (cpuPeak ? (v / cpuPeak * 100) : 0)) + '%' }"
-                :title="v === null ? '' : v.toFixed(1) + '%'"
-              ></div>
+              <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <path class="spark-area spark-area-cpu" :d="cpuSparkPaths.area"></path>
+                <path class="spark-line spark-line-cpu" :d="cpuSparkPaths.line" vector-effect="non-scaling-stroke"></path>
+              </svg>
+              <span
+                v-if="cpuSparkPaths.dot"
+                class="spark-dot spark-dot-cpu"
+                :style="{ left: cpuSparkPaths.dot.x + '%', top: (cpuSparkPaths.dot.y / 30 * 100) + '%' }"
+                :title="cpuNow.toFixed(1) + '%'"
+              ></span>
             </div>
           </div>
           <div class="host-tile">
@@ -917,14 +946,16 @@ createApp({
             <div class="host-tile-value">{{ fmtGB(memNow) }}</div>
             <div class="host-tile-sub">avg {{ fmtGB(memAvg) }} &bull; pk {{ fmtGB(memPeak) }}</div>
             <div class="sparkline">
-              <div
-                v-for="(v, i) in memChartSlots"
-                :key="i"
-                class="spark-bar spark-mem"
-                :class="{ current: i === memChartSlots.length - 1, empty: v === null }"
-                :style="{ height: (v === null ? 0 : (memPeak ? (v / memPeak * 100) : 0)) + '%' }"
-                :title="v === null ? '' : fmtGB(v)"
-              ></div>
+              <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <path class="spark-area spark-area-mem" :d="memSparkPaths.area"></path>
+                <path class="spark-line spark-line-mem" :d="memSparkPaths.line" vector-effect="non-scaling-stroke"></path>
+              </svg>
+              <span
+                v-if="memSparkPaths.dot"
+                class="spark-dot spark-dot-mem"
+                :style="{ left: memSparkPaths.dot.x + '%', top: (memSparkPaths.dot.y / 30 * 100) + '%' }"
+                :title="fmtGB(memNow)"
+              ></span>
             </div>
           </div>
           <div class="host-tile" v-if="diskUsage.length">
@@ -1039,10 +1070,14 @@ createApp({
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>
               <button @click="zoomFit">Fit</button>
+              <span class="toolbar-sep"></span>
               <button @click="collapseAllFlowGroups">Collapse all</button>
               <button @click="expandAllFlowGroups">Expand all</button>
+              <span class="toolbar-sep"></span>
               <button @click="exportFlowPng">Export PNG</button>
+              <span class="toolbar-sep"></span>
               <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
+              <span class="toolbar-sep"></span>
               <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
               <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.network" /> network</label>
               <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.manual" /> manual</label>
