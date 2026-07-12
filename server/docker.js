@@ -280,6 +280,28 @@ async function getTopology(host, snapshot) {
   return { nodes, edges };
 }
 
+// `docker inspect` is the one place env vars, mounts, labels, restart policy, and created time
+// live - none of it comes back from `docker ps`/`docker stats`. Fetched on demand (container
+// selection) rather than on the metrics poll cycle: unlike CPU/mem this doesn't change from one
+// poll to the next, so there's no reason to shell out for it every 5s for every container.
+async function getContainerInspect(host, id) {
+  const stdout = await run([...hostArgs(host), 'inspect', id]);
+  const [raw] = JSON.parse(stdout);
+  return {
+    createdAt: raw.Created,
+    restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
+    restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
+    env: raw.Config?.Env || [],
+    labels: raw.Config?.Labels || {},
+    mounts: (raw.Mounts || []).map((m) => ({
+      type: m.Type,
+      source: m.Source,
+      destination: m.Destination,
+      rw: m.RW,
+    })),
+  };
+}
+
 async function containerAction(host, id, action) {
   if (!ALLOWED_ACTIONS.has(action)) {
     throw new Error(`Unsupported action: ${action}`);
@@ -327,6 +349,7 @@ module.exports = {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getContainerInspect,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,

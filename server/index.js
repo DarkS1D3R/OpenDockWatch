@@ -17,6 +17,7 @@ const {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getContainerInspect,
 } = require('./docker');
 const db = require('./db');
 const alerts = require('./alerts');
@@ -148,6 +149,16 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
       c.restartCount1h = restartCounts.get(c.id) || 0;
     }
     res.json(containers);
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
+});
+
+api.get('/hosts/:hostId/containers/:id/inspect', async (req, res) => {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    res.json(await getContainerInspect(host, req.params.id));
   } catch (err) {
     res.status(502).json({ error: err.stderr || err.message });
   }

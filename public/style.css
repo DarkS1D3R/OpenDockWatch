@@ -715,6 +715,35 @@ table.containers td:nth-child(7) {
   gap: 8px;
   margin: 14px 0;
 }
+.inspect-section {
+  margin: 8px 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.inspect-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.inspect-section summary:hover {
+  color: var(--text);
+}
+.inspect-list {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.inspect-line {
+  font-size: 12px;
+  word-break: break-all;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
 .detail-body h3 {
   font-size: 13px;
   color: var(--muted);

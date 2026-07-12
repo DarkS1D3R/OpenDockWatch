@@ -16,6 +16,7 @@ import {
   apiGetTopology,
   apiGetHostInfo,
   apiContainerAction,
+  apiGetContainerInspect,
   logsUrl,
   downloadLogsUrl,
   apiLogout,
@@ -74,6 +75,7 @@ createApp({
       activityEventSource: null,
 
       selectedContainerId: null,
+      containerInspect: null,
       previewLogLines: [],
       previewEventSource: null,
       previewAtBottom: true,
@@ -252,7 +254,11 @@ createApp({
         if (newId) this.cy.$id(newId).addClass('selected');
         if (this.view === 'flow') this.applyFlowFading();
       }
-      if (newId) this.openPreviewStream(newId);
+      this.containerInspect = null;
+      if (newId) {
+        this.openPreviewStream(newId);
+        this.fetchContainerInspect(newId);
+      }
     },
     stateFilter() {
       if (this.view === 'flow') this.renderGraph();
@@ -460,6 +466,17 @@ createApp({
         this.stats = await apiGetStats(this.selectedHostId);
       } catch {
         /* stats are best-effort */
+      }
+    },
+    async fetchContainerInspect(id) {
+      if (!this.selectedHostId) return;
+      try {
+        const inspect = await apiGetContainerInspect(this.selectedHostId, id);
+        // The user may have clicked a different container (or closed the panel) before this
+        // resolved - only apply it if it's still the one being looked at.
+        if (this.selectedContainerId === id) this.containerInspect = inspect;
+      } catch {
+        /* inspect details are best-effort */
       }
     },
     async fetchTopology() {
@@ -717,6 +734,15 @@ createApp({
     },
     fmtRatePair(a, b) {
       return formatRatePair(a, b);
+    },
+    fmtCreated(iso) {
+      return iso ? new Date(iso).toLocaleString() : '—';
+    },
+    fmtRestartPolicy(inspect) {
+      if (!inspect || !inspect.restartPolicy) return '—';
+      const labels = { no: 'No', always: 'Always', 'unless-stopped': 'Unless stopped', 'on-failure': 'On failure' };
+      const label = labels[inspect.restartPolicy] || inspect.restartPolicy;
+      return inspect.restartPolicy === 'on-failure' && inspect.restartMaxRetries ? `${label} (max ${inspect.restartMaxRetries})` : label;
     },
     healthDotColor(health) {
       return healthColor(health);
@@ -1090,6 +1116,38 @@ createApp({
             <div class="detail-row"><span class="label">Block I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).blockReadRate, statFor(selectedContainer.id).blockWriteRate) }}</span></div>
             <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
             <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
+
+            <template v-if="containerInspect">
+              <div class="detail-row"><span class="label">Created</span><span>{{ fmtCreated(containerInspect.createdAt) }}</span></div>
+              <div class="detail-row"><span class="label">Restart Policy</span><span>{{ fmtRestartPolicy(containerInspect) }}</span></div>
+
+              <details class="inspect-section">
+                <summary>Environment ({{ containerInspect.env.length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(line, i) in containerInspect.env" :key="i" class="inspect-line mono">{{ line }}</div>
+                  <div v-if="!containerInspect.env.length" class="muted small">None</div>
+                </div>
+              </details>
+
+              <details class="inspect-section">
+                <summary>Mounts ({{ containerInspect.mounts.length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(m, i) in containerInspect.mounts" :key="i" class="inspect-line">
+                    <span class="mono">{{ m.source || m.type }}</span> → <span class="mono">{{ m.destination }}</span>
+                    <span class="muted small">({{ m.rw ? 'rw' : 'ro' }})</span>
+                  </div>
+                  <div v-if="!containerInspect.mounts.length" class="muted small">None</div>
+                </div>
+              </details>
+
+              <details class="inspect-section">
+                <summary>Labels ({{ Object.keys(containerInspect.labels).length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(v, k) in containerInspect.labels" :key="k" class="inspect-line mono">{{ k }}={{ v }}</div>
+                  <div v-if="!Object.keys(containerInspect.labels).length" class="muted small">None</div>
+                </div>
+              </details>
+            </template>
 
             <div class="detail-actions" v-if="isAdmin">
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'start')">Start</button>
