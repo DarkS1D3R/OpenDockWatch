@@ -23,7 +23,20 @@ async function pollHost(host) {
   const reachable = await checkHost(host);
   alerts.handleHostReachability(host.id, host.name || host.id, reachable, prev ? prev.reachable : true);
 
-  const snapshot = { containers: [], stats: {}, hostInfo: null, diskUsage: prev ? prev.diskUsage : null, reachable, ts: Date.now() };
+  // Keep serving the previous poll's containers/stats/hostInfo until the fresh values below are
+  // ready, rather than clearing them up front - the docker calls below can take a noticeable
+  // fraction of a poll interval, and a GET /stats landing in that window would otherwise see an
+  // empty stats map for every container (rendered client-side as a flash of "-" on every refresh).
+  const keepPrev = reachable && prev;
+  const snapshot = {
+    containers: keepPrev ? prev.containers : [],
+    stats: keepPrev ? prev.stats : {},
+    hostInfo: keepPrev ? prev.hostInfo : null,
+    diskUsage: prev ? prev.diskUsage : null,
+    statsTs: keepPrev ? prev.statsTs : undefined,
+    reachable,
+    ts: Date.now(),
+  };
   snapshots.set(host.id, snapshot);
   if (!reachable) return;
 
