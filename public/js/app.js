@@ -60,6 +60,7 @@ createApp({
       edgeFilters: { dependsOn: true, network: true, manual: true },
       flowFilterText: '',
       edgeInfoText: null,
+      flowFullscreen: false,
 
       hostInfo: null,
       diskUsage: [],
@@ -401,6 +402,7 @@ createApp({
     },
     async setView(v) {
       this.view = v;
+      if (v !== 'flow') this.flowFullscreen = false;
       if (v === 'flow') {
         await this.fetchTopology();
       } else if (v === 'activity') {
@@ -513,6 +515,17 @@ createApp({
     },
     expandAllFlowGroups() {
       expandAllGroups(this.cy);
+    },
+    async toggleFlowFullscreen() {
+      this.flowFullscreen = !this.flowFullscreen;
+      // Wait for the height change (host card hidden, .cy-container grown) to actually land in
+      // the DOM before telling cytoscape about it - resize() reads the container's current
+      // rendered size, so calling it a tick too early would just re-measure the old size.
+      await this.$nextTick();
+      if (this.cy) {
+        this.cy.resize();
+        this.cy.fit(undefined, 30);
+      }
     },
     zoomBy(factor) {
       if (!this.cy) return;
@@ -845,7 +858,7 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo && !popoutFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-if="hostInfo && !popoutFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
         <div class="host-card-header">
           <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
           <strong>{{ currentHostName }}</strong>
@@ -985,7 +998,14 @@ createApp({
             <p v-if="!loadingContainers && !containers.length" class="muted">No containers found.</p>
           </div>
 
-          <div v-show="view === 'flow'" class="cy-wrap">
+          <div v-show="view === 'flow'" class="cy-wrap" :class="{ 'cy-fullscreen': flowFullscreen }">
+            <button
+              class="cy-fullscreen-btn"
+              @click="toggleFlowFullscreen"
+              :title="flowFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide the host stats so the graph gets more room'"
+            >
+              {{ flowFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
+            </button>
             <div class="cy-toolbar">
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>

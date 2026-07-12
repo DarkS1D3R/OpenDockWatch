@@ -3,6 +3,15 @@ import { stateEmoji, iconFor, parsePublishedPorts, formatRatePair, healthColor }
 let htmlLabelRegistered = false;
 let expandCollapseRegistered = false;
 
+// Below this zoom level a fit-to-screen view of more than a handful of containers is mostly
+// unreadable anyway (the 5px NET/DISK text is already illegible well before zoom 1, not just
+// below it) - compact mode trades the CPU/RAM bars and metric text for just enough to answer
+// "what is this and is it OK", legible at whatever zoom the graph actually fits at, one zoom-in
+// gesture away from the rest. Set high enough that only viewing at (or past) native size keeps
+// the full metrics - any amount of zooming out at all switches over.
+const COMPACT_ZOOM_THRESHOLD = 1;
+const COMPACT_HEIGHT = 34;
+
 const CY_STYLE = [
   {
     selector: 'node.group',
@@ -31,7 +40,7 @@ const CY_STYLE = [
       'border-color': '#2b2f38',
       label: '',
       width: 170,
-      height: 88,
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 88),
       shape: 'round-rectangle',
     },
   },
@@ -42,7 +51,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#3fb950',
       width: 170,
-      height: 76,
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 76),
       shape: 'round-rectangle',
     },
   },
@@ -53,7 +62,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#8b909c',
       width: 170,
-      height: 76,
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 76),
       shape: 'round-rectangle',
     },
   },
@@ -154,6 +163,17 @@ const CY_STYLE = [
 function clampPct(pct) {
   if (pct == null) return 0;
   return Math.max(0, Math.min(100, pct));
+}
+
+// Flips the compact rendering flag to match the current zoom - called on every 'viewport' event
+// (not just the debounced save) so it feels like a direct consequence of zooming, not a delayed
+// side effect. Mirrors the 'faded' pattern: cytoscape-node-html-label re-renders its overlay off
+// node data(), so setting it here is what makes the template below pick compact vs full up.
+function updateCompactFlag(cy) {
+  const compact = cy.zoom() < COMPACT_ZOOM_THRESHOLD;
+  cy.nodes('.running, .stopped, .cy-expand-collapse-collapsed-node').forEach((n) => {
+    if (n.data('compact') !== compact) n.data('compact', compact);
+  });
 }
 
 // Matches the CPU/mem color convention used everywhere else in the app (host tiles,
@@ -312,6 +332,23 @@ function saveViewport(hostId, viewport) {
 }
 
 const NODE_GAP = 16;
+const NODE_WIDTH = 170;
+const FULL_LEAF_HEIGHT = 76;
+const FULL_GROUP_HEIGHT = 88;
+
+// A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against on
+// its own - semantic zoom shrinks it to COMPACT_HEIGHT while zoomed out, and two nodes that are
+// just far enough apart while compact can end up overlapping once they grow back to full size on
+// zoom-in. Always reserving full-size spacing here means compact is purely a shrink into room
+// that was already there, never a size change that needs new room. A compound (expanded) group
+// has no such fixed size to fall back on - its box is inherently the union of whatever its
+// children currently render at, so that one's fine to read live.
+function effectiveBoundingBox(node) {
+  if (node.isParent()) return node.boundingBox();
+  const pos = node.position();
+  const h = node.hasClass('cy-expand-collapse-collapsed-node') ? FULL_GROUP_HEIGHT : FULL_LEAF_HEIGHT;
+  return { x1: pos.x - NODE_WIDTH / 2, x2: pos.x + NODE_WIDTH / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
+}
 
 // Blocks node boxes from being dragged on top of each other - with the html-label overlay
 // carrying all the real content (name, icon, metric bars), an overlapping pair renders as
@@ -324,8 +361,8 @@ function resolveNodeOverlap(node) {
   const cy = node.cy();
   const obstacles = cy.nodes('.running, .stopped, .group').not(node).not(node.ancestors()).not(node.descendants());
   obstacles.forEach((other) => {
-    const a = node.boundingBox();
-    const b = other.boundingBox();
+    const a = effectiveBoundingBox(node);
+    const b = effectiveBoundingBox(other);
     const overlapX = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1) + NODE_GAP;
     const overlapY = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1) + NODE_GAP;
     if (overlapX <= 0 || overlapY <= 0) return;
@@ -381,7 +418,17 @@ function arrangeGroupsInColumns(cy) {
 // exists - only a host with no saved viewport yet (or `fit: false`) gets auto-fit.
 // layoutstop fires synchronously for a non-animated layout like this, so this stays
 // synchronous end-to-end.
+//
+// Forces every node out of compact mode before dagre runs: a relayout triggered while zoomed
+// out (a container starting/stopping, say) would otherwise have dagre space everything for the
+// small compact boxes, and zooming back in later - nodes growing back to full size in place,
+// with only compact-sized room reserved between them - is exactly how a container ends up
+// visibly sitting on top of a neighboring group's box. compact is restored (via
+// updateCompactFlag, reading the real current zoom) only after the final viewport/zoom for this
+// pass is settled - not before, or it'd be judged against whatever zoom happened to be active
+// before a fit-to-all changes it moments later.
 function runLayout(cy, { fit, hostId }) {
+  cy.nodes().data('compact', false);
   const layout = cy.layout({ ...LAYOUT, fit: false });
   layout.one('layoutstop', () => {
     arrangeGroupsInColumns(cy);
@@ -393,6 +440,7 @@ function runLayout(cy, { fit, hostId }) {
     } else if (fit) {
       cy.fit(undefined, 30);
     }
+    updateCompactFlag(cy);
   });
   layout.run();
 }
@@ -458,6 +506,12 @@ export function updateGraph(cy, elements, hostId) {
   if (structureChanged) {
     runLayout(cy, { fit: true, hostId });
   }
+
+  // .data(el.data) above merges rather than replaces, so an existing node's compact flag
+  // survives a poll refresh untouched - but a node that's brand new this poll (or one just
+  // revealed by expanding a group) starts with no compact flag at all, which would render it
+  // in full mode regardless of the current zoom until the next actual zoom/pan.
+  updateCompactFlag(cy);
 }
 
 // Walks depends_on edges transitively from the selected node in one direction. 'target' follows
@@ -574,6 +628,10 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
   });
   cy.scratch('_odw_latestElements', elements);
   runLayout(cy, { fit: true, hostId });
+  // runLayout's fit/viewport-restore happens synchronously above, before the 'viewport'
+  // listener further down even exists yet - set the initial compact state explicitly rather
+  // than relying on that first fit to have been caught by a listener that isn't registered yet.
+  updateCompactFlag(cy);
 
   if (!expandCollapseRegistered && typeof cytoscapeExpandCollapse !== 'undefined') {
     cytoscape.use(cytoscapeExpandCollapse);
@@ -613,6 +671,9 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
           child.classes(el.classes || '');
         }
       });
+      // Newly-revealed children have no compact flag of their own yet - set it to match
+      // whatever the current zoom already says the rest of the graph should look like.
+      updateCompactFlag(cy);
 
       // A collapsed group is a small box, easy to drag right up against a neighbor without
       // tripping the drag-time overlap check (that only guards individual node drops, not the
@@ -641,6 +702,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
 
   let viewportSaveTimer = null;
   cy.on('viewport', () => {
+    updateCompactFlag(cy);
     clearTimeout(viewportSaveTimer);
     viewportSaveTimer = setTimeout(() => {
       saveViewport(hostId, { zoom: cy.zoom(), pan: cy.pan() });
@@ -672,7 +734,17 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) => `
+        tpl: (data) =>
+          data.compact
+            ? `
+          <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            <span class="cy-node-emoji">${data.emoji}</span>
+            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-name">${data.name}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `
+            : `
           <div class="cy-node-box${data.faded ? ' faded' : ''}">
             <span class="cy-node-emoji">${data.emoji}</span>
             <span class="cy-node-status">${data.status}</span>
@@ -705,7 +777,16 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) => `
+        tpl: (data) =>
+          data.compact
+            ? `
+          <div class="cy-node-box cy-node-group-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${data.label}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `
+            : `
           <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
             ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
             <span class="cy-node-name">${data.label}</span>
