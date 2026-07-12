@@ -60,8 +60,8 @@ services:
 ## Features
 
 - **List view** — containers grouped by Compose project, live CPU/memory columns, Start/Stop/Restart.
-- **Flow view** — a topology graph with automatic edges for shared Docker networks (only across different Compose projects, to avoid clutter) and real Compose `depends_on` relationships, plus manually declared edges for anything Docker can't see itself. Live CPU/mem bars, port badges, open-alert badges, a name filter, and PNG export.
-- **Details panel** and a full-width **log viewer** with level filters, live tailing over Server-Sent Events, and download.
+- **Flow view** — a topology graph with automatic edges for shared Docker networks (only across different Compose projects, to avoid clutter) and real Compose `depends_on` relationships, plus manually declared edges for anything Docker can't see itself. Live CPU/mem bars, network/disk rates, port badges, open-alert badges, a name filter, PNG export, and a Fullscreen toggle. Select a node to tint what it needs and what breaks if it dies, walking the real `depends_on` chain both directions. Collapse a Compose group to one aggregate box for large hosts, and zoom out to a compact view instead of shrinking metrics unreadable.
+- **Details panel** — status, stats, ports, and `docker inspect` details (env vars, mounts, labels, restart policy) a click away — plus a full-width **log viewer** with level filters, live tailing over Server-Sent Events, and download.
 - **Alerts** — container crashed / crash-looping / unhealthy / host unreachable out of the box, plus opt-in CPU / memory / disk-usage threshold rules. Optional push notification via webhook (Discord, ntfy, Gotify, Slack, or generic JSON).
 - Works against the local socket and any number of remote hosts over SSH — no agents to install anywhere.
 
@@ -71,7 +71,11 @@ services:
 
 ![Flow view, a topology graph of containers](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-view.png)
 
-![Container details panel with a live log preview](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/details-panel.png)
+![Flow view with a node selected, tinting its upstream dependencies purple and downstream dependents orange](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-blast-radius.png)
+
+![Flow view with a compose group collapsed into a single aggregate box showing container count, CPU/RAM, and health](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-collapsed.png)
+
+![Container details panel with a live log preview and expanded environment/labels sections](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/details-panel.png)
 
 ![Full-width log viewer pop-out with level filters](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/log-viewer.png)
 

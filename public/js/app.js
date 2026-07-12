@@ -1,5 +1,14 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
-import { parseMemUsedBytes, formatGB, healthColor, healthLabel, detectLogLevel, highlightLine, stripAnsi } from './format.js';
+import {
+  parseMemUsedBytes,
+  formatGB,
+  formatRatePair,
+  healthColor,
+  healthLabel,
+  detectLogLevel,
+  highlightLine,
+  stripAnsi,
+} from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -7,6 +16,7 @@ import {
   apiGetTopology,
   apiGetHostInfo,
   apiContainerAction,
+  apiGetContainerInspect,
   logsUrl,
   downloadLogsUrl,
   apiLogout,
@@ -25,7 +35,7 @@ import {
   apiSaveThresholdConfig,
   apiClearThresholdConfig,
 } from './api.js';
-import { buildElements, createGraph, updateGraph, applyFading, exportPng } from './graph.js';
+import { buildElements, createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from './graph.js';
 
 const { createApp } = Vue;
 
@@ -51,6 +61,7 @@ createApp({
       edgeFilters: { dependsOn: true, network: true, manual: true },
       flowFilterText: '',
       edgeInfoText: null,
+      flowFullscreen: false,
 
       hostInfo: null,
       diskUsage: [],
@@ -64,6 +75,7 @@ createApp({
       activityEventSource: null,
 
       selectedContainerId: null,
+      containerInspect: null,
       previewLogLines: [],
       previewEventSource: null,
       previewAtBottom: true,
@@ -242,7 +254,11 @@ createApp({
         if (newId) this.cy.$id(newId).addClass('selected');
         if (this.view === 'flow') this.applyFlowFading();
       }
-      if (newId) this.openPreviewStream(newId);
+      this.containerInspect = null;
+      if (newId) {
+        this.openPreviewStream(newId);
+        this.fetchContainerInspect(newId);
+      }
     },
     stateFilter() {
       if (this.view === 'flow') this.renderGraph();
@@ -392,6 +408,7 @@ createApp({
     },
     async setView(v) {
       this.view = v;
+      if (v !== 'flow') this.flowFullscreen = false;
       if (v === 'flow') {
         await this.fetchTopology();
       } else if (v === 'activity') {
@@ -451,6 +468,17 @@ createApp({
         /* stats are best-effort */
       }
     },
+    async fetchContainerInspect(id) {
+      if (!this.selectedHostId) return;
+      try {
+        const inspect = await apiGetContainerInspect(this.selectedHostId, id);
+        // The user may have clicked a different container (or closed the panel) before this
+        // resolved - only apply it if it's still the one being looked at.
+        if (this.selectedContainerId === id) this.containerInspect = inspect;
+      } catch {
+        /* inspect details are best-effort */
+      }
+    },
     async fetchTopology() {
       if (!this.selectedHostId) return;
       try {
@@ -493,11 +521,28 @@ createApp({
       } else if (edgeData.kind === 'manual') {
         this.edgeInfoText = `${from} → ${to}${edgeData.label ? `: ${edgeData.label}` : ''} (declared in hosts.json)`;
       } else {
-        this.edgeInfoText = `${from} and ${to} share a Docker network`;
+        this.edgeInfoText = edgeData.label ? `${from} and ${to} share ${edgeData.label}` : `${from} and ${to} share a Docker network`;
       }
     },
     async exportFlowPng() {
       await exportPng(this.cy);
+    },
+    collapseAllFlowGroups() {
+      collapseAllGroups(this.cy);
+    },
+    expandAllFlowGroups() {
+      expandAllGroups(this.cy);
+    },
+    async toggleFlowFullscreen() {
+      this.flowFullscreen = !this.flowFullscreen;
+      // Wait for the height change (host card hidden, .cy-container grown) to actually land in
+      // the DOM before telling cytoscape about it - resize() reads the container's current
+      // rendered size, so calling it a tick too early would just re-measure the old size.
+      await this.$nextTick();
+      if (this.cy) {
+        this.cy.resize();
+        this.cy.fit(undefined, 30);
+      }
     },
     zoomBy(factor) {
       if (!this.cy) return;
@@ -521,6 +566,7 @@ createApp({
       }
     },
     selectContainerById(id) {
+      this.settingsOpen = false;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
     closeDetail() {
@@ -687,6 +733,18 @@ createApp({
     fmtGB(bytes) {
       return formatGB(bytes || 0);
     },
+    fmtRatePair(a, b) {
+      return formatRatePair(a, b);
+    },
+    fmtCreated(iso) {
+      return iso ? new Date(iso).toLocaleString() : '—';
+    },
+    fmtRestartPolicy(inspect) {
+      if (!inspect || !inspect.restartPolicy) return '—';
+      const labels = { no: 'No', always: 'Always', 'unless-stopped': 'Unless stopped', 'on-failure': 'On failure' };
+      const label = labels[inspect.restartPolicy] || inspect.restartPolicy;
+      return inspect.restartPolicy === 'on-failure' && inspect.restartMaxRetries ? `${label} (max ${inspect.restartMaxRetries})` : label;
+    },
     healthDotColor(health) {
       return healthColor(health);
     },
@@ -701,6 +759,8 @@ createApp({
       window.location.href = '/login';
     },
     async openSettings() {
+      // Both panels are fixed to the same right-hand 520px slot - only one at a time makes sense.
+      this.selectedContainerId = null;
       this.settingsOpen = true;
       this.webhookError = null;
       this.webhookStatus = null;
@@ -827,7 +887,7 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo && !popoutFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-if="hostInfo && !popoutFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="host-card-header">
           <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
           <strong>{{ currentHostName }}</strong>
@@ -883,7 +943,7 @@ createApp({
         </div>
       </div>
 
-      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
             <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
@@ -967,11 +1027,20 @@ createApp({
             <p v-if="!loadingContainers && !containers.length" class="muted">No containers found.</p>
           </div>
 
-          <div v-show="view === 'flow'" class="cy-wrap">
+          <div v-show="view === 'flow'" class="cy-wrap" :class="{ 'cy-fullscreen': flowFullscreen }">
+            <button
+              class="cy-fullscreen-btn"
+              @click="toggleFlowFullscreen"
+              :title="flowFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide the host stats so the graph gets more room'"
+            >
+              {{ flowFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
+            </button>
             <div class="cy-toolbar">
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>
               <button @click="zoomFit">Fit</button>
+              <button @click="collapseAllFlowGroups">Collapse all</button>
+              <button @click="expandAllFlowGroups">Expand all</button>
               <button @click="exportFlowPng">Export PNG</button>
               <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
               <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
@@ -987,6 +1056,8 @@ createApp({
               <span class="legend-item"><span class="line line-depends-on"></span> depends-on</span>
               <span class="legend-item"><span class="line line-manual"></span> declared dependency</span>
               <span class="legend-item"><span class="swatch swatch-alert"></span> open alert</span>
+              <span class="legend-item"><span class="swatch swatch-blast-upstream"></span> selection needs (on select)</span>
+              <span class="legend-item"><span class="swatch swatch-blast-downstream"></span> will suffer if selection dies (on select)</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-cpu"></span> CPU</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-mem"></span> RAM</span>
             </p>
@@ -1044,10 +1115,42 @@ createApp({
             <div class="detail-row"><span class="label">Image</span><span>{{ selectedContainer.image }}</span></div>
             <div class="detail-row"><span class="label">CPU</span><span>{{ statFor(selectedContainer.id).cpuPerc || '—' }}</span></div>
             <div class="detail-row"><span class="label">Memory</span><span>{{ statFor(selectedContainer.id).memUsage || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Net I/O</span><span>{{ statFor(selectedContainer.id).netIO || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Block I/O</span><span>{{ statFor(selectedContainer.id).blockIO || '—' }}</span></div>
+            <div class="detail-row"><span class="label">Net I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).netRxRate, statFor(selectedContainer.id).netTxRate) }}</span></div>
+            <div class="detail-row"><span class="label">Block I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).blockReadRate, statFor(selectedContainer.id).blockWriteRate) }}</span></div>
             <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
             <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
+
+            <template v-if="containerInspect">
+              <div class="detail-row"><span class="label">Created</span><span>{{ fmtCreated(containerInspect.createdAt) }}</span></div>
+              <div class="detail-row"><span class="label">Restart Policy</span><span>{{ fmtRestartPolicy(containerInspect) }}</span></div>
+
+              <details class="inspect-section">
+                <summary>Environment ({{ containerInspect.env.length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(line, i) in containerInspect.env" :key="i" class="inspect-line mono">{{ line }}</div>
+                  <div v-if="!containerInspect.env.length" class="muted small">None</div>
+                </div>
+              </details>
+
+              <details class="inspect-section">
+                <summary>Mounts ({{ containerInspect.mounts.length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(m, i) in containerInspect.mounts" :key="i" class="inspect-line">
+                    <span class="mono">{{ m.source || m.type }}</span> → <span class="mono">{{ m.destination }}</span>
+                    <span class="muted small">({{ m.rw ? 'rw' : 'ro' }})</span>
+                  </div>
+                  <div v-if="!containerInspect.mounts.length" class="muted small">None</div>
+                </div>
+              </details>
+
+              <details class="inspect-section">
+                <summary>Labels ({{ Object.keys(containerInspect.labels).length }})</summary>
+                <div class="inspect-list">
+                  <div v-for="(v, k) in containerInspect.labels" :key="k" class="inspect-line mono">{{ k }}={{ v }}</div>
+                  <div v-if="!Object.keys(containerInspect.labels).length" class="muted small">None</div>
+                </div>
+              </details>
+            </template>
 
             <div class="detail-actions" v-if="isAdmin">
               <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'start')">Start</button>
@@ -1137,13 +1240,12 @@ createApp({
         </div>
       </div>
 
-      <div v-if="settingsOpen" class="modal-backdrop" @click.self="closeSettings">
-        <div class="modal-card">
-          <div class="modal-header">
-            <strong>Alert webhook</strong>
-            <button @click="closeSettings">✕</button>
-          </div>
-          <div class="modal-body">
+      <aside v-if="settingsOpen" class="detail-panel">
+        <div class="detail-header">
+          <strong>Settings</strong>
+          <button @click="closeSettings">✕</button>
+        </div>
+        <div class="detail-body">
             <p class="muted small">
               Sets ALERT_WEBHOOK_URL for all hosts. Supports
               <code>discord://</code>, <code>ntfy://</code>, <code>gotify://</code> / <code>gotifys://</code>, or any
@@ -1204,9 +1306,8 @@ createApp({
               <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
               <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
             </div>
-          </div>
         </div>
-      </div>
+      </aside>
     </div>
   `,
 }).mount('#app');

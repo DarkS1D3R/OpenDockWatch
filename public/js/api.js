@@ -45,6 +45,10 @@ export async function apiContainerAction(hostId, id, action) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/${action}`, { method: 'POST' }));
 }
 
+export async function apiGetContainerInspect(hostId, id) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/inspect`));
+}
+
 export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
 }

@@ -17,6 +17,7 @@ const {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getContainerInspect,
 } = require('./docker');
 const db = require('./db');
 const alerts = require('./alerts');
@@ -153,6 +154,16 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
   }
 });
 
+api.get('/hosts/:hostId/containers/:id/inspect', async (req, res) => {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    res.json(await getContainerInspect(host, req.params.id));
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
+});
+
 api.get('/hosts/:hostId/info', async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
@@ -166,6 +177,11 @@ api.get('/hosts/:hostId/info', async (req, res) => {
 api.get('/hosts/:hostId/stats', async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
+  // Prefer metricsCollector's snapshot over a fresh `docker stats` call: it's the only place the
+  // NET/DISK rx/tx and read/write rates (computed from consecutive polls) are available, and it's
+  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet.
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  if (snapshot && snapshot.reachable) return res.json(snapshot.stats);
   try {
     res.json(await getStats(host));
   } catch (err) {
@@ -177,7 +193,8 @@ api.get('/hosts/:hostId/topology', async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   try {
-    const topology = await getTopology(host);
+    const snapshot = metricsCollector.getSnapshot(host.id);
+    const topology = await getTopology(host, snapshot);
     const alertCounts = db.getOpenAlertCountsByContainer(host.id);
     for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
     res.json(topology);

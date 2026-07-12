@@ -378,14 +378,24 @@ table.containers td:nth-child(7) {
 }
 
 .cy-wrap {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
   padding: 8px;
 }
+.cy-fullscreen-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
 .cy-container {
   width: 100%;
   height: 560px;
+}
+.cy-fullscreen .cy-container {
+  height: calc(100vh - 220px);
 }
 .cy-toolbar {
   display: flex;
@@ -429,6 +439,24 @@ table.containers td:nth-child(7) {
 }
 .cy-node-box.faded {
   opacity: 0.15;
+}
+.cy-node-box-compact {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  box-sizing: border-box;
+}
+.cy-node-box-compact .cy-node-icon {
+  position: static;
+  flex: none;
+}
+.cy-node-box-compact .cy-node-name {
+  position: static;
+  transform: none;
+  max-width: 120px;
 }
 .cy-node-emoji {
   position: absolute;
@@ -551,6 +579,30 @@ table.containers td:nth-child(7) {
   line-height: 12px;
   text-align: center;
 }
+.cy-node-group-box {
+  height: 88px;
+}
+.cy-node-group-box .cy-node-name {
+  top: 22px;
+  max-width: 140px;
+}
+.cy-node-group-count {
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cy-node-group-health {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
 .legend {
   display: flex;
   gap: 18px;
@@ -579,6 +631,14 @@ table.containers td:nth-child(7) {
 .swatch-alert {
   border: none;
   background: var(--danger);
+}
+.swatch-blast-upstream {
+  border: none;
+  background: #a371f7;
+}
+.swatch-blast-downstream {
+  border: none;
+  background: #f0883e;
 }
 .line {
   width: 22px;
@@ -609,10 +669,14 @@ table.containers td:nth-child(7) {
   width: 520px;
   flex: none;
   position: fixed;
-  top: 0;
+  /* Matches .topbar's rendered height (24px .app padding-top + 52px content) - starting at the
+     very top of the viewport would draw this panel's own header (title + close button) right
+     over the app's Settings/Logout/nav buttons, hiding and click-blocking them at once. Used for
+     both the container detail panel and the settings panel, so this has to hold for both. */
+  top: 76px;
   right: 0;
   bottom: 0;
-  height: 100vh;
+  height: calc(100vh - 76px);
   overflow-y: auto;
   background: var(--panel);
   border: none;
@@ -654,6 +718,35 @@ table.containers td:nth-child(7) {
   display: flex;
   gap: 8px;
   margin: 14px 0;
+}
+.inspect-section {
+  margin: 8px 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.inspect-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.inspect-section summary:hover {
+  color: var(--text);
+}
+.inspect-list {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.inspect-line {
+  font-size: 12px;
+  word-break: break-all;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .detail-body h3 {
   font-size: 13px;
@@ -1034,31 +1127,6 @@ table.containers td:nth-child(7) {
   margin-left: 12px;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 20;
-}
-.modal-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  width: 420px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
 .modal-body {
   padding: 16px;
 }

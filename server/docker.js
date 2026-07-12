@@ -112,6 +112,28 @@ function parseMemUsedBytes(memUsageStr) {
   return parseByteString((memUsageStr || '').split('/')[0]);
 }
 
+// docker stats reports NetIO/BlockIO as cumulative totals since the container started, which
+// carries no information about "right now" - a month-old container just reads e.g. "48GB / 52GB"
+// forever. The actual signal is the rate of change, computed from the delta against the previous
+// poll's cumulative bytes for the same container, over the elapsed time between polls. A negative
+// delta means the counter reset (container restarted since the last poll) - treated as unknown
+// rather than reported as a negative rate.
+function computeRate(currentBytes, prevBytes, elapsedSec) {
+  if (prevBytes == null || currentBytes == null || !elapsedSec || elapsedSec <= 0) return null;
+  const delta = currentBytes - prevBytes;
+  if (delta < 0) return null;
+  return delta / elapsedSec;
+}
+
+function computeIoRates(current, prev, elapsedSec) {
+  return {
+    netRxRate: computeRate(current.netRxBytes, prev ? prev.netRxBytes : null, elapsedSec),
+    netTxRate: computeRate(current.netTxBytes, prev ? prev.netTxBytes : null, elapsedSec),
+    blockReadRate: computeRate(current.blockReadBytes, prev ? prev.blockReadBytes : null, elapsedSec),
+    blockWriteRate: computeRate(current.blockWriteBytes, prev ? prev.blockWriteBytes : null, elapsedSec),
+  };
+}
+
 async function getStats(host) {
   const stdout = await run([...hostArgs(host), 'stats', '--no-stream', '--format', '{{json .}}']);
   const byId = {};
@@ -151,7 +173,7 @@ function networkEdges(containers) {
   }
   const seen = new Set();
   const edges = [];
-  for (const members of byNetwork.values()) {
+  for (const [net, members] of byNetwork.entries()) {
     for (let i = 0; i < members.length; i++) {
       for (let j = i + 1; j < members.length; j++) {
         const a = members[i];
@@ -160,7 +182,7 @@ function networkEdges(containers) {
         const key = [a.id, b.id].sort().join('|');
         if (seen.has(key)) continue;
         seen.add(key);
-        edges.push({ source: a.id, target: b.id, kind: 'network' });
+        edges.push({ source: a.id, target: b.id, kind: 'network', label: net });
       }
     }
   }
@@ -222,10 +244,16 @@ function manualEdges(containers, declared = []) {
   return edges;
 }
 
-async function getTopology(host) {
-  const containers = await listContainers(host);
+// `snapshot` is metricsCollector's cached poll result for this host (containers + stats, already
+// fetched on its own 5s cadence) - reusing it here avoids a second, independent round of `docker
+// ps`/`docker stats` calls on every topology request, and it's the only place the rx/tx and
+// read/write rates (computed by metricsCollector from consecutive polls) are available. Falls
+// back to a fresh live fetch when there's no usable snapshot yet (e.g. right after server start).
+async function getTopology(host, snapshot) {
+  const useSnapshot = snapshot && snapshot.containers && snapshot.containers.length;
+  const containers = useSnapshot ? snapshot.containers : await listContainers(host);
   const [stats, dependsOnRaw] = await Promise.all([
-    getStats(host).catch(() => ({})),
+    useSnapshot ? Promise.resolve(snapshot.stats || {}) : getStats(host).catch(() => ({})),
     run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
   ]);
   const nodes = containers.map((c) => {
@@ -242,12 +270,36 @@ async function getTopology(host) {
       ports: c.ports,
       cpuPerc: s ? parseFloat(s.cpuPerc) || 0 : null,
       memPerc: s ? parseFloat(s.memPerc) || 0 : null,
-      netIO: s ? s.netIO : null,
-      blockIO: s ? s.blockIO : null,
+      netRxRate: s ? (s.netRxRate ?? null) : null,
+      netTxRate: s ? (s.netTxRate ?? null) : null,
+      blockReadRate: s ? (s.blockReadRate ?? null) : null,
+      blockWriteRate: s ? (s.blockWriteRate ?? null) : null,
     };
   });
   const edges = [...networkEdges(containers), ...dependsOnEdges(containers, dependsOnRaw), ...manualEdges(containers, host.edges)];
   return { nodes, edges };
+}
+
+// `docker inspect` is the one place env vars, mounts, labels, restart policy, and created time
+// live - none of it comes back from `docker ps`/`docker stats`. Fetched on demand (container
+// selection) rather than on the metrics poll cycle: unlike CPU/mem this doesn't change from one
+// poll to the next, so there's no reason to shell out for it every 5s for every container.
+async function getContainerInspect(host, id) {
+  const stdout = await run([...hostArgs(host), 'inspect', id]);
+  const [raw] = JSON.parse(stdout);
+  return {
+    createdAt: raw.Created,
+    restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
+    restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
+    env: raw.Config?.Env || [],
+    labels: raw.Config?.Labels || {},
+    mounts: (raw.Mounts || []).map((m) => ({
+      type: m.Type,
+      source: m.Source,
+      destination: m.Destination,
+      rw: m.RW,
+    })),
+  };
 }
 
 async function containerAction(host, id, action) {
@@ -297,10 +349,13 @@ module.exports = {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getContainerInspect,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,
   parseHealth,
   networkEdges,
   dependsOnEdges,
+  computeRate,
+  computeIoRates,
 };

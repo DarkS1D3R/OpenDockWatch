@@ -5,11 +5,14 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 ## Features
 
 - **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns and Start/Stop/Restart actions. Filter by All / Running / Stopped.
-- **Flow view** — a graph of containers (grouped visually by compose project) with zoom/fit controls, a name filter, per-edge-kind toggles, and PNG export. Nodes show a state indicator (running / restarting / paused / stopped) in the top-left corner, an uptime/status string in the bottom-right, live CPU/RAM bars, network/disk I/O, published ports, and a badge for open alerts. Selecting a node dims everything outside its immediate neighborhood. Edges are drawn three ways:
-  - **Depends-on**: read straight from Compose's own `com.docker.compose.depends_on` label (service + startup condition), so it reflects the real `depends_on:` block — no compose file parsing needed, and it works for remote SSH hosts too.
-  - **Auto (network)**: containers sharing a custom Docker network are connected — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
-  - **Manual**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
-- **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, ports, networks, actions, and a small live log preview (last 100 lines).
+- **Flow view** — a graph of containers, grouped visually by compose project, with zoom/fit controls, a name filter, per-edge-kind toggles, PNG export, and a Fullscreen toggle that hides the host stats card so the graph gets the room. Nodes show a state indicator, an uptime/status string, live CPU/RAM bars, network/disk I/O as current rates (not lifetime totals), published ports, and a badge for open alerts.
+  - **Compose-group collapse** — collapse a group to a single aggregate box (container count, summed CPU/RAM, worst health, total open alerts) via the +/- cue on the group or the Collapse/Expand-all buttons — drilling into a large host ArgoCD-style instead of staring at a hairball.
+  - **Blast-radius selection** — selecting a node walks its `depends_on` chain both directions and tints the result: what it needs to be healthy (upstream) and what breaks if it dies (downstream) get distinct colors, with everything else dimmed — not just the immediate neighborhood.
+  - **Semantic zoom** — below native size, nodes switch to a compact state/icon/name rendering instead of shrinking their full metrics down to unreadable, one zoom-in gesture away from the rest.
+  - **Depends-on edges**: read straight from Compose's own `com.docker.compose.depends_on` label (service + startup condition), so it reflects the real `depends_on:` block — no compose file parsing needed, and it works for remote SSH hosts too.
+  - **Auto (network) edges**: containers sharing a custom Docker network are connected, labeled with the network's name — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
+  - **Manual edges**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
+- **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, network/disk I/O rates, ports, networks, actions, and a small live log preview (last 100 lines). Created time, restart policy, environment variables, mounts, and labels — the things you'd otherwise `docker inspect` for — are one click away in collapsed sections.
 - **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file.
 - **Activity view** — alerts and the raw container event log (start/stop/die/oom, etc.) side by side, each independently searchable and scrollable, with an unread-alert count badge on the tab itself and a checkmark on any alert you've acknowledged. See [Alerts](#alerts) below for the rule list and webhook setup.
 
@@ -23,9 +26,17 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ![Flow view, a topology graph of containers](screenshots/flow-view.png)
 
-**Details panel** — status, image, CPU/mem, ports, networks, actions, and a live log preview
+**Blast-radius selection** — selecting a node tints what it needs (purple) and what breaks if it dies (orange), walking the real `depends_on` chain in both directions
 
-![Container details panel with a live log preview](screenshots/details-panel.png)
+![Flow view with a node selected, tinting its upstream dependencies purple and downstream dependents orange](screenshots/flow-blast-radius.png)
+
+**Compose-group collapse** — drill into a large host ArgoCD-style instead of staring at a hairball
+
+![Flow view with a compose group collapsed into a single aggregate box showing container count, CPU/RAM, and health](screenshots/flow-collapsed.png)
+
+**Details panel** — status, image, CPU/mem, network/disk rates, ports, networks, actions, a live log preview, and `docker inspect` details (environment, mounts, labels, restart policy) a click away
+
+![Container details panel with a live log preview and expanded environment/labels sections](screenshots/details-panel.png)
 
 **Log viewer** — full-width pop-out with level filters, regex search, and download
 
@@ -154,3 +165,16 @@ Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE). You're free to use, self-host, and modify OpenDockWatch, including internally within an organization. If you distribute a modified version, or run a modified version as a service that other people/users interact with over a network, you must make that modified source available to them under the same license.
+
+## Third-party libraries
+
+The frontend has no build step or bundler — these are vendored as plain `<script>` includes under `public/vendor/`, unmodified from upstream. All MIT-licensed:
+
+| Library                                                                                                        | Used for                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| [Vue](https://github.com/vuejs/core)                                                                           | the whole frontend UI                                                                                      |
+| [Cytoscape.js](https://github.com/cytoscape/cytoscape.js)                                                      | the Flow view's graph rendering and interaction                                                            |
+| [dagre](https://github.com/dagrejs/dagre) / [cytoscape-dagre](https://github.com/cytoscape/cytoscape.js-dagre) | automatic graph layout                                                                                     |
+| [cytoscape-node-html-label](https://github.com/kaluginserg/cytoscape-node-html-label)                          | the HTML-based node content (name, icons, metric bars, badges)                                             |
+| [cytoscape-expand-collapse](https://github.com/iVis-at-Bilkent/cytoscape.js-expand-collapse)                   | compose-group collapse/expand in the Flow view                                                             |
+| [html2canvas-pro](https://github.com/yorickshan/html2canvas-pro)                                               | Flow view's PNG export (screenshots the real DOM, since node content lives outside Cytoscape's own canvas) |
