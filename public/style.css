@@ -669,10 +669,14 @@ table.containers td:nth-child(7) {
   width: 520px;
   flex: none;
   position: fixed;
-  top: 0;
+  /* Matches .topbar's rendered height (24px .app padding-top + 52px content) - starting at the
+     very top of the viewport would draw this panel's own header (title + close button) right
+     over the app's Settings/Logout/nav buttons, hiding and click-blocking them at once. Used for
+     both the container detail panel and the settings panel, so this has to hold for both. */
+  top: 76px;
   right: 0;
   bottom: 0;
-  height: 100vh;
+  height: calc(100vh - 76px);
   overflow-y: auto;
   background: var(--panel);
   border: none;
@@ -1123,31 +1127,6 @@ table.containers td:nth-child(7) {
   margin-left: 12px;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 20;
-}
-.modal-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  width: 420px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
 .modal-body {
   padding: 16px;
 }

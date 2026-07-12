@@ -566,6 +566,7 @@ createApp({
       }
     },
     selectContainerById(id) {
+      this.settingsOpen = false;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
     closeDetail() {
@@ -758,6 +759,8 @@ createApp({
       window.location.href = '/login';
     },
     async openSettings() {
+      // Both panels are fixed to the same right-hand 520px slot - only one at a time makes sense.
+      this.selectedContainerId = null;
       this.settingsOpen = true;
       this.webhookError = null;
       this.webhookStatus = null;
@@ -884,7 +887,7 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo && !popoutFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-if="hostInfo && !popoutFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="host-card-header">
           <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
           <strong>{{ currentHostName }}</strong>
@@ -940,7 +943,7 @@ createApp({
         </div>
       </div>
 
-      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer }">
+      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
             <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
@@ -1237,13 +1240,12 @@ createApp({
         </div>
       </div>
 
-      <div v-if="settingsOpen" class="modal-backdrop" @click.self="closeSettings">
-        <div class="modal-card">
-          <div class="modal-header">
-            <strong>Alert webhook</strong>
-            <button @click="closeSettings">✕</button>
-          </div>
-          <div class="modal-body">
+      <aside v-if="settingsOpen" class="detail-panel">
+        <div class="detail-header">
+          <strong>Settings</strong>
+          <button @click="closeSettings">✕</button>
+        </div>
+        <div class="detail-body">
             <p class="muted small">
               Sets ALERT_WEBHOOK_URL for all hosts. Supports
               <code>discord://</code>, <code>ntfy://</code>, <code>gotify://</code> / <code>gotifys://</code>, or any
@@ -1304,9 +1306,8 @@ createApp({
               <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
               <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
             </div>
-          </div>
         </div>
-      </div>
+      </aside>
     </div>
   `,
 }).mount('#app');
