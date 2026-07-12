@@ -34,6 +34,10 @@ import {
   apiGetThresholdConfig,
   apiSaveThresholdConfig,
   apiClearThresholdConfig,
+  apiGetHostsConfig,
+  apiAddHost,
+  apiUpdateHost,
+  apiDeleteHost,
 } from './api.js';
 import { buildElements, createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from './graph.js';
 
@@ -73,6 +77,8 @@ createApp({
       activityEvents: [],
       eventSearch: '',
       activityEventSource: null,
+      alertsAtTop: true,
+      eventsAtTop: true,
 
       selectedContainerId: null,
       containerInspect: null,
@@ -81,17 +87,17 @@ createApp({
       previewAtBottom: true,
       previewLoading: false,
 
-      popoutOpen: false,
-      popoutTail: 200,
-      popoutFilter: '',
-      popoutRegexMode: false,
-      popoutLevels: { error: true, warn: true, info: true, debug: true },
-      popoutLogLines: [],
-      popoutEventSource: null,
-      popoutAtBottom: true,
-      popoutLoading: false,
-      popoutFullscreen: false,
-      popoutShowTimestamps: true,
+      logViewerOpen: false,
+      logViewerTail: 200,
+      logViewerFilter: '',
+      logViewerRegexMode: false,
+      logViewerLevels: { error: true, warn: true, info: true, debug: true },
+      logViewerLines: [],
+      logViewerEventSource: null,
+      logViewerAtBottom: true,
+      logViewerLoading: false,
+      logViewerFullscreen: false,
+      logViewerShowTimestamps: true,
 
       settingsOpen: false,
       webhookUrl: '',
@@ -107,6 +113,14 @@ createApp({
       thresholdsSaving: false,
       thresholdsError: null,
       thresholdsStatus: null,
+
+      settingsHosts: [],
+      newHost: { id: '', name: '', dockerHost: '' },
+      hostsSaving: false,
+      hostsError: null,
+      hostsStatus: null,
+      editingHostId: null,
+      editHostDraft: { name: '', dockerHost: '' },
     };
   },
   computed: {
@@ -217,9 +231,9 @@ createApp({
       }
       return out;
     },
-    popoutTestRegex() {
-      if (!this.popoutRegexMode) return null;
-      const pattern = this.popoutFilter.trim();
+    logViewerTestRegex() {
+      if (!this.logViewerRegexMode) return null;
+      const pattern = this.logViewerFilter.trim();
       if (!pattern) return null;
       try {
         return new RegExp(pattern, 'i');
@@ -227,19 +241,19 @@ createApp({
         return null;
       }
     },
-    popoutRegexError() {
-      if (!this.popoutRegexMode || !this.popoutFilter.trim()) return null;
-      return this.popoutTestRegex ? null : 'Invalid regex';
+    logViewerRegexError() {
+      if (!this.logViewerRegexMode || !this.logViewerFilter.trim()) return null;
+      return this.logViewerTestRegex ? null : 'Invalid regex';
     },
-    filteredPopoutLines() {
-      const filterText = this.popoutFilter.trim();
+    filteredLogViewerLines() {
+      const filterText = this.logViewerFilter.trim();
       const filterLower = filterText.toLowerCase();
-      const regexMode = this.popoutRegexMode;
-      const testRegex = this.popoutTestRegex;
-      return this.popoutLogLines
+      const regexMode = this.logViewerRegexMode;
+      const testRegex = this.logViewerTestRegex;
+      return this.logViewerLines
         .filter((line) => {
           const level = detectLogLevel(stripAnsi(line.text));
-          if (level && !this.popoutLevels[level]) return false;
+          if (level && !this.logViewerLevels[level]) return false;
           if (!filterText) return true;
           if (regexMode) return testRegex ? testRegex.test(line.text) : true;
           return line.text.toLowerCase().includes(filterLower);
@@ -250,7 +264,7 @@ createApp({
   watch: {
     selectedContainerId(newId) {
       this.closePreviewStream();
-      this.closePopout();
+      this.closeLogViewer();
       this.previewLogLines = [];
       this._previewBuffer = [];
       this._previewFlushPending = false;
@@ -281,16 +295,16 @@ createApp({
   },
   created() {
     // Plain (non-reactive) buffers for batching high-volume log streams - see
-    // queuePreviewLine/queuePopoutLine. Keeping these off the reactive `data()`
+    // queuePreviewLine/queueLogViewerLine. Keeping these off the reactive `data()`
     // object avoids Vue tracking every push into them.
     this._previewBuffer = [];
     this._previewFlushPending = false;
     this._previewNextId = 0;
     this._previewLoadingTimer = null;
-    this._popoutBuffer = [];
-    this._popoutFlushPending = false;
-    this._popoutNextId = 0;
-    this._popoutLoadingTimer = null;
+    this._logViewerBuffer = [];
+    this._logViewerFlushPending = false;
+    this._logViewerNextId = 0;
+    this._logViewerLoadingTimer = null;
   },
   async mounted() {
     try {
@@ -308,7 +322,7 @@ createApp({
   beforeUnmount() {
     this.stopPolling();
     this.closePreviewStream();
-    this.closePopout();
+    this.closeLogViewer();
     this.closeActivityStream();
     if (this.cy) this.cy.destroy();
   },
@@ -475,6 +489,24 @@ createApp({
     formatEventTime(ts) {
       return new Date(ts).toLocaleTimeString();
     },
+    onAlertsScroll() {
+      const el = this.$refs.alertsListView;
+      if (el) this.alertsAtTop = el.scrollTop < 40;
+    },
+    scrollAlertsToTop() {
+      const el = this.$refs.alertsListView;
+      if (el) el.scrollTop = 0;
+      this.alertsAtTop = true;
+    },
+    onEventsScroll() {
+      const el = this.$refs.eventsListView;
+      if (el) this.eventsAtTop = el.scrollTop < 40;
+    },
+    scrollEventsToTop() {
+      const el = this.$refs.eventsListView;
+      if (el) el.scrollTop = 0;
+      this.eventsAtTop = true;
+    },
     async fetchContainers() {
       if (!this.selectedHostId) return;
       this.loadingContainers = true;
@@ -596,6 +628,15 @@ createApp({
       this.settingsOpen = false;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
+    async openLogsFor(id) {
+      this.settingsOpen = false;
+      this.selectedContainerId = id;
+      // The selectedContainerId watcher closes the log viewer as part of resetting log state for
+      // the new container - wait for that to settle before opening it, or it immediately clobbers
+      // the logViewerOpen flag we're about to set.
+      await this.$nextTick();
+      await this.openLogViewer();
+    },
     closeDetail() {
       this.selectedContainerId = null;
     },
@@ -664,89 +705,89 @@ createApp({
     formatPreviewLine(text) {
       return highlightLine(text, '', false);
     },
-    async openPopout() {
+    async openLogViewer() {
       if (!this.selectedContainerId) return;
-      this.popoutOpen = true;
-      this.startPopoutStream();
+      this.logViewerOpen = true;
+      this.startLogViewerStream();
       await this.$nextTick();
       this.$refs.logPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
-    closePopout() {
-      this.popoutOpen = false;
-      this.popoutFullscreen = false;
-      clearTimeout(this._popoutLoadingTimer);
-      if (this.popoutEventSource) {
-        this.popoutEventSource.close();
-        this.popoutEventSource = null;
+    closeLogViewer() {
+      this.logViewerOpen = false;
+      this.logViewerFullscreen = false;
+      clearTimeout(this._logViewerLoadingTimer);
+      if (this.logViewerEventSource) {
+        this.logViewerEventSource.close();
+        this.logViewerEventSource = null;
       }
-      this.popoutLogLines = [];
-      this._popoutBuffer = [];
-      this._popoutFlushPending = false;
-      this.popoutLoading = false;
+      this.logViewerLines = [];
+      this._logViewerBuffer = [];
+      this._logViewerFlushPending = false;
+      this.logViewerLoading = false;
     },
-    startPopoutStream() {
+    startLogViewerStream() {
       if (!this.selectedContainerId) return;
-      if (this.popoutEventSource) this.popoutEventSource.close();
-      this.popoutLogLines = [];
-      this._popoutBuffer = [];
-      this._popoutNextId = 0;
-      this.popoutAtBottom = true;
-      this.popoutLoading = true;
-      clearTimeout(this._popoutLoadingTimer);
-      this._popoutLoadingTimer = setTimeout(() => {
-        this.popoutLoading = false;
+      if (this.logViewerEventSource) this.logViewerEventSource.close();
+      this.logViewerLines = [];
+      this._logViewerBuffer = [];
+      this._logViewerNextId = 0;
+      this.logViewerAtBottom = true;
+      this.logViewerLoading = true;
+      clearTimeout(this._logViewerLoadingTimer);
+      this._logViewerLoadingTimer = setTimeout(() => {
+        this.logViewerLoading = false;
       }, 2000);
-      this.popoutEventSource = new EventSource(logsUrl(this.selectedHostId, this.selectedContainerId, this.popoutTail));
-      this.popoutEventSource.onmessage = (e) => {
-        this.queuePopoutLine(e.data);
+      this.logViewerEventSource = new EventSource(logsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail));
+      this.logViewerEventSource.onmessage = (e) => {
+        this.queueLogViewerLine(e.data);
       };
-      this.popoutEventSource.onerror = () => {
-        this.queuePopoutLine('[opendockwatch] log stream disconnected');
+      this.logViewerEventSource.onerror = () => {
+        this.queueLogViewerLine('[opendockwatch] log stream disconnected');
       };
     },
-    queuePopoutLine(text) {
-      this._popoutBuffer.push(text);
-      if (this._popoutFlushPending) return;
-      this._popoutFlushPending = true;
-      requestAnimationFrame(() => this.flushPopoutLines());
+    queueLogViewerLine(text) {
+      this._logViewerBuffer.push(text);
+      if (this._logViewerFlushPending) return;
+      this._logViewerFlushPending = true;
+      requestAnimationFrame(() => this.flushLogViewerLines());
     },
-    flushPopoutLines() {
-      this._popoutFlushPending = false;
-      const lines = this._popoutBuffer;
-      this._popoutBuffer = [];
+    flushLogViewerLines() {
+      this._logViewerFlushPending = false;
+      const lines = this._logViewerBuffer;
+      this._logViewerBuffer = [];
       if (!lines.length) return;
-      for (const text of lines) this.popoutLogLines.push({ id: this._popoutNextId++, text });
-      if (this.popoutLogLines.length > MAX_LOG_LINES) {
-        this.popoutLogLines.splice(0, this.popoutLogLines.length - MAX_LOG_LINES);
+      for (const text of lines) this.logViewerLines.push({ id: this._logViewerNextId++, text });
+      if (this.logViewerLines.length > MAX_LOG_LINES) {
+        this.logViewerLines.splice(0, this.logViewerLines.length - MAX_LOG_LINES);
       }
-      clearTimeout(this._popoutLoadingTimer);
-      this.popoutLoading = false;
-      if (this.popoutAtBottom) {
+      clearTimeout(this._logViewerLoadingTimer);
+      this.logViewerLoading = false;
+      if (this.logViewerAtBottom) {
         this.$nextTick(() => {
-          const el = this.$refs.popoutLogView;
+          const el = this.$refs.logViewerLogView;
           if (el) el.scrollTop = el.scrollHeight;
         });
       }
     },
-    changePopoutTail(newTail) {
-      this.popoutTail = newTail;
-      this.startPopoutStream();
+    changeLogViewerTail(newTail) {
+      this.logViewerTail = newTail;
+      this.startLogViewerStream();
     },
     downloadLogs() {
       if (!this.selectedContainerId) return;
-      window.location.href = downloadLogsUrl(this.selectedHostId, this.selectedContainerId, this.popoutTail);
+      window.location.href = downloadLogsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail);
     },
-    onPopoutScroll() {
-      const el = this.$refs.popoutLogView;
-      if (el) this.popoutAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    onLogViewerScroll() {
+      const el = this.$refs.logViewerLogView;
+      if (el) this.logViewerAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     },
-    scrollPopoutToBottom() {
-      this.popoutAtBottom = true;
-      const el = this.$refs.popoutLogView;
+    scrollLogViewerToBottom() {
+      this.logViewerAtBottom = true;
+      const el = this.$refs.logViewerLogView;
       if (el) el.scrollTop = el.scrollHeight;
     },
     toggleLevel(level) {
-      this.popoutLevels = { ...this.popoutLevels, [level]: !this.popoutLevels[level] };
+      this.logViewerLevels = { ...this.logViewerLevels, [level]: !this.logViewerLevels[level] };
     },
     toggleGroup(name) {
       this.collapsedGroups = { ...this.collapsedGroups, [name]: !this.collapsedGroups[name] };
@@ -807,6 +848,15 @@ createApp({
         this.thresholdsOverridden = config.overridden;
       } catch (err) {
         this.thresholdsError = err.message;
+      }
+      this.hostsError = null;
+      this.hostsStatus = null;
+      this.editingHostId = null;
+      this.newHost = { id: '', name: '', dockerHost: '' };
+      try {
+        this.settingsHosts = await apiGetHostsConfig();
+      } catch (err) {
+        this.hostsError = err.message;
       }
     },
     closeSettings() {
@@ -885,6 +935,59 @@ createApp({
         this.thresholdsSaving = false;
       }
     },
+    async addHost() {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiAddHost(this.newHost);
+        this.newHost = { id: '', name: '', dockerHost: '' };
+        this.hostsStatus = 'Host added.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
+      }
+    },
+    startEditHost(host) {
+      this.editingHostId = host.id;
+      this.editHostDraft = { name: host.name || '', dockerHost: host.dockerHost || '' };
+      this.hostsError = null;
+      this.hostsStatus = null;
+    },
+    cancelEditHost() {
+      this.editingHostId = null;
+    },
+    async saveEditHost(id) {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiUpdateHost(id, this.editHostDraft);
+        this.editingHostId = null;
+        this.hostsStatus = 'Host updated.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
+      }
+    },
+    async removeHost(id) {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiDeleteHost(id);
+        this.hostsStatus = 'Host removed.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
+      }
+    },
   },
   template: `
     <div class="app">
@@ -914,7 +1017,7 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo && !popoutFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
+      <div v-if="hostInfo && !logViewerFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="host-card-header">
           <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
           <strong>{{ currentHostName }}</strong>
@@ -974,7 +1077,7 @@ createApp({
         </div>
       </div>
 
-      <div v-show="!popoutFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
+      <div v-show="!logViewerFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
             <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
@@ -1044,6 +1147,7 @@ createApp({
                     </td>
                     <td class="muted" :title="c.ports">{{ c.ports }}</td>
                     <td class="actions" @click.stop>
+                      <button @click="openLogsFor(c.id)" title="Open the log viewer for this container">Logs</button>
                       <template v-if="isAdmin">
                         <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
                         <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
@@ -1103,33 +1207,39 @@ createApp({
               <h3>Alerts</h3>
               <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
               <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
-              <div v-else class="activity-list">
-                <div v-for="a in searchedAlerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
-                  <div class="alert-row-main">
-                    <strong>{{ a.rule }}</strong>
-                    <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+              <div v-else class="activity-list-wrap">
+                <div class="activity-list" ref="alertsListView" @scroll="onAlertsScroll">
+                  <div v-for="a in searchedAlerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
+                    <div class="alert-row-main">
+                      <strong>{{ a.rule }}</strong>
+                      <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+                    </div>
+                    <div class="alert-message">{{ a.message }}</div>
+                    <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
+                    <span v-else class="ack-tick">✓ Acknowledged</span>
                   </div>
-                  <div class="alert-message">{{ a.message }}</div>
-                  <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
-                  <span v-else class="ack-tick">✓ Acknowledged</span>
                 </div>
+                <button v-show="!alertsAtTop" class="scroll-top-btn" @click="scrollAlertsToTop" title="Scroll to top">&#8593; Top</button>
               </div>
             </div>
             <div class="activity-column">
               <h3>Events</h3>
               <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
               <p v-if="!searchedActivityEvents.length" class="muted">{{ activityEvents.length ? 'No matching events.' : 'No events yet.' }}</p>
-              <div v-else class="activity-list">
-                <table class="containers">
-                  <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
-                  <tbody>
-                    <tr v-for="(e, i) in searchedActivityEvents" :key="i">
-                      <td class="muted">{{ formatEventTime(e.ts) }}</td>
-                      <td>{{ e.containerName || e.containerId || '—' }}</td>
-                      <td class="muted">{{ e.action }}</td>
-                    </tr>
-                  </tbody>
-                </table>
+              <div v-else class="activity-list-wrap">
+                <div class="activity-list" ref="eventsListView" @scroll="onEventsScroll">
+                  <table class="containers">
+                    <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(e, i) in searchedActivityEvents" :key="i">
+                        <td class="muted">{{ formatEventTime(e.ts) }}</td>
+                        <td>{{ e.containerName || e.containerId || '—' }}</td>
+                        <td class="muted">{{ e.action }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <button v-show="!eventsAtTop" class="scroll-top-btn" @click="scrollEventsToTop" title="Scroll to top">&#8593; Top</button>
               </div>
             </div>
           </div>
@@ -1195,7 +1305,7 @@ createApp({
 
             <div class="log-section-header">
               <h3>Logs</h3>
-              <button class="small-btn" @click="openPopout" title="Open larger log view with filtering">Log Viewer ⤢</button>
+              <button class="small-btn" @click="openLogViewer" title="Open larger log view with filtering">Log Viewer ⤢</button>
             </div>
             <div class="log-view-wrap">
               <div v-if="previewLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
@@ -1207,42 +1317,42 @@ createApp({
       </div>
 
       <div
-        v-if="popoutOpen"
+        v-if="logViewerOpen"
         ref="logPanel"
         class="log-panel"
-        :class="{ 'with-detail': !!selectedContainer && !popoutFullscreen, fullscreen: popoutFullscreen }"
+        :class="{ 'with-detail': !!selectedContainer && !logViewerFullscreen, fullscreen: logViewerFullscreen }"
       >
         <div class="log-panel-header">
           <strong>{{ selectedContainer ? selectedContainer.name : '' }}</strong>
           <div class="log-panel-controls">
             <div class="log-level-toggle">
-              <button :class="{active: popoutLevels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-              <button :class="{active: popoutLevels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-              <button :class="{active: popoutLevels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-              <button :class="{active: popoutLevels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+              <button :class="{active: logViewerLevels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
+              <button :class="{active: logViewerLevels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+              <button :class="{active: logViewerLevels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
+              <button :class="{active: logViewerLevels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
             </div>
             <div class="log-filter-group">
               <div class="log-filter-input-wrap">
                 <input
                   type="text"
-                  v-model="popoutFilter"
-                  :placeholder="popoutRegexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
-                  :class="{ 'filter-invalid': popoutRegexError }"
+                  v-model="logViewerFilter"
+                  :placeholder="logViewerRegexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
+                  :class="{ 'filter-invalid': logViewerRegexError }"
                 />
-                <button v-if="popoutFilter" class="filter-clear-btn" @click="popoutFilter = ''" title="Clear filter">✕</button>
+                <button v-if="logViewerFilter" class="filter-clear-btn" @click="logViewerFilter = ''" title="Clear filter">✕</button>
               </div>
               <button
                 class="small-btn regex-toggle-btn"
-                :class="{ active: popoutRegexMode }"
-                @click="popoutRegexMode = !popoutRegexMode"
+                :class="{ active: logViewerRegexMode }"
+                @click="logViewerRegexMode = !logViewerRegexMode"
                 title="Treat filter text as a regular expression"
               >
                 .*
               </button>
-              <span v-if="popoutRegexError" class="filter-error-text">{{ popoutRegexError }}</span>
-              <span v-else-if="popoutFilter" class="filter-count-text">{{ filteredPopoutLines.length }} / {{ popoutLogLines.length }}</span>
+              <span v-if="logViewerRegexError" class="filter-error-text">{{ logViewerRegexError }}</span>
+              <span v-else-if="logViewerFilter" class="filter-count-text">{{ filteredLogViewerLines.length }} / {{ logViewerLines.length }}</span>
             </div>
-            <select :value="popoutTail" @change="changePopoutTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
+            <select :value="logViewerTail" @change="changeLogViewerTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
               <option :value="100">Last 100 lines</option>
               <option :value="200">Last 200 lines</option>
               <option :value="1000">Last 1000 lines</option>
@@ -1252,26 +1362,26 @@ createApp({
             <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
             <button
               class="small-btn"
-              :class="{ active: popoutShowTimestamps }"
-              @click="popoutShowTimestamps = !popoutShowTimestamps"
+              :class="{ active: logViewerShowTimestamps }"
+              @click="logViewerShowTimestamps = !logViewerShowTimestamps"
               title="Toggle the docker timestamp shown at the start of each line"
             >
               🕐 Time
             </button>
             <button
               class="small-btn"
-              @click="popoutFullscreen = !popoutFullscreen"
-              :title="popoutFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'"
+              @click="logViewerFullscreen = !logViewerFullscreen"
+              :title="logViewerFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'"
             >
-              {{ popoutFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
+              {{ logViewerFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
             </button>
-            <button @click="closePopout">Close</button>
+            <button @click="closeLogViewer">Close</button>
           </div>
         </div>
         <div class="log-view-wrap">
-          <div v-if="popoutLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-          <pre class="log-view popout-log" :class="{ 'hide-ts': !popoutShowTimestamps }" ref="popoutLogView" @scroll="onPopoutScroll"><div v-for="line in filteredPopoutLines" :key="line.id" v-html="line.html"></div></pre>
-          <button v-show="!popoutAtBottom" class="scroll-bottom-btn" @click="scrollPopoutToBottom" title="Scroll to bottom">&#8595; Bottom</button>
+          <div v-if="logViewerLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
+          <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !logViewerShowTimestamps }" ref="logViewerLogView" @scroll="onLogViewerScroll"><div v-for="line in filteredLogViewerLines" :key="line.id" v-html="line.html"></div></pre>
+          <button v-show="!logViewerAtBottom" class="scroll-bottom-btn" @click="scrollLogViewerToBottom" title="Scroll to bottom">&#8595; Bottom</button>
         </div>
       </div>
 
@@ -1340,6 +1450,61 @@ createApp({
             <div class="modal-actions">
               <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
               <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
+            </div>
+
+            <hr />
+
+            <strong>Hosts</strong>
+            <p class="muted small">
+              Docker hosts this dashboard monitors. Add a remote one as
+              <code>ssh://user@host[:port]</code> — the container's docker CLI reaches it using the
+              SSH keys already mounted in, no password needed here. Changes apply immediately, no
+              restart required.
+            </p>
+            <p v-if="hostsError" class="error">{{ hostsError }}</p>
+            <p v-if="hostsStatus" class="muted small">{{ hostsStatus }}</p>
+
+            <div v-for="h in settingsHosts" :key="h.id" class="host-row">
+              <template v-if="editingHostId === h.id">
+                <label class="modal-field">
+                  Display name
+                  <input type="text" v-model="editHostDraft.name" :placeholder="h.id" />
+                </label>
+                <label class="modal-field">
+                  Docker host
+                  <input type="text" v-model="editHostDraft.dockerHost" placeholder="ssh://user@host (blank = local socket)" />
+                </label>
+                <div class="modal-actions">
+                  <button :disabled="hostsSaving" @click="saveEditHost(h.id)">Save</button>
+                  <button :disabled="hostsSaving" @click="cancelEditHost">Cancel</button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="host-row-main">
+                  <strong>{{ h.name || h.id }}</strong>
+                  <span class="muted small">{{ h.dockerHost || 'local socket' }}</span>
+                </div>
+                <div class="modal-actions">
+                  <button class="small-btn" :disabled="hostsSaving" @click="startEditHost(h)">Edit</button>
+                  <button class="small-btn" :disabled="hostsSaving" @click="removeHost(h.id)">Remove</button>
+                </div>
+              </template>
+            </div>
+
+            <label class="modal-field">
+              ID
+              <input type="text" v-model="newHost.id" placeholder="prod" />
+            </label>
+            <label class="modal-field">
+              Display name (optional)
+              <input type="text" v-model="newHost.name" placeholder="Production" />
+            </label>
+            <label class="modal-field">
+              Docker host (blank = local socket)
+              <input type="text" v-model="newHost.dockerHost" placeholder="ssh://deploy@prod.example.com" />
+            </label>
+            <div class="modal-actions">
+              <button :disabled="hostsSaving || !newHost.id" @click="addHost">Add host</button>
             </div>
         </div>
       </aside>

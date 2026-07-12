@@ -213,7 +213,7 @@ export function splitDockerTimestamp(line) {
 // wraps case-insensitive matches of `filterText` in <mark> so v-html can render the
 // highlight. When `isRegex` is set, `filterText` is compiled as a regex instead of
 // matched literally; an invalid pattern just falls back to no highlighting
-// (filteredPopoutLines already leaves unfiltered lines visible in that case, so this
+// (filteredLogViewerLines already leaves unfiltered lines visible in that case, so this
 // keeps highlighting consistent with that).
 export function highlightLine(line, filterText, isRegex = false) {
   const { ts, rest } = splitDockerTimestamp(line);

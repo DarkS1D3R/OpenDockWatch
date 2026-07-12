@@ -97,6 +97,21 @@ function start() {
   }
 }
 
+// Used by the settings/hosts routes so a host added (or edited, via removeHost+addHost) through
+// the GUI starts streaming events right away instead of needing a process restart.
+function addHost(host) {
+  if (watchers.has(host.id)) return;
+  startWatcher(host);
+}
+
+function removeHost(hostId) {
+  const state = watchers.get(hostId);
+  if (!state) return;
+  state.stopped = true;
+  if (state.child) state.child.kill();
+  watchers.delete(hostId);
+}
+
 function stop() {
   for (const state of watchers.values()) {
     state.stopped = true;
@@ -104,4 +119,4 @@ function stop() {
   }
 }
 
-module.exports = { start, stop, broadcaster, parseEventLine };
+module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine };

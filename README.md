@@ -4,7 +4,7 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ## Features
 
-- **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns and Start/Stop/Restart actions. Filter by All / Running / Stopped.
+- **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart actions. Filter by All / Running / Stopped.
 - **Flow view** — a graph of containers, grouped visually by compose project, with zoom/fit controls, a name filter, per-edge-kind toggles, PNG export, and a Fullscreen toggle that hides the host stats card so the graph gets the room. Nodes show a state indicator, an uptime/status string, live CPU/RAM bars, network/disk I/O as current rates (not lifetime totals), published ports, and a badge for open alerts.
   - **Compose-group collapse** — collapse a group to a single aggregate box (container count, summed CPU/RAM, worst health, total open alerts) via the +/- cue on the group or the Collapse/Expand-all buttons — drilling into a large host ArgoCD-style instead of staring at a hairball.
   - **Blast-radius selection** — selecting a node walks its `depends_on` chain both directions and tints the result: what it needs to be healthy (upstream) and what breaks if it dies (downstream) get distinct colors, with everything else dimmed — not just the immediate neighborhood.
@@ -13,7 +13,7 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
   - **Auto (network) edges**: containers sharing a custom Docker network are connected, labeled with the network's name — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
   - **Manual edges**: declared in `hosts.json` (`edges: [{ from, to, label }]`) for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies.
 - **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, network/disk I/O rates, ports, networks, actions, and a small live log preview (last 100 lines). Created time, restart policy, environment variables, mounts, and labels — the things you'd otherwise `docker inspect` for — are one click away in collapsed sections.
-- **Log pop-out** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file.
+- **Log Viewer** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file. Reachable from the details panel or directly via the Logs button on any row in List view.
 - **Activity view** — alerts and the raw container event log (start/stop/die/oom, etc.) side by side, each independently searchable and scrollable, with an unread-alert count badge on the tab itself and a checkmark on any alert you've acknowledged. See [Alerts](#alerts) below for the rule list and webhook setup.
 
 ## Screenshots
@@ -38,9 +38,9 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ![Container details panel with a live log preview and expanded environment/labels sections](screenshots/details-panel.png)
 
-**Log viewer** — full-width pop-out with level filters, regex search, and download
+**Log Viewer** — full-width panel with level filters, regex search, and download
 
-![Full-width log viewer pop-out with a regex filter matching ERROR and WARN lines](screenshots/log-viewer.png)
+![Full-width Log Viewer with a regex filter matching ERROR and WARN lines](screenshots/log-viewer.png)
 
 **Activity view** — searchable, scrollable alerts and container event log side by side
 

@@ -7,8 +7,8 @@ const POLL_MS = 5000;
 const DISK_POLL_MS = 60_000;
 
 const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
-const timers = [];
-const pollStates = [];
+const hostStates = new Map(); // hostId -> { pollState, diskTimer } - lets addHost/removeHost target one host
+const globalTimers = [];
 
 function getSnapshot(hostId) {
   return snapshots.get(hostId) || null;
@@ -116,45 +116,55 @@ async function pollDiskUsage(host) {
   }
 }
 
-function scheduleHostPolling(host) {
-  const state = { stopped: false, timer: null };
-  pollStates.push(state);
-
+function scheduleHostPolling(host, pollState) {
   const tick = async () => {
-    if (state.stopped) return;
+    if (pollState.stopped) return;
     try {
       await pollHost(host);
     } finally {
-      if (!state.stopped) state.timer = setTimeout(tick, POLL_MS);
+      if (!pollState.stopped) pollState.timer = setTimeout(tick, POLL_MS);
     }
   };
-  state.timer = setTimeout(tick, POLL_MS);
+  pollState.timer = setTimeout(tick, POLL_MS);
+}
+
+// Starts polling a single host immediately - used both by start() at boot and by the
+// settings/hosts routes when a host is added through the GUI, so a newly added (or edited, via
+// removeHost+addHost) host is monitored right away instead of needing a process restart.
+function addHost(host) {
+  if (hostStates.has(host.id)) return;
+  const pollState = { stopped: false, timer: null };
+  const diskTimer = setInterval(() => pollDiskUsage(host), DISK_POLL_MS);
+  hostStates.set(host.id, { pollState, diskTimer });
+  pollHost(host);
+  pollDiskUsage(host);
+  scheduleHostPolling(host, pollState);
+}
+
+function removeHost(hostId) {
+  const state = hostStates.get(hostId);
+  if (!state) return;
+  state.pollState.stopped = true;
+  clearTimeout(state.pollState.timer);
+  clearInterval(state.diskTimer);
+  hostStates.delete(hostId);
+  snapshots.delete(hostId);
 }
 
 function start() {
-  const hosts = loadHosts();
-  for (const host of hosts) {
-    pollHost(host);
-    pollDiskUsage(host);
-    scheduleHostPolling(host);
-    timers.push(setInterval(() => pollDiskUsage(host), DISK_POLL_MS));
-  }
+  for (const host of loadHosts()) addHost(host);
 
   const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
-  timers.push(
+  globalTimers.push(
     setInterval(() => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }), 60 * 60 * 1000)
   );
 }
 
 function stop() {
-  for (const t of timers) clearInterval(t);
-  timers.length = 0;
-  for (const state of pollStates) {
-    state.stopped = true;
-    clearTimeout(state.timer);
-  }
-  pollStates.length = 0;
+  for (const t of globalTimers) clearInterval(t);
+  globalTimers.length = 0;
+  for (const hostId of [...hostStates.keys()]) removeHost(hostId);
 }
 
-module.exports = { start, stop, getSnapshot, getAllSnapshots, POLL_MS };
+module.exports = { start, stop, addHost, removeHost, getSnapshot, getAllSnapshots, POLL_MS };
