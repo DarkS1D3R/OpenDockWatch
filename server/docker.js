@@ -173,7 +173,7 @@ function networkEdges(containers) {
   }
   const seen = new Set();
   const edges = [];
-  for (const members of byNetwork.values()) {
+  for (const [net, members] of byNetwork.entries()) {
     for (let i = 0; i < members.length; i++) {
       for (let j = i + 1; j < members.length; j++) {
         const a = members[i];
@@ -182,7 +182,7 @@ function networkEdges(containers) {
         const key = [a.id, b.id].sort().join('|');
         if (seen.has(key)) continue;
         seen.add(key);
-        edges.push({ source: a.id, target: b.id, kind: 'network' });
+        edges.push({ source: a.id, target: b.id, kind: 'network', label: net });
       }
     }
   }

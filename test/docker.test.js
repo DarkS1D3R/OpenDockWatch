@@ -123,6 +123,7 @@ test('networkEdges', async (t) => {
     assert.equal(edges.length, 1);
     assert.deepEqual([edges[0].source, edges[0].target].sort(), ['a', 'b']);
     assert.equal(edges[0].kind, 'network');
+    assert.equal(edges[0].label, 'app-net');
   });
 
   await t.test('does not duplicate an edge for containers sharing multiple networks', () => {

@@ -613,6 +613,12 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
           child.classes(el.classes || '');
         }
       });
+
+      // A collapsed group is a small box, easy to drag right up against a neighbor without
+      // tripping the drag-time overlap check (that only guards individual node drops, not the
+      // much bigger box a group turns back into on expand). Push the whole just-reopened group
+      // - as a unit, so its own internal layout stays intact - clear of whatever it now overlaps.
+      resolveNodeOverlap(evt.target);
     });
 
     cy.on('expandcollapse.aftercollapse expandcollapse.afterexpand', () => {

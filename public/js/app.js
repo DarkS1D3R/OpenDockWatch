@@ -502,7 +502,7 @@ createApp({
       } else if (edgeData.kind === 'manual') {
         this.edgeInfoText = `${from} → ${to}${edgeData.label ? `: ${edgeData.label}` : ''} (declared in hosts.json)`;
       } else {
-        this.edgeInfoText = `${from} and ${to} share a Docker network`;
+        this.edgeInfoText = edgeData.label ? `${from} and ${to} share ${edgeData.label}` : `${from} and ${to} share a Docker network`;
       }
     },
     async exportFlowPng() {
