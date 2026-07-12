@@ -551,6 +551,30 @@ table.containers td:nth-child(7) {
   line-height: 12px;
   text-align: center;
 }
+.cy-node-group-box {
+  height: 88px;
+}
+.cy-node-group-box .cy-node-name {
+  top: 22px;
+  max-width: 140px;
+}
+.cy-node-group-count {
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cy-node-group-health {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
 .legend {
   display: flex;
   gap: 18px;

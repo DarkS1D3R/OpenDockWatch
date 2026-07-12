@@ -1,6 +1,7 @@
-import { stateEmoji, iconFor, parsePublishedPorts, formatRatePair } from './format.js';
+import { stateEmoji, iconFor, parsePublishedPorts, formatRatePair, healthColor } from './format.js';
 
 let htmlLabelRegistered = false;
+let expandCollapseRegistered = false;
 
 const CY_STYLE = [
   {
@@ -15,6 +16,22 @@ const CY_STYLE = [
       'text-valign': 'top',
       'text-halign': 'center',
       padding: '18px',
+      shape: 'round-rectangle',
+    },
+  },
+  {
+    // Applied by cytoscape-expand-collapse to the single node left standing once a compose
+    // group is collapsed - it keeps the 'group' class above (same underlying element, not a
+    // replacement), so this has to come after it to win the cascade. label is blanked the same
+    // way leaf nodes are - the html-label overlay below carries all the text instead.
+    selector: 'node.cy-expand-collapse-collapsed-node',
+    style: {
+      'background-color': '#1d2027',
+      'border-width': 1,
+      'border-color': '#2b2f38',
+      label: '',
+      width: 170,
+      height: 88,
       shape: 'round-rectangle',
     },
   },
@@ -114,10 +131,44 @@ function clampPct(pct) {
 const CPU_COLOR = '#4f8cff';
 const MEM_COLOR = '#199e70';
 
+// Ranks worse-than semantics for a compose group's single "worst health" indicator when
+// collapsed - unhealthy anywhere in the group outranks starting, which outranks a clean bill
+// of health, so the collapsed box surfaces the thing you'd actually want to know about.
+const HEALTH_RANK = { unhealthy: 3, starting: 2, healthy: 1 };
+
+function aggregateGroups(nodes) {
+  const byGroup = new Map();
+  for (const n of nodes) {
+    const agg = byGroup.get(n.group) || { count: 0, cpuSum: 0, memSum: 0, openAlerts: 0, health: null };
+    agg.count += 1;
+    agg.cpuSum += n.cpuPerc || 0;
+    agg.memSum += n.memPerc || 0;
+    agg.openAlerts += n.openAlerts || 0;
+    if (n.health && (!agg.health || HEALTH_RANK[n.health] > HEALTH_RANK[agg.health])) agg.health = n.health;
+    byGroup.set(n.group, agg);
+  }
+  return byGroup;
+}
+
 export function buildElements(nodes, edges, selectedId) {
   const groupIds = new Set(nodes.map((n) => n.group));
+  const groupAggregates = aggregateGroups(nodes);
   return [
-    ...[...groupIds].map((g) => ({ data: { id: `grp:${g}`, label: g }, classes: 'group' })),
+    ...[...groupIds].map((g) => {
+      const agg = groupAggregates.get(g);
+      return {
+        data: {
+          id: `grp:${g}`,
+          label: g,
+          count: agg.count,
+          cpuAvg: agg.count ? agg.cpuSum / agg.count : 0,
+          memAvg: agg.count ? agg.memSum / agg.count : 0,
+          openAlerts: agg.openAlerts,
+          health: agg.health,
+        },
+        classes: 'group',
+      };
+    }),
     ...nodes.map((n) => ({
       data: {
         id: n.id,
@@ -162,6 +213,25 @@ const NODE_ROW_GAP = 96;
 // would otherwise wipe every dragged position, since dagre lays the whole graph out fresh).
 const POSITIONS_KEY_PREFIX = 'odw:flow:positions:';
 const VIEWPORT_KEY_PREFIX = 'odw:flow:viewport:';
+const COLLAPSED_KEY_PREFIX = 'odw:flow:collapsed:';
+
+function loadCollapsedGroups(hostId) {
+  if (!hostId) return [];
+  try {
+    return JSON.parse(localStorage.getItem(COLLAPSED_KEY_PREFIX + hostId)) || [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCollapsedGroups(hostId, ids) {
+  if (!hostId) return;
+  try {
+    localStorage.setItem(COLLAPSED_KEY_PREFIX + hostId, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadPositions(hostId) {
   if (!hostId) return {};
@@ -209,6 +279,42 @@ function saveViewport(hostId, viewport) {
   }
 }
 
+const NODE_GAP = 16;
+
+// Blocks node boxes from being dragged on top of each other - with the html-label overlay
+// carrying all the real content (name, icon, metric bars), an overlapping pair renders as
+// unreadable stacked garbage rather than just a cosmetic overlap. Pushes `node` out along
+// whichever axis needs the least movement to clear each obstacle. A node's own ancestors/
+// descendants are excluded from the obstacle set - a leaf is always inside its parent group's
+// bounding box by definition, and dragging a group carries its children along with it, so
+// neither should register as a "collision" against the thing it's structurally part of.
+function resolveNodeOverlap(node) {
+  const cy = node.cy();
+  const obstacles = cy.nodes('.running, .stopped, .group').not(node).not(node.ancestors()).not(node.descendants());
+  obstacles.forEach((other) => {
+    const a = node.boundingBox();
+    const b = other.boundingBox();
+    const overlapX = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1) + NODE_GAP;
+    const overlapY = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1) + NODE_GAP;
+    if (overlapX <= 0 || overlapY <= 0) return;
+    const pos = node.position();
+    if (overlapX < overlapY) {
+      const dir = a.x1 + a.x2 <= b.x1 + b.x2 ? -1 : 1;
+      node.position('x', pos.x + dir * overlapX);
+    } else {
+      const dir = a.y1 + a.y2 <= b.y1 + b.y2 ? -1 : 1;
+      node.position('y', pos.y + dir * overlapY);
+    }
+  });
+}
+
+// One-off cleanup pass for positions that came from localStorage rather than a live drag (e.g.
+// a position saved before this feature existed) - same collision resolver, just run once over
+// everything instead of live during a drag gesture.
+function resolveAllOverlaps(cy) {
+  cy.nodes('.running, .stopped, .group').forEach((node) => resolveNodeOverlap(node));
+}
+
 // Compose groups with many members and no internal edges otherwise get laid out as one tall
 // single-file column (dagre has nothing to rank sibling containers by). Re-flow those into a
 // fixed-column grid after layout so tall groups stay compact. Groups that DO have internal edges
@@ -248,6 +354,7 @@ function runLayout(cy, { fit, hostId }) {
   layout.one('layoutstop', () => {
     arrangeGroupsInColumns(cy);
     applySavedPositions(cy, hostId);
+    resolveAllOverlaps(cy);
     const savedViewport = loadViewport(hostId);
     if (savedViewport) {
       cy.viewport(savedViewport);
@@ -264,6 +371,18 @@ function runLayout(cy, { fit, hostId }) {
 // restores the saved camera - or fits, only if there's no saved camera yet for this host.
 // Pure data/class updates (status text, selection) never touch the viewport at all.
 export function updateGraph(cy, elements, hostId) {
+  // cytoscape-expand-collapse physically removes a collapsed group's children from the graph
+  // (stashing them internally to restore on expand) - the diff below only sees whatever's
+  // currently live, so left alone it would treat every hidden child as newly-added and
+  // re-attach it as a real compound child, silently un-collapsing the group. Briefly expand
+  // everything collapsed, let the diff refresh data for every node as normal (including
+  // children that were hidden, so their CPU/mem/etc. isn't stale next time someone expands),
+  // then re-collapse the same groups before the next paint - animate:false and no `await`
+  // in between means the expanded state is never actually rendered.
+  const expandCollapseApi = cy.scratch('_odw_expandCollapseApi');
+  const collapsedIds = expandCollapseApi ? cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()) : [];
+  if (collapsedIds.length) expandCollapseApi.expandAll({ animate: false, layoutBy: null });
+
   const newIds = new Set(elements.map((el) => el.data.id));
   let structureChanged = false;
 
@@ -283,6 +402,11 @@ export function updateGraph(cy, elements, hostId) {
       cy.add(el);
       structureChanged = true;
     }
+  }
+
+  if (collapsedIds.length) {
+    const toRecollapse = collapsedIds.reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+    if (toRecollapse.length) expandCollapseApi.collapse(toRecollapse, { animate: false, layoutBy: null });
   }
 
   if (structureChanged) {
@@ -362,8 +486,46 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
   });
   runLayout(cy, { fit: true, hostId });
 
+  if (!expandCollapseRegistered && typeof cytoscapeExpandCollapse !== 'undefined') {
+    cytoscape.use(cytoscapeExpandCollapse);
+    expandCollapseRegistered = true;
+  }
+  if (typeof cy.expandCollapse === 'function') {
+    // fisheye off: it distorts sibling node positions during the collapse/expand animation,
+    // which fights with the dragged/saved positions this view otherwise goes out of its way to
+    // preserve. undoable off: skips requiring the separate undo-redo extension this app doesn't
+    // vendor. cueEnabled draws the click-to-toggle +/- affordance directly on each group box -
+    // that's the only interaction needed; no extra button click is required for the common case.
+    const expandCollapseApi = cy.expandCollapse({
+      layoutBy: null,
+      fisheye: false,
+      animate: true,
+      undoable: false,
+      cueEnabled: true,
+    });
+    cy.scratch('_odw_expandCollapseApi', expandCollapseApi);
+
+    const savedCollapsed = loadCollapsedGroups(hostId);
+    if (savedCollapsed.length) {
+      const toCollapse = savedCollapsed.reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+      if (toCollapse.length) expandCollapseApi.collapse(toCollapse, { animate: false, layoutBy: null });
+    }
+
+    cy.on('expandcollapse.aftercollapse expandcollapse.afterexpand', () => {
+      saveCollapsedGroups(
+        hostId,
+        cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id())
+      );
+    });
+  }
+
+  // Resolved on drop rather than continuously during 'drag': collision-checking every
+  // intermediate mouse position would block the node against anything its path happened to
+  // cross, even when the actual drop target is clear - it'd feel like getting stuck on
+  // furniture instead of just not being able to overlap once released.
   cy.on('dragfree', 'node', (evt) => {
     const node = evt.target;
+    resolveNodeOverlap(node);
     if (!node.hasClass('group')) saveNodePosition(hostId, node.id(), node.position());
   });
 
@@ -427,8 +589,46 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
           </div>
         `,
       },
+      {
+        query: 'node.cy-expand-collapse-collapsed-node',
+        halign: 'center',
+        valign: 'center',
+        halignBox: 'center',
+        valignBox: 'center',
+        tpl: (data) => `
+          <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${data.label}</span>
+            <span class="cy-node-group-count">${data.count} container${data.count === 1 ? '' : 's'}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+            </div>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `,
+      },
     ]);
   }
 
   return cy;
+}
+
+// For the toolbar's "Collapse all" / "Expand all" convenience buttons - the per-group +/- cue
+// (cueEnabled above) is fine one at a time, but not at the "40 containers on one host" scale
+// this feature exists for.
+export function collapseAllGroups(cy) {
+  const api = cy && cy.scratch('_odw_expandCollapseApi');
+  if (api) api.collapseAll();
+}
+
+export function expandAllGroups(cy) {
+  const api = cy && cy.scratch('_odw_expandCollapseApi');
+  if (api) api.expandAll();
 }

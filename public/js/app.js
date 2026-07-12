@@ -34,7 +34,7 @@ import {
   apiSaveThresholdConfig,
   apiClearThresholdConfig,
 } from './api.js';
-import { buildElements, createGraph, updateGraph, applyFading, exportPng } from './graph.js';
+import { buildElements, createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from './graph.js';
 
 const { createApp } = Vue;
 
@@ -507,6 +507,12 @@ createApp({
     },
     async exportFlowPng() {
       await exportPng(this.cy);
+    },
+    collapseAllFlowGroups() {
+      collapseAllGroups(this.cy);
+    },
+    expandAllFlowGroups() {
+      expandAllGroups(this.cy);
     },
     zoomBy(factor) {
       if (!this.cy) return;
@@ -984,6 +990,8 @@ createApp({
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>
               <button @click="zoomFit">Fit</button>
+              <button @click="collapseAllFlowGroups">Collapse all</button>
+              <button @click="expandAllFlowGroups">Expand all</button>
               <button @click="exportFlowPng">Export PNG</button>
               <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
               <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
