@@ -30,7 +30,7 @@ docker compose up -d --build                 # run OpenDockWatch itself in a con
 
 CI (`.github/workflows/ci.yml`) runs `npm run lint && npm run format:check && npm test`, then a plain `docker build`. Always run the same three before considering a change done.
 
-There is no build step for the frontend — `public/js/*.js` is served as-is via native ES modules (`<script type="module">` in `public/index.html`), and `npm test`'s syntax-check step is the only thing that touches it (nothing executes/unit-tests it; the `test/` suite only covers `server/`).
+There is no build step for the frontend — `public/js/*.js` is served as-is via native ES modules (`<script type="module">` in `public/index.html`). Most of it is only syntax-checked, not unit-tested, since it's Vue/Cytoscape UI code with no meaningful behavior outside a browser - but the pure functions in `format.js` (ANSI parsing, level detection, byte/rate formatting) and `graph.js`'s `buildElements`/`aggregateGroups` (graph-building, no DOM/cytoscape calls) have no such dependency, so `test/format.test.js` and `test/graph.test.js` `import()` them directly (dynamic import, since `require()` can't load an ES module - `node:test`'s `before()` hook loads each once and shares it across that file's tests).
 
 ## Architecture
 

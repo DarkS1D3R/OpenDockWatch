@@ -188,7 +188,7 @@ const MEM_COLOR = '#199e70';
 // of health, so the collapsed box surfaces the thing you'd actually want to know about.
 const HEALTH_RANK = { unhealthy: 3, starting: 2, healthy: 1 };
 
-function aggregateGroups(nodes) {
+export function aggregateGroups(nodes) {
   const byGroup = new Map();
   for (const n of nodes) {
     const agg = byGroup.get(n.group) || { count: 0, cpuSum: 0, memSum: 0, openAlerts: 0, health: null };
