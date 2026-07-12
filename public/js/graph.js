@@ -371,17 +371,30 @@ function runLayout(cy, { fit, hostId }) {
 // restores the saved camera - or fits, only if there's no saved camera yet for this host.
 // Pure data/class updates (status text, selection) never touch the viewport at all.
 export function updateGraph(cy, elements, hostId) {
+  cy.scratch('_odw_latestElements', elements);
+
   // cytoscape-expand-collapse physically removes a collapsed group's children from the graph
-  // (stashing them internally to restore on expand) - the diff below only sees whatever's
-  // currently live, so left alone it would treat every hidden child as newly-added and
-  // re-attach it as a real compound child, silently un-collapsing the group. Briefly expand
-  // everything collapsed, let the diff refresh data for every node as normal (including
-  // children that were hidden, so their CPU/mem/etc. isn't stale next time someone expands),
-  // then re-collapse the same groups before the next paint - animate:false and no `await`
-  // in between means the expanded state is never actually rendered.
-  const expandCollapseApi = cy.scratch('_odw_expandCollapseApi');
-  const collapsedIds = expandCollapseApi ? cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()) : [];
-  if (collapsedIds.length) expandCollapseApi.expandAll({ animate: false, layoutBy: null });
+  // (stashing them internally to restore on expand) - this diff must never try to add them back
+  // in, or it'd corrupt the plugin's bookkeeping and silently un-collapse the group. An earlier
+  // version briefly expanded/re-collapsed every poll to keep their data fresh, but that visibly
+  // flickered the collapsed box (and, with node-html-label's own async DOM sync, the metric
+  // values inside it) every 5s. Simpler and flicker-free: just skip them entirely while hidden -
+  // expandcollapse.afterexpand re-syncs their data from the cache above the moment the group is
+  // actually opened, so nothing gets rendered - or re-rendered - while nobody's looking at it.
+  const collapsedIds = new Set(cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()));
+  const hiddenIds = new Set();
+  if (collapsedIds.size) {
+    // Children first, so the edge pass below can see them: an edge between two children of the
+    // same collapsed group is just as hidden as the children themselves (both endpoints gone).
+    for (const el of elements) {
+      if (collapsedIds.has(el.data.parent)) hiddenIds.add(el.data.id);
+    }
+    for (const el of elements) {
+      if (el.data.source && (hiddenIds.has(el.data.source) || hiddenIds.has(el.data.target))) {
+        hiddenIds.add(el.data.id);
+      }
+    }
+  }
 
   const newIds = new Set(elements.map((el) => el.data.id));
   let structureChanged = false;
@@ -394,19 +407,20 @@ export function updateGraph(cy, elements, hostId) {
   });
 
   for (const el of elements) {
+    if (hiddenIds.has(el.data.id)) continue;
     const existing = cy.getElementById(el.data.id);
     if (existing && existing.length) {
       existing.data(el.data);
-      existing.classes(el.classes || '');
+      // buildElements has no notion of collapse state, so el.classes for a collapsed group is
+      // always just 'group' - applying that as-is would strip the plugin's own
+      // cy-expand-collapse-collapsed-node marker class every poll and desync its bookkeeping
+      // from what's actually rendered (the group silently pops back open on the next poll).
+      const classes = collapsedIds.has(el.data.id) ? `${el.classes || ''} cy-expand-collapse-collapsed-node` : el.classes || '';
+      existing.classes(classes);
     } else {
       cy.add(el);
       structureChanged = true;
     }
-  }
-
-  if (collapsedIds.length) {
-    const toRecollapse = collapsedIds.reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
-    if (toRecollapse.length) expandCollapseApi.collapse(toRecollapse, { animate: false, layoutBy: null });
   }
 
   if (structureChanged) {
@@ -484,6 +498,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
     elements,
     style: CY_STYLE,
   });
+  cy.scratch('_odw_latestElements', elements);
   runLayout(cy, { fit: true, hostId });
 
   if (!expandCollapseRegistered && typeof cytoscapeExpandCollapse !== 'undefined') {
@@ -510,6 +525,21 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
       const toCollapse = savedCollapsed.reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
       if (toCollapse.length) expandCollapseApi.collapse(toCollapse, { animate: false, layoutBy: null });
     }
+
+    // updateGraph deliberately never touches a collapsed group's hidden children (see there for
+    // why), so their data can go stale across however many polls it stays collapsed for. Catch
+    // up the moment it's actually opened, from whatever the most recent poll's elements were.
+    cy.on('expandcollapse.afterexpand', (evt) => {
+      const latest = cy.scratch('_odw_latestElements') || [];
+      const byId = new Map(latest.map((el) => [el.data.id, el]));
+      evt.target.descendants().forEach((child) => {
+        const el = byId.get(child.id());
+        if (el) {
+          child.data(el.data);
+          child.classes(el.classes || '');
+        }
+      });
+    });
 
     cy.on('expandcollapse.aftercollapse expandcollapse.afterexpand', () => {
       saveCollapsedGroups(
