@@ -1178,6 +1178,22 @@ table.containers td:nth-child(7) {
 .alert-row:last-child {
   border-bottom: none;
 }
+.host-row {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0;
+}
+.host-row:last-child {
+  border-bottom: none;
+}
+.host-row-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.host-row-main strong {
+  font-size: 13px;
+}
 .alert-row.severity-critical {
   border-left-color: var(--danger);
 }

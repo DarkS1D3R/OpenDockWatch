@@ -1,4 +1,7 @@
-require('dotenv').config();
+// quiet: true suppresses dotenv's own startup banner (an "injected env... tip:" line pointing at
+// a promotional third-party URL) so it doesn't pollute the container's log output alongside the
+// structured [opendockwatch] lines below.
+require('dotenv').config({ quiet: true });
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
@@ -6,7 +9,7 @@ const rateLimit = require('express-rate-limit');
 const SqliteStore = require('better-sqlite3-session-store')(session);
 
 const { requireAuth, requireAdmin, verifyLogin } = require('./auth');
-const { loadHosts, getHost } = require('./hosts');
+const { loadHosts, getHost, saveHosts, isValidHostId, isValidDockerHostUrl, hasLocalHost } = require('./hosts');
 const {
   checkHost,
   listContainers,
@@ -20,6 +23,7 @@ const {
   getContainerInspect,
 } = require('./docker');
 const db = require('./db');
+const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
@@ -80,10 +84,14 @@ app.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   try {
     const account = await verifyLogin(username, password);
-    if (!account) return res.status(401).json({ error: 'invalid credentials' });
+    if (!account) {
+      logger.warn('auth.failure', { user: username, ip: req.ip });
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
     req.session.authenticated = true;
     req.session.username = account.username;
     req.session.role = account.role;
+    logger.info('auth.success', { user: account.username, role: account.role, ip: req.ip });
     res.json({ ok: true, role: account.role });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -290,10 +298,18 @@ api.put('/settings/webhook', requireAdmin, (req, res) => {
   if (format && format !== 'slack') {
     return res.status(400).json({ error: 'format must be empty or "slack"' });
   }
+  // Log only the scheme, never the full URL - webhook URLs embed secrets (Discord token, Slack
+  // path, ntfy topic) that have no business sitting in the container's log output.
+  logger.info('settings.webhook.update', {
+    user: req.session.username,
+    url: url ? new URL(url).protocol + '//…' : '(cleared)',
+    format: format || 'auto',
+  });
   res.json(alerts.setWebhookConfig({ url, format }));
 });
 
 api.delete('/settings/webhook', requireAdmin, (req, res) => {
+  logger.info('settings.webhook.clear', { user: req.session.username });
   res.json(alerts.clearWebhookConfig());
 });
 
@@ -329,11 +345,80 @@ api.put('/settings/thresholds', requireAdmin, (req, res) => {
     }
     values[field] = n;
   }
+  logger.info('settings.thresholds.update', { user: req.session.username, ...values });
   res.json(alerts.setThresholdConfig(values));
 });
 
 api.delete('/settings/thresholds', requireAdmin, (req, res) => {
+  logger.info('settings.thresholds.clear', { user: req.session.username });
   res.json(alerts.clearThresholdConfig());
+});
+
+// Host management (add/edit/remove monitored Docker hosts, including SSH-based remote ones) -
+// writes straight to config/hosts.json via saveHosts() and immediately starts/stops the
+// corresponding background polling (metricsCollector) and event watching (eventWatcher) for that
+// one host, so changes take effect without restarting the process.
+api.get('/settings/hosts', requireAdmin, (req, res) => {
+  res.json(loadHosts());
+});
+
+api.post('/settings/hosts', requireAdmin, (req, res) => {
+  const { id, name, dockerHost } = req.body || {};
+  if (!isValidHostId(id)) {
+    return res.status(400).json({ error: 'id is required and may only contain letters, numbers, - and _' });
+  }
+  const hosts = loadHosts();
+  if (hosts.some((h) => h.id === id)) {
+    return res.status(400).json({ error: `a host with id "${id}" already exists` });
+  }
+  if (!isValidDockerHostUrl(dockerHost)) {
+    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+  }
+  if (!dockerHost && hasLocalHost(hosts)) {
+    return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });
+  }
+  const host = { id, name: name || undefined, dockerHost: dockerHost || null, edges: [] };
+  const updated = [...hosts, host];
+  saveHosts(updated);
+  metricsCollector.addHost(host);
+  eventWatcher.addHost(host);
+  logger.info('settings.hosts.add', { user: req.session.username, host: id, dockerHost: dockerHost || 'local' });
+  res.json(updated);
+});
+
+api.put('/settings/hosts/:id', requireAdmin, (req, res) => {
+  const hosts = loadHosts();
+  const idx = hosts.findIndex((h) => h.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'unknown host' });
+  const { name, dockerHost } = req.body || {};
+  if (!isValidDockerHostUrl(dockerHost)) {
+    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+  }
+  if (!dockerHost && hasLocalHost(hosts, req.params.id)) {
+    return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });
+  }
+  const updatedHost = { ...hosts[idx], name: name || undefined, dockerHost: dockerHost || null };
+  const updated = [...hosts];
+  updated[idx] = updatedHost;
+  saveHosts(updated);
+  // Reconnect with the new config rather than trying to figure out exactly what changed.
+  metricsCollector.removeHost(updatedHost.id);
+  eventWatcher.removeHost(updatedHost.id);
+  metricsCollector.addHost(updatedHost);
+  eventWatcher.addHost(updatedHost);
+  logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
+  res.json(updated);
+});
+
+api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
+  const hosts = loadHosts();
+  if (!hosts.some((h) => h.id === req.params.id)) return res.status(404).json({ error: 'unknown host' });
+  const updated = hosts.filter((h) => h.id !== req.params.id);
+  saveHosts(updated);
+  metricsCollector.removeHost(req.params.id);
+  eventWatcher.removeHost(req.params.id);
+  logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
+  res.json(updated);
 });
 
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
@@ -341,6 +426,7 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
   if (!host) return res.status(404).json({ error: 'unknown host' });
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
+  const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
   try {
     await containerAction(host, req.params.id, req.params.action);
     db.insertAuditLog({
@@ -353,6 +439,7 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
       result: 'ok',
       error: null,
     });
+    logger.info(`container.${req.params.action}`, logFields);
     res.json({ ok: true });
   } catch (err) {
     db.insertAuditLog({
@@ -365,6 +452,7 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
       result: 'error',
       error: err.stderr || err.message,
     });
+    logger.error(`container.${req.params.action}`, { ...logFields, error: err.stderr || err.message });
     res.status(502).json({ error: err.stderr || err.message });
   }
 });

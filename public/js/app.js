@@ -34,6 +34,10 @@ import {
   apiGetThresholdConfig,
   apiSaveThresholdConfig,
   apiClearThresholdConfig,
+  apiGetHostsConfig,
+  apiAddHost,
+  apiUpdateHost,
+  apiDeleteHost,
 } from './api.js';
 import { buildElements, createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from './graph.js';
 
@@ -109,6 +113,14 @@ createApp({
       thresholdsSaving: false,
       thresholdsError: null,
       thresholdsStatus: null,
+
+      settingsHosts: [],
+      newHost: { id: '', name: '', dockerHost: '' },
+      hostsSaving: false,
+      hostsError: null,
+      hostsStatus: null,
+      editingHostId: null,
+      editHostDraft: { name: '', dockerHost: '' },
     };
   },
   computed: {
@@ -837,6 +849,15 @@ createApp({
       } catch (err) {
         this.thresholdsError = err.message;
       }
+      this.hostsError = null;
+      this.hostsStatus = null;
+      this.editingHostId = null;
+      this.newHost = { id: '', name: '', dockerHost: '' };
+      try {
+        this.settingsHosts = await apiGetHostsConfig();
+      } catch (err) {
+        this.hostsError = err.message;
+      }
     },
     closeSettings() {
       this.settingsOpen = false;
@@ -912,6 +933,59 @@ createApp({
         this.thresholdsError = err.message;
       } finally {
         this.thresholdsSaving = false;
+      }
+    },
+    async addHost() {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiAddHost(this.newHost);
+        this.newHost = { id: '', name: '', dockerHost: '' };
+        this.hostsStatus = 'Host added.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
+      }
+    },
+    startEditHost(host) {
+      this.editingHostId = host.id;
+      this.editHostDraft = { name: host.name || '', dockerHost: host.dockerHost || '' };
+      this.hostsError = null;
+      this.hostsStatus = null;
+    },
+    cancelEditHost() {
+      this.editingHostId = null;
+    },
+    async saveEditHost(id) {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiUpdateHost(id, this.editHostDraft);
+        this.editingHostId = null;
+        this.hostsStatus = 'Host updated.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
+      }
+    },
+    async removeHost(id) {
+      this.hostsSaving = true;
+      this.hostsError = null;
+      this.hostsStatus = null;
+      try {
+        this.settingsHosts = await apiDeleteHost(id);
+        this.hostsStatus = 'Host removed.';
+        await this.loadHosts();
+      } catch (err) {
+        this.hostsError = err.message;
+      } finally {
+        this.hostsSaving = false;
       }
     },
   },
@@ -1376,6 +1450,61 @@ createApp({
             <div class="modal-actions">
               <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
               <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
+            </div>
+
+            <hr />
+
+            <strong>Hosts</strong>
+            <p class="muted small">
+              Docker hosts this dashboard monitors. Add a remote one as
+              <code>ssh://user@host[:port]</code> — the container's docker CLI reaches it using the
+              SSH keys already mounted in, no password needed here. Changes apply immediately, no
+              restart required.
+            </p>
+            <p v-if="hostsError" class="error">{{ hostsError }}</p>
+            <p v-if="hostsStatus" class="muted small">{{ hostsStatus }}</p>
+
+            <div v-for="h in settingsHosts" :key="h.id" class="host-row">
+              <template v-if="editingHostId === h.id">
+                <label class="modal-field">
+                  Display name
+                  <input type="text" v-model="editHostDraft.name" :placeholder="h.id" />
+                </label>
+                <label class="modal-field">
+                  Docker host
+                  <input type="text" v-model="editHostDraft.dockerHost" placeholder="ssh://user@host (blank = local socket)" />
+                </label>
+                <div class="modal-actions">
+                  <button :disabled="hostsSaving" @click="saveEditHost(h.id)">Save</button>
+                  <button :disabled="hostsSaving" @click="cancelEditHost">Cancel</button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="host-row-main">
+                  <strong>{{ h.name || h.id }}</strong>
+                  <span class="muted small">{{ h.dockerHost || 'local socket' }}</span>
+                </div>
+                <div class="modal-actions">
+                  <button class="small-btn" :disabled="hostsSaving" @click="startEditHost(h)">Edit</button>
+                  <button class="small-btn" :disabled="hostsSaving" @click="removeHost(h.id)">Remove</button>
+                </div>
+              </template>
+            </div>
+
+            <label class="modal-field">
+              ID
+              <input type="text" v-model="newHost.id" placeholder="prod" />
+            </label>
+            <label class="modal-field">
+              Display name (optional)
+              <input type="text" v-model="newHost.name" placeholder="Production" />
+            </label>
+            <label class="modal-field">
+              Docker host (blank = local socket)
+              <input type="text" v-model="newHost.dockerHost" placeholder="ssh://deploy@prod.example.com" />
+            </label>
+            <div class="modal-actions">
+              <button :disabled="hostsSaving || !newHost.id" @click="addHost">Add host</button>
             </div>
         </div>
       </aside>

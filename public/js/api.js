@@ -131,3 +131,31 @@ export async function apiSaveThresholdConfig(values) {
 export async function apiClearThresholdConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/thresholds', { method: 'DELETE' }));
 }
+
+export async function apiGetHostsConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/hosts'));
+}
+
+export async function apiAddHost(host) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/hosts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(host),
+    })
+  );
+}
+
+export async function apiUpdateHost(id, host) {
+  return jsonOrThrow(
+    await apiFetch(`/api/settings/hosts/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(host),
+    })
+  );
+}
+
+export async function apiDeleteHost(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}`, { method: 'DELETE' }));
+}

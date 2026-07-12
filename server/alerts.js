@@ -1,4 +1,5 @@
 const db = require('./db');
+const logger = require('./logger');
 const { parseByteString } = require('./docker');
 
 const COOLDOWN_MS = 10 * 60 * 1000;
@@ -219,6 +220,8 @@ function fire({ hostId, containerId, containerName, rule, severity, message }) {
   if (!shouldFire(hostId, containerId, rule)) return;
   const ts = Date.now();
   const id = db.insertAlert({ ts, hostId, containerId, containerName, rule, severity, message });
+  const log = severity === 'critical' ? logger.error : logger.warn;
+  log('alert.fired', { host: hostId, container: containerName || containerId, rule, severity, message });
   notify({ id, ts, hostId, containerId, containerName, rule, severity, message });
 }
 
