@@ -1,5 +1,14 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
-import { parseMemUsedBytes, formatGB, healthColor, healthLabel, detectLogLevel, highlightLine, stripAnsi } from './format.js';
+import {
+  parseMemUsedBytes,
+  formatGB,
+  formatRatePair,
+  healthColor,
+  healthLabel,
+  detectLogLevel,
+  highlightLine,
+  stripAnsi,
+} from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -687,6 +696,9 @@ createApp({
     fmtGB(bytes) {
       return formatGB(bytes || 0);
     },
+    fmtRatePair(a, b) {
+      return formatRatePair(a, b);
+    },
     healthDotColor(health) {
       return healthColor(health);
     },
@@ -1044,8 +1056,8 @@ createApp({
             <div class="detail-row"><span class="label">Image</span><span>{{ selectedContainer.image }}</span></div>
             <div class="detail-row"><span class="label">CPU</span><span>{{ statFor(selectedContainer.id).cpuPerc || '—' }}</span></div>
             <div class="detail-row"><span class="label">Memory</span><span>{{ statFor(selectedContainer.id).memUsage || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Net I/O</span><span>{{ statFor(selectedContainer.id).netIO || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Block I/O</span><span>{{ statFor(selectedContainer.id).blockIO || '—' }}</span></div>
+            <div class="detail-row"><span class="label">Net I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).netRxRate, statFor(selectedContainer.id).netTxRate) }}</span></div>
+            <div class="detail-row"><span class="label">Block I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).blockReadRate, statFor(selectedContainer.id).blockWriteRate) }}</span></div>
             <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
             <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
 

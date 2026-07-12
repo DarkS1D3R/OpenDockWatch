@@ -1,5 +1,5 @@
 const { loadHosts } = require('./hosts');
-const { listContainers, getStats, getHostInfo, getDiskUsage, checkHost, parseMemUsedBytes } = require('./docker');
+const { listContainers, getStats, getHostInfo, getDiskUsage, checkHost, parseMemUsedBytes, computeIoRates } = require('./docker');
 const db = require('./db');
 const alerts = require('./alerts');
 
@@ -34,12 +34,16 @@ async function pollHost(host) {
     snapshot.hostInfo = hostInfo;
 
     const ts = Date.now();
+    snapshot.statsTs = ts;
+    const elapsedSec = prev && prev.statsTs ? (ts - prev.statsTs) / 1000 : null;
     let cpuSum = 0;
     let memSum = 0;
     for (const c of containers) {
       if (c.state !== 'running') continue;
       const s = stats[c.id];
       if (!s) continue;
+      const prevS = prev && prev.stats ? prev.stats[c.id] : null;
+      Object.assign(s, computeIoRates(s, prevS, elapsedSec));
       const cpuPerc = parseFloat(s.cpuPerc) || 0;
       const memPerc = parseFloat(s.memPerc) || 0;
       cpuSum += cpuPerc;

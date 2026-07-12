@@ -1,6 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseByteString, parseMemUsedBytes, parseLabels, parseHealth, networkEdges, dependsOnEdges } = require('../server/docker');
+const {
+  parseByteString,
+  parseMemUsedBytes,
+  parseLabels,
+  parseHealth,
+  networkEdges,
+  dependsOnEdges,
+  computeRate,
+  computeIoRates,
+} = require('../server/docker');
 
 test('parseByteString', async (t) => {
   await t.test('parses decimal (SI) units', () => {
@@ -20,6 +29,49 @@ test('parseByteString', async (t) => {
 
 test('parseMemUsedBytes', () => {
   assert.equal(parseMemUsedBytes('512MiB / 2GiB'), 512 * 1024 ** 2);
+});
+
+test('computeRate', async (t) => {
+  await t.test('divides the byte delta by elapsed seconds', () => {
+    assert.equal(computeRate(1500, 1000, 5), 100);
+  });
+
+  await t.test('returns null with no previous value (first poll / just restarted)', () => {
+    assert.equal(computeRate(1000, null, 5), null);
+    assert.equal(computeRate(1000, undefined, 5), null);
+  });
+
+  await t.test('returns null with no elapsed time', () => {
+    assert.equal(computeRate(1500, 1000, 0), null);
+    assert.equal(computeRate(1500, 1000, null), null);
+  });
+
+  await t.test('returns null instead of a negative rate when the counter went backwards (container restarted)', () => {
+    assert.equal(computeRate(100, 5000, 5), null);
+  });
+});
+
+test('computeIoRates', async (t) => {
+  await t.test('computes all four rates from current/previous cumulative bytes', () => {
+    const current = { netRxBytes: 2000, netTxBytes: 500, blockReadBytes: 4000, blockWriteBytes: 1000 };
+    const prev = { netRxBytes: 1000, netTxBytes: 0, blockReadBytes: 3000, blockWriteBytes: 500 };
+    assert.deepEqual(computeIoRates(current, prev, 10), {
+      netRxRate: 100,
+      netTxRate: 50,
+      blockReadRate: 100,
+      blockWriteRate: 50,
+    });
+  });
+
+  await t.test('all rates are null with no previous sample', () => {
+    const current = { netRxBytes: 2000, netTxBytes: 500, blockReadBytes: 4000, blockWriteBytes: 1000 };
+    assert.deepEqual(computeIoRates(current, null, 10), {
+      netRxRate: null,
+      netTxRate: null,
+      blockReadRate: null,
+      blockWriteRate: null,
+    });
+  });
 });
 
 test('parseLabels', async (t) => {

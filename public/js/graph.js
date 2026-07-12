@@ -1,4 +1,4 @@
-import { stateEmoji, iconFor, parsePublishedPorts } from './format.js';
+import { stateEmoji, iconFor, parsePublishedPorts, formatRatePair } from './format.js';
 
 let htmlLabelRegistered = false;
 
@@ -128,8 +128,8 @@ export function buildElements(nodes, edges, selectedId) {
         icon: iconFor(n.image, n.composeService),
         cpuPerc: n.cpuPerc,
         memPerc: n.memPerc,
-        netIO: n.netIO || '—',
-        blockIO: n.blockIO || '—',
+        netIO: formatRatePair(n.netRxRate, n.netTxRate),
+        blockIO: formatRatePair(n.blockReadRate, n.blockWriteRate),
         ports: parsePublishedPorts(n.ports),
         openAlerts: n.openAlerts || 0,
       },

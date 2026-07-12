@@ -59,6 +59,26 @@ export function formatGB(bytes) {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
+const RATE_UNITS = [
+  [1e9, 'GB/s'],
+  [1e6, 'MB/s'],
+  [1e3, 'kB/s'],
+];
+
+// bytesPerSec is null when the server has no prior poll to diff against yet (just started, or
+// the container was just restarted) - shown as "—" rather than a misleading 0.
+export function formatRate(bytesPerSec) {
+  if (bytesPerSec == null) return '—';
+  for (const [threshold, unit] of RATE_UNITS) {
+    if (bytesPerSec >= threshold) return `${(bytesPerSec / threshold).toFixed(1)} ${unit}`;
+  }
+  return `${Math.round(bytesPerSec)} B/s`;
+}
+
+export function formatRatePair(a, b) {
+  return `${formatRate(a)} / ${formatRate(b)}`;
+}
+
 // Docker's Ports string looks like "0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp" - only the
 // "->" entries are actually published to the host; the rest are just exposed. IPv4/IPv6 both
 // publish the same host port, hence the dedup. Returns a short display string, e.g. ":8080, :443".
