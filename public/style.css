@@ -1140,10 +1140,28 @@ table.containers td:nth-child(7) {
   width: 100%;
   margin-bottom: 10px;
 }
+.activity-list-wrap {
+  position: relative;
+}
 .activity-list {
   max-height: calc(100vh - 480px);
   min-height: 200px;
   overflow-y: auto;
+}
+.scroll-top-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 12px;
+  padding: 5px 10px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.scroll-top-btn:hover {
+  opacity: 0.9;
+  border-color: var(--accent);
 }
 .ack-tick {
   display: inline-block;
