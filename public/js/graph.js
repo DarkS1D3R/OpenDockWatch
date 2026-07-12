@@ -171,9 +171,15 @@ function clampPct(pct) {
 // node data(), so setting it here is what makes the template below pick compact vs full up.
 function updateCompactFlag(cy) {
   const compact = cy.zoom() < COMPACT_ZOOM_THRESHOLD;
-  cy.nodes('.running, .stopped, .cy-expand-collapse-collapsed-node').forEach((n) => {
-    if (n.data('compact') !== compact) n.data('compact', compact);
-  });
+  const changed = cy.nodes('.running, .stopped, .cy-expand-collapse-collapsed-node').filter((n) => n.data('compact') !== compact);
+  if (!changed.length) return;
+  changed.data('compact', compact);
+  // Height here comes from a compact-dependent style mapper, not a position change - cytoscape
+  // only wires its compound bounding-box cache invalidation up to the position setter, so a
+  // compose group's rendered outline is left sized to the stale (compact) bounds once its
+  // children grow back to full size on zoom-in, until something else (e.g. selecting a node)
+  // happens to force a recompute. Without this, children can render outside their own group box.
+  changed.dirtyCompoundBoundsCache();
 }
 
 // Matches the CPU/mem color convention used everywhere else in the app (host tiles,

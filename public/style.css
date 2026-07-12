@@ -840,7 +840,7 @@ table.containers td:nth-child(7) {
 .log-panel.fullscreen {
   margin-top: 8px;
 }
-.log-panel.fullscreen .popout-log {
+.log-panel.fullscreen .log-viewer-pane {
   height: calc(100vh - 191px);
 }
 .log-panel-header {
@@ -910,7 +910,7 @@ table.containers td:nth-child(7) {
   color: var(--muted);
   white-space: nowrap;
 }
-.popout-log {
+.log-viewer-pane {
   height: 320px;
   border-radius: 0;
   border: none;
