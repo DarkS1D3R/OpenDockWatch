@@ -604,6 +604,14 @@ table.containers td:nth-child(7) {
   border: none;
   background: var(--danger);
 }
+.swatch-blast-upstream {
+  border: none;
+  background: #a371f7;
+}
+.swatch-blast-downstream {
+  border: none;
+  background: #f0883e;
+}
 .line {
   width: 22px;
   height: 0;

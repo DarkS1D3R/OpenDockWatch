@@ -1007,6 +1007,8 @@ createApp({
               <span class="legend-item"><span class="line line-depends-on"></span> depends-on</span>
               <span class="legend-item"><span class="line line-manual"></span> declared dependency</span>
               <span class="legend-item"><span class="swatch swatch-alert"></span> open alert</span>
+              <span class="legend-item"><span class="swatch swatch-blast-upstream"></span> selection needs (on select)</span>
+              <span class="legend-item"><span class="swatch swatch-blast-downstream"></span> will suffer if selection dies (on select)</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-cpu"></span> CPU</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-mem"></span> RAM</span>
             </p>

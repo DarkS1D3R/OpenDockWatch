@@ -71,6 +71,22 @@ const CY_STYLE = [
     },
   },
   {
+    // Blast radius tint on selection - background only (border stays driven by health/selected
+    // state above) so an unhealthy node inside the blast radius still reads as unhealthy first.
+    selector: 'node.blast-upstream',
+    style: {
+      'background-color': '#a371f7',
+      'background-opacity': 0.22,
+    },
+  },
+  {
+    selector: 'node.blast-downstream',
+    style: {
+      'background-color': '#f0883e',
+      'background-opacity': 0.22,
+    },
+  },
+  {
     selector: 'edge.edge-network',
     style: {
       'line-color': '#2b2f38',
@@ -108,6 +124,22 @@ const CY_STYLE = [
       color: '#4f8cff',
       'text-background-color': '#14161a',
       'text-background-opacity': 1,
+    },
+  },
+  {
+    selector: 'edge.blast-upstream',
+    style: {
+      'line-color': '#a371f7',
+      'target-arrow-color': '#a371f7',
+      width: 3,
+    },
+  },
+  {
+    selector: 'edge.blast-downstream',
+    style: {
+      'line-color': '#f0883e',
+      'target-arrow-color': '#f0883e',
+      width: 3,
     },
   },
   {
@@ -428,13 +460,40 @@ export function updateGraph(cy, elements, hostId) {
   }
 }
 
+// Walks depends_on edges transitively from the selected node in one direction. 'target' follows
+// edges forward (source -> target, i.e. "what this node depends on" - the chain it needs healthy
+// to function itself). 'source' follows them backward (i.e. everything that depends on this
+// node, directly or transitively - what breaks if it does). Returns both the reached node ids
+// and the specific edges used to reach them, so only the actual dependency path gets tinted -
+// not every edge that happens to connect two nodes that both end up somewhere in the set.
+function traverseDependsOn(cy, startId, followField) {
+  const fromField = followField === 'target' ? 'source' : 'target';
+  const edges = cy.edges('.edge-depends-on');
+  const nodeIds = new Set();
+  const edgeIds = new Set();
+  const queue = [startId];
+  while (queue.length) {
+    const id = queue.shift();
+    edges.forEach((edge) => {
+      if (edge.data(fromField) !== id) return;
+      const nextId = edge.data(followField);
+      edgeIds.add(edge.id());
+      if (nextId !== startId && !nodeIds.has(nextId)) {
+        nodeIds.add(nextId);
+        queue.push(nextId);
+      }
+    });
+  }
+  return { nodeIds, edgeIds };
+}
+
 // Dims everything outside the given selection/filter so the surrounding topology is easier to
 // read. filterText (if non-empty) takes priority over selectedId - typing a filter and having a
 // node selected at the same time would otherwise fight over what "faded" means. Group boxes are
 // never faded so the project outline stays legible either way.
 export function applyFading(cy, { selectedId, filterText } = {}) {
   if (!cy) return;
-  cy.elements().removeClass('faded');
+  cy.elements().removeClass('faded blast-upstream blast-downstream');
 
   const text = (filterText || '').trim().toLowerCase();
   if (text) {
@@ -448,8 +507,23 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
   } else if (selectedId) {
     const node = cy.$id(selectedId);
     if (node.length) {
-      const keep = node.closedNeighborhood();
-      cy.elements().not(keep).not('.group').addClass('faded');
+      // "What breaks if this dies" (downstream: everything that transitively depends on it) and
+      // "what it needs to be healthy" (upstream: everything it transitively depends on) is the
+      // actual operational question the topology exists to answer - not just "what's nearby."
+      const upstream = traverseDependsOn(cy, selectedId, 'target');
+      const downstream = traverseDependsOn(cy, selectedId, 'source');
+      upstream.nodeIds.forEach((id) => cy.$id(id).addClass('blast-upstream'));
+      downstream.nodeIds.forEach((id) => cy.$id(id).addClass('blast-downstream'));
+      upstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-upstream'));
+      downstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-downstream'));
+
+      const transitive = [...upstream.nodeIds, ...downstream.nodeIds].reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+      const keep = node.closedNeighborhood().union(transitive);
+      cy.nodes().not(keep).not('.group').addClass('faded');
+      cy.edges().forEach((e) => {
+        if (e.hasClass('blast-upstream') || e.hasClass('blast-downstream')) return;
+        if (!keep.contains(e.source()) || !keep.contains(e.target())) e.addClass('faded');
+      });
     }
   }
 
