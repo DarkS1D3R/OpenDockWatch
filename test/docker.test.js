@@ -7,6 +7,7 @@ const {
   parseHealth,
   networkEdges,
   dependsOnEdges,
+  parseMountsList,
   computeRate,
   computeIoRates,
 } = require('../server/docker');
@@ -216,5 +217,42 @@ test('dependsOnEdges', async (t) => {
     ];
     const edges = dependsOnEdges(containers, 'a\tdb:service_healthy:false');
     assert.equal(edges.length, 0);
+  });
+});
+
+test('parseMountsList', async (t) => {
+  await t.test('infers a bind mount from a source starting with /', () => {
+    const byId = parseMountsList('abcdef123456\t/home/user/data');
+    assert.deepEqual(byId.get('abcdef123456'), [{ source: '/home/user/data', kind: 'bind' }]);
+  });
+
+  await t.test('infers a named volume from a plain name', () => {
+    const byId = parseMountsList('abcdef123456\tpgdata');
+    assert.deepEqual(byId.get('abcdef123456'), [{ source: 'pgdata', kind: 'volume-named' }]);
+  });
+
+  await t.test('infers an anonymous volume from a bare 64-hex source', () => {
+    const anonId = 'a'.repeat(64);
+    const byId = parseMountsList(`abcdef123456\t${anonId}`);
+    assert.deepEqual(byId.get('abcdef123456'), [{ source: anonId, kind: 'volume-anon' }]);
+  });
+
+  await t.test('splits multiple comma-separated mounts for one container', () => {
+    const byId = parseMountsList('abcdef123456\t/data,pgdata');
+    assert.deepEqual(byId.get('abcdef123456'), [
+      { source: '/data', kind: 'bind' },
+      { source: 'pgdata', kind: 'volume-named' },
+    ]);
+  });
+
+  await t.test('a container with no mounts produces an empty list', () => {
+    const byId = parseMountsList('abcdef123456\t');
+    assert.deepEqual(byId.get('abcdef123456'), []);
+  });
+
+  await t.test('a full 64-char --no-trunc id is matched via its sliced 12-char short id', () => {
+    const fullId = 'f'.repeat(64);
+    const byId = parseMountsList(`${fullId}\t/data`);
+    assert.deepEqual(byId.get(fullId.slice(0, 12)), [{ source: '/data', kind: 'bind' }]);
   });
 });

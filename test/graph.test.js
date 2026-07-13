@@ -128,3 +128,219 @@ test('buildElements', async (t) => {
     assert.equal(edgeEls[1].data.id, 'edge:depends_on:a->b');
   });
 });
+
+test('buildTreeElements', async (t) => {
+  await t.test('dedups a network shared by two containers into one pill with two incoming edges', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [] },
+      { id: 'b', group: 'shop', state: 'running', networks: ['app-net'], mounts: [] },
+    ];
+    const els = graph.buildTreeElements(nodes, null);
+    const netNodes = els.filter((el) => el.classes === 'net');
+    assert.equal(netNodes.length, 1);
+    assert.equal(netNodes[0].data.id, 'net:app-net');
+    const netEdges = els.filter((el) => el.data.target === 'net:app-net');
+    assert.equal(netEdges.length, 2);
+    assert.deepEqual(netEdges.map((e) => e.data.source).sort(), ['a', 'b']);
+  });
+
+  await t.test('shortens an anonymous-volume label but keeps the full source as the stable id', () => {
+    const anonId = 'a'.repeat(64);
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: anonId, kind: 'volume-anon' }] }];
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    assert.equal(mountNode.data.id, `mount:${anonId}`);
+    assert.equal(mountNode.data.label, `anon:${anonId.slice(0, 12)}…`);
+  });
+
+  await t.test('wraps a long bind-mount path onto multiple lines at path-separator boundaries', () => {
+    const longPath = '/mnt/c/Projects/bm-server/application/target/bm-server-files/bm-server-1.0.0-SNAPSHOT.jar';
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: longPath, kind: 'bind' }] }];
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    assert.ok(mountNode.data.label.includes('\n'), 'expected the long path to be wrapped onto multiple lines');
+    assert.ok(
+      mountNode.data.label.split('\n').every((line) => line.length <= 22),
+      'expected every wrapped line to stay under the max line length'
+    );
+    assert.equal(mountNode.data.label.replace(/\n/g, ''), longPath);
+  });
+
+  await t.test('leaves a short mount source on a single line, unwrapped', () => {
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: 'pgdata', kind: 'volume-named' }] }];
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    assert.equal(mountNode.data.label, 'pgdata');
+  });
+
+  await t.test('a container with no compose project gets no project node or edge', () => {
+    const nodes = [{ id: 'a', group: 'ungrouped', state: 'running', networks: [], mounts: [] }];
+    const els = graph.buildTreeElements(nodes, null);
+    assert.equal(els.filter((el) => el.classes === 'proj').length, 0);
+    assert.equal(els.filter((el) => el.data.target === 'a').length, 0);
+  });
+
+  await t.test('produces stable ids across two calls with equivalent input', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [{ source: 'pgdata', kind: 'volume-named' }] },
+    ];
+    const first = graph
+      .buildTreeElements(nodes, null)
+      .map((el) => el.data.id)
+      .sort();
+    const second = graph
+      .buildTreeElements(nodes, null)
+      .map((el) => el.data.id)
+      .sort();
+    assert.deepEqual(first, second);
+  });
+
+  await t.test('showNetworks: false and showMounts: false suppress those pills and edges entirely', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [{ source: 'pgdata', kind: 'volume-named' }] },
+    ];
+    const els = graph.buildTreeElements(nodes, null, { showNetworks: false, showMounts: false });
+    assert.equal(els.filter((el) => el.classes === 'net').length, 0);
+    assert.equal(els.filter((el) => el.classes === 'mount').length, 0);
+    assert.equal(els.filter((el) => el.data.id && el.data.id.startsWith('edge:tree:a->')).length, 0);
+  });
+
+  await t.test('container node data mirrors buildElements shape, with no parent field', () => {
+    const nodes = [
+      {
+        id: 'a',
+        group: 'shop',
+        state: 'running',
+        name: 'web',
+        image: 'nginx:latest',
+        ports: '0.0.0.0:8080->80/tcp',
+        netRxRate: 1500,
+        netTxRate: null,
+        openAlerts: 2,
+        networks: [],
+        mounts: [],
+      },
+    ];
+    const el = graph.buildTreeElements(nodes, null).find((e) => e.data.id === 'a');
+    assert.equal(el.data.parent, undefined);
+    assert.equal(el.data.name, 'web');
+    assert.equal(el.data.ports, ':8080');
+    assert.equal(el.data.netIO, '1.5 kB/s / 0 B/s');
+    assert.equal(el.data.openAlerts, 2);
+  });
+
+  await t.test('selectedId marks the matching container node selected', () => {
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [] }];
+    const els = graph.buildTreeElements(nodes, 'a');
+    assert.equal(els.find((e) => e.data.id === 'a').classes, 'running selected');
+  });
+});
+
+// Fixtures deliberately skip extractSvgGeometry (which needs a live cy instance) and match its
+// output shape directly - renderSvg is pure, so it can be exercised the same way buildElements
+// is: feed it plain data, assert on the string it returns.
+function svgContainerFixture(overrides = {}) {
+  return {
+    id: 'a',
+    kind: 'container',
+    x: 100,
+    y: 100,
+    width: 170,
+    height: 76,
+    running: true,
+    stopped: false,
+    unhealthy: false,
+    selected: false,
+    faded: false,
+    blastUpstream: false,
+    blastDownstream: false,
+    data: {
+      name: 'web',
+      status: 'Up 3 minutes',
+      icon: { text: 'W', bg: '#4f8cff' },
+      cpuPerc: 10,
+      memPerc: 20,
+      netIO: '0 B/s / 0 B/s',
+      blockIO: '0 B/s / 0 B/s',
+    },
+    ...overrides,
+  };
+}
+
+test('renderSvg', async (t) => {
+  await t.test('a running container renders a rect in the running border color and its name as text', () => {
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
+    assert.match(svg, /stroke="#3fb950"/);
+    assert.match(svg, /web/);
+  });
+
+  await t.test('an unhealthy container uses the unhealthy border color', () => {
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true })], edges: [] });
+    assert.match(svg, /stroke="#f85149"/);
+  });
+
+  await t.test('a selected container uses the selected border color', () => {
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ selected: true })], edges: [] });
+    assert.match(svg, /stroke="#4f8cff"/);
+  });
+
+  await t.test('a mount pill with a wrapped multi-line label emits one tspan per line', () => {
+    const node = {
+      id: 'mount:/a/very/long/path',
+      kind: 'mount',
+      x: 200,
+      y: 200,
+      width: 170,
+      height: 40,
+      faded: false,
+      data: { label: '/a/very/\nlong/path' },
+    };
+    const svg = graph.renderSvg({ nodes: [node], edges: [] });
+    const tspanCount = (svg.match(/<tspan/g) || []).length;
+    assert.equal(tspanCount, 2);
+    assert.match(svg, /\/a\/very\//);
+    assert.match(svg, /long\/path/);
+  });
+
+  const edgeKinds = [
+    ['network', '#2b2f38'],
+    ['depends_on', '#199e70'],
+    ['manual', '#4f8cff'],
+    ['tree-proj', '#3a3f4b'],
+    ['tree-net', '#4f8cff'],
+    ['tree-mount', '#d29922'],
+  ];
+  for (const [kind, color] of edgeKinds) {
+    await t.test(`edge kind "${kind}" renders in its expected color`, () => {
+      const edge = { id: `e-${kind}`, kind, source: { x: 0, y: 0 }, target: { x: 100, y: 50 }, label: '', faded: false };
+      const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+      assert.match(svg, new RegExp(`stroke="${color}"`));
+    });
+  }
+
+  await t.test('depends_on and manual edges render their label text', () => {
+    const edge = { id: 'e1', kind: 'depends_on', source: { x: 0, y: 0 }, target: { x: 100, y: 0 }, label: 'service_healthy', faded: false };
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    assert.match(svg, /service_healthy/);
+  });
+
+  await t.test('a faded node is wrapped in a reduced-opacity group', () => {
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ faded: true })], edges: [] });
+    assert.match(svg, /opacity="0.15"/);
+  });
+
+  await t.test('the viewBox grows to cover every node plus padding', () => {
+    const nodes = [svgContainerFixture({ id: 'a', x: 0, y: 0 }), svgContainerFixture({ id: 'b', x: 1000, y: 500 })];
+    const svg = graph.renderSvg({ nodes, edges: [] });
+    const viewBoxMatch = svg.match(/viewBox="([-\d.]+) ([-\d.]+) ([\d.]+) ([\d.]+)"/);
+    assert.ok(viewBoxMatch, 'expected a viewBox attribute');
+    const [, minX, minY, width, height] = viewBoxMatch.map(Number);
+    assert.ok(minX < 0 - 170 / 2, 'viewBox should extend left past the first node plus padding');
+    assert.ok(minY < 0 - 76 / 2, 'viewBox should extend up past the first node plus padding');
+    assert.ok(width > 1000, 'viewBox width should cover both nodes');
+    assert.ok(height > 500, 'viewBox height should cover both nodes');
+  });
+
+  await t.test('empty geometry still returns a valid svg document', () => {
+    const svg = graph.renderSvg({ nodes: [], edges: [] });
+    assert.match(svg, /^<svg/);
+    assert.match(svg, /<\/svg>$/);
+  });
+});
