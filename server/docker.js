@@ -231,6 +231,37 @@ function dependsOnEdges(containers, dependsOnRaw) {
   return edges;
 }
 
+// Resolves each container's mount sources for the Flow view's tree mode. Docker's `{{.Mounts}}`
+// format truncates long bind-mount source paths (and, with --no-trunc, so does the paired
+// {{.ID}} column - it comes back as the full 64-char id instead of the usual 12-char short one),
+// which is why this is fetched via its own `docker ps --no-trunc` call rather than reusing
+// listContainers's output, and why the id is sliced back to 12 chars to match it.
+//
+// raw is tab-separated "<full 64-char id>\t<mounts>" lines, one per container (mounts may be
+// empty). kind is inferred from the source string alone (Docker doesn't return mount type in this
+// format): starts with "/" -> bind; a bare 64-hex string -> Docker's own anonymous volume name;
+// anything else -> a named volume.
+const ANON_VOLUME_RE = /^[0-9a-f]{64}$/i;
+
+function parseMountsList(raw) {
+  const byId = new Map();
+  for (const line of (raw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIdx = trimmed.indexOf('\t');
+    const fullId = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
+    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+    const id = fullId.slice(0, 12);
+    const mounts = value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((source) => ({ source, kind: source.startsWith('/') ? 'bind' : ANON_VOLUME_RE.test(source) ? 'volume-anon' : 'volume-named' }));
+    byId.set(id, mounts);
+  }
+  return byId;
+}
+
 function manualEdges(containers, declared = []) {
   const byName = new Map(containers.map((c) => [c.name, c.id]));
   const edges = [];
@@ -252,10 +283,12 @@ function manualEdges(containers, declared = []) {
 async function getTopology(host, snapshot) {
   const useSnapshot = snapshot && snapshot.containers && snapshot.containers.length;
   const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const [stats, dependsOnRaw] = await Promise.all([
+  const [stats, dependsOnRaw, mountsRaw] = await Promise.all([
     useSnapshot ? Promise.resolve(snapshot.stats || {}) : getStats(host).catch(() => ({})),
     run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
+    run([...hostArgs(host), 'ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Mounts}}']).catch(() => ''),
   ]);
+  const mountsById = parseMountsList(mountsRaw);
   const nodes = containers.map((c) => {
     const s = stats[c.id];
     return {
@@ -268,6 +301,8 @@ async function getTopology(host, snapshot) {
       image: c.image,
       composeService: c.composeService,
       ports: c.ports,
+      networks: c.networks,
+      mounts: mountsById.get(c.id) || [],
       cpuPerc: s ? parseFloat(s.cpuPerc) || 0 : null,
       memPerc: s ? parseFloat(s.memPerc) || 0 : null,
       netRxRate: s ? (s.netRxRate ?? null) : null,
@@ -356,6 +391,7 @@ module.exports = {
   parseHealth,
   networkEdges,
   dependsOnEdges,
+  parseMountsList,
   computeRate,
   computeIoRates,
 };

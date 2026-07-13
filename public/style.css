@@ -450,7 +450,10 @@ table.containers td:nth-child(7) {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 4px 4px 8px;
+  /* Right padding keeps edge-info-text's margin-left: auto from running under the
+     absolutely-positioned .cy-fullscreen-btn pinned to the top-right of .cy-wrap - most
+     visible in tree mode, whose shorter toolbar leaves more of the row to that span. */
+  padding: 4px 130px 8px 4px;
 }
 .toolbar-sep {
   width: 1px;
@@ -706,6 +709,21 @@ table.containers td:nth-child(7) {
 }
 .line-manual {
   border-top: 2px solid var(--accent);
+}
+.line-tree-proj {
+  border-top: 2px solid var(--border);
+}
+.line-tree-net {
+  border-top: 2px dashed var(--accent);
+}
+.line-tree-mount {
+  border-top: 2px solid #d29922;
+}
+.swatch-proj {
+  border-color: #2d5fa8;
+}
+.swatch-mount {
+  border-color: #d29922;
 }
 .bar-swatch {
   width: 14px;

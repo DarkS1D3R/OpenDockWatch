@@ -136,6 +136,116 @@ const CY_STYLE = [
     },
   },
   {
+    // Tree mode only - project/network/mount pills are plain (non-compound) nodes, so unlike
+    // node.group they get a fixed size and centered label rather than padding around children.
+    // A darker blue than node.net's border (rather than the muted gray node.stopped also uses)
+    // - a project box next to a stopped container otherwise reads as two of the same "state,"
+    // when a project is a grouping, not a state at all.
+    selector: 'node.proj',
+    style: {
+      'background-color': '#1d2027',
+      'border-width': 1,
+      'border-color': '#2d5fa8',
+      label: 'data(label)',
+      'font-size': 11,
+      color: '#e4e6eb',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      width: 140,
+      height: 30,
+      shape: 'round-rectangle',
+    },
+  },
+  {
+    selector: 'node.net',
+    style: {
+      'background-color': '#182234',
+      'border-width': 1,
+      'border-color': '#4f8cff',
+      label: 'data(label)',
+      'font-size': 10,
+      color: '#4f8cff',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      width: 120,
+      height: 26,
+      shape: 'round-rectangle',
+    },
+  },
+  {
+    // Bind-mount source paths can be much longer than a network/project name (e.g. a full
+    // /mnt/... path) - a fixed width with text-wrap forces long paths onto multiple lines
+    // instead of overflowing a single-line pill; height: 'label' then grows the box to fit
+    // however many wrapped lines that took (short volume names still fit on one line).
+    selector: 'node.mount',
+    style: {
+      'background-color': '#241d14',
+      'border-width': 1,
+      'border-color': '#d29922',
+      label: 'data(label)',
+      'font-size': 10,
+      color: '#d29922',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'text-wrap': 'wrap',
+      'text-max-width': 150,
+      width: 170,
+      height: 'label',
+      padding: '8px',
+      shape: 'round-rectangle',
+    },
+  },
+  {
+    // Orthogonal "taxi" routing (horizontal-vertical-horizontal), matching ArgoCD's own resource
+    // tree connectors - reads more like a hierarchy diagram than the diagonal bezier edges graph
+    // mode uses for network/depends-on/manual relationships. No arrowhead, same reason ArgoCD's
+    // doesn't have one: left-to-right position already conveys direction in a tree. Split into
+    // three kind-specific styles (rather than one shared edge-tree class) so a network pill's
+    // dashed blue lines and a mount pill's solid amber lines don't blend together once several
+    // containers converge on shared pills - the whole point of deduping them in the first place.
+    selector: 'edge.edge-tree-proj',
+    style: {
+      'line-color': '#3a3f4b',
+      width: 1.5,
+      'curve-style': 'taxi',
+      'taxi-direction': 'horizontal',
+      'taxi-turn': '50%',
+      'taxi-turn-min-distance': 10,
+      'target-arrow-shape': 'none',
+    },
+  },
+  {
+    // Straight rather than taxi routing - a network pill is often shared by many containers at
+    // different heights, and orthogonal elbows from all of them tend to run along the same
+    // horizontal bands and overlap each other. A direct line fans out at a distinct angle per
+    // source, which stays readable at higher fan-in than the elbow style does.
+    selector: 'edge.edge-tree-net',
+    style: {
+      'line-color': '#4f8cff',
+      width: 1.5,
+      'line-style': 'dashed',
+      'curve-style': 'straight',
+      'target-arrow-shape': 'none',
+    },
+  },
+  {
+    // Back to taxi (orthogonal), matching edge-tree-proj's ArgoCD-style look. The invisible-line
+    // bug this was briefly switched to 'straight' for turned out to be a stale-render issue (see
+    // updateCompactFlag's cy.style().update() call) rather than a taxi-geometry problem - fixed
+    // at the source now, so mounts get the elbow routing back. TREE_LAYOUT's extra nodeSep gives
+    // the turn points more room, as a further safety margin against tight-quarters overlap.
+    selector: 'edge.edge-tree-mount',
+    style: {
+      'line-color': '#d29922',
+      width: 1.5,
+      'curve-style': 'taxi',
+      'taxi-direction': 'horizontal',
+      'taxi-turn': '50%',
+      'taxi-turn-min-distance': 10,
+      'target-arrow-shape': 'none',
+    },
+  },
+  {
     selector: 'edge.blast-upstream',
     style: {
       'line-color': '#a371f7',
@@ -180,6 +290,15 @@ function updateCompactFlag(cy) {
   // children grow back to full size on zoom-in, until something else (e.g. selecting a node)
   // happens to force a recompute. Without this, children can render outside their own group box.
   changed.dirtyCompoundBoundsCache();
+  // dirtyCompoundBoundsCache only covers compound (parent) bounding boxes - it does nothing for
+  // a plain leaf node's own rendered box, which is exactly what every tree-mode container is (no
+  // compound groups there). Without an explicit style recompute, an edge routed to/from a node
+  // whose height just changed can keep using its previous box to route against, silently
+  // rendering a zero/near-zero-length (so invisible) segment until *something else* forces a
+  // recompute - reproduced by zooming across the compact threshold and back. cy.style().update()
+  // is cytoscape's own documented way to force every function-valued style (like this height
+  // mapper) to be recomputed and repainted.
+  cy.style().update();
 }
 
 // Matches the CPU/mem color convention used everywhere else in the app (host tiles,
@@ -208,6 +327,33 @@ export function aggregateGroups(nodes) {
   return byGroup;
 }
 
+// Container node data/classes shared by graph mode (buildElements, parented to a compose-group
+// box) and tree mode (buildTreeElements, no parent - see there) - factored out so both render
+// modes automatically pick up the same live CPU/RAM/health/badge fields from a single place.
+function containerNodeEl(n, selectedId, parent) {
+  const data = {
+    id: n.id,
+    name: n.name,
+    emoji: stateEmoji(n.state),
+    status: n.status || '',
+    icon: iconFor(n.image, n.composeService),
+    cpuPerc: n.cpuPerc,
+    memPerc: n.memPerc,
+    netIO: formatRatePair(n.netRxRate, n.netTxRate),
+    blockIO: formatRatePair(n.blockReadRate, n.blockWriteRate),
+    ports: parsePublishedPorts(n.ports),
+    openAlerts: n.openAlerts || 0,
+  };
+  if (parent) data.parent = parent;
+  return {
+    data,
+    classes:
+      (n.state === 'running' ? 'running' : 'stopped') +
+      (n.health === 'unhealthy' ? ' unhealthy' : '') +
+      (n.id === selectedId ? ' selected' : ''),
+  };
+}
+
 export function buildElements(nodes, edges, selectedId) {
   const groupIds = new Set(nodes.map((n) => n.group));
   const groupAggregates = aggregateGroups(nodes);
@@ -227,26 +373,7 @@ export function buildElements(nodes, edges, selectedId) {
         classes: 'group',
       };
     }),
-    ...nodes.map((n) => ({
-      data: {
-        id: n.id,
-        parent: `grp:${n.group}`,
-        name: n.name,
-        emoji: stateEmoji(n.state),
-        status: n.status || '',
-        icon: iconFor(n.image, n.composeService),
-        cpuPerc: n.cpuPerc,
-        memPerc: n.memPerc,
-        netIO: formatRatePair(n.netRxRate, n.netTxRate),
-        blockIO: formatRatePair(n.blockReadRate, n.blockWriteRate),
-        ports: parsePublishedPorts(n.ports),
-        openAlerts: n.openAlerts || 0,
-      },
-      classes:
-        (n.state === 'running' ? 'running' : 'stopped') +
-        (n.health === 'unhealthy' ? ' unhealthy' : '') +
-        (n.id === selectedId ? ' selected' : ''),
-    })),
+    ...nodes.map((n) => containerNodeEl(n, selectedId, `grp:${n.group}`)),
     ...edges.map((e) => ({
       data: {
         id: `edge:${e.kind || 'network'}:${e.source}->${e.target}`,
@@ -260,7 +387,110 @@ export function buildElements(nodes, edges, selectedId) {
   ];
 }
 
+// containers with this group are treated as having no compose project at all (same sentinel
+// docker.js's getTopology already uses for `group` - see there) - a fake "(ungrouped)" project
+// node would just be noise, so those containers become their own roots instead.
+const NO_PROJECT = 'ungrouped';
+
+const MOUNT_LABEL_LINE_CHARS = 22;
+
+// Cytoscape's text-wrap: 'wrap' only auto-wraps at whitespace, and mount paths/volume names
+// have none - a 90-char bind-mount path is one unbreakable "word" as far as it's concerned, so
+// it renders on one (very wide) line no matter what text-max-width says. Pre-splitting into
+// explicit lines here, preferring path-separator boundaries for readability, is what actually
+// makes long labels wrap - text-max-width in CY_STYLE is just a fallback for the rare line that's
+// still too long after this (e.g. one giant filename with no separators at all).
+function wrapMountLabel(text) {
+  if (text.length <= MOUNT_LABEL_LINE_CHARS) return text;
+  const parts = text.split(/(?<=[/_-])/);
+  const lines = [];
+  let current = '';
+  for (const part of parts) {
+    if (current && (current + part).length > MOUNT_LABEL_LINE_CHARS) {
+      lines.push(current);
+      current = '';
+    }
+    current += part;
+    while (current.length > MOUNT_LABEL_LINE_CHARS) {
+      lines.push(current.slice(0, MOUNT_LABEL_LINE_CHARS));
+      current = current.slice(MOUNT_LABEL_LINE_CHARS);
+    }
+  }
+  if (current) lines.push(current);
+  return lines.join('\n');
+}
+
+function mountLabel(source, kind) {
+  // Docker's own anonymous-volume names are the mount's full 64-char id, not a human name -
+  // shown shortened so the pill stays readable; the node's own `id` keeps the full source so
+  // it's still stable/unique across polls (see buildTreeElements).
+  const text = kind === 'volume-anon' ? `anon:${source.slice(0, 12)}…` : source;
+  return wrapMountLabel(text);
+}
+
+// ArgoCD-style tree for the Flow view's tree mode: project -> container -> (network | mount),
+// left-to-right via the same dagre layout graph mode uses, but with no compound group boxes -
+// rank order falls out of the edges alone. A network or volume shared by several containers is
+// deduped globally (one pill, multiple incoming edges) rather than rendered per-container, which
+// is the whole point: shared infrastructure becomes visually obvious. Pure/no cytoscape calls, so
+// it's unit-testable the same way buildElements/aggregateGroups are.
+//
+// Node/edge order matters here (unlike buildElements): updateGraph adds new elements one at a
+// time via cy.add(), so every node this function emits must appear in the returned array before
+// any edge that references it - hence the two passes below (pills first, then containers+edges).
+export function buildTreeElements(nodes, selectedId, { showNetworks = true, showMounts = true } = {}) {
+  const projectIds = new Set();
+  const netNames = new Set();
+  const mountSources = new Map();
+
+  for (const n of nodes) {
+    if (n.group && n.group !== NO_PROJECT) projectIds.add(n.group);
+    if (showNetworks) for (const net of n.networks || []) netNames.add(net);
+    if (showMounts) for (const m of n.mounts || []) if (!mountSources.has(m.source)) mountSources.set(m.source, m.kind);
+  }
+
+  const els = [];
+  for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: g }, classes: 'proj' });
+  for (const net of netNames) els.push({ data: { id: `net:${net}`, label: net }, classes: 'net' });
+  for (const [source, kind] of mountSources) {
+    els.push({ data: { id: `mount:${source}`, label: mountLabel(source, kind), kind }, classes: 'mount' });
+  }
+
+  for (const n of nodes) {
+    els.push(containerNodeEl(n, selectedId));
+    if (n.group && n.group !== NO_PROJECT) {
+      els.push({
+        data: { id: `edge:tree:proj:${n.group}->${n.id}`, source: `proj:${n.group}`, target: n.id, kind: 'proj', label: '' },
+        classes: 'edge-tree-proj',
+      });
+    }
+    if (showNetworks) {
+      for (const net of n.networks || []) {
+        els.push({
+          data: { id: `edge:tree:${n.id}->net:${net}`, source: n.id, target: `net:${net}`, kind: 'net', label: '' },
+          classes: 'edge-tree-net',
+        });
+      }
+    }
+    if (showMounts) {
+      for (const m of n.mounts || []) {
+        els.push({
+          data: { id: `edge:tree:${n.id}->mount:${m.source}`, source: n.id, target: `mount:${m.source}`, kind: 'mount', label: '' },
+          classes: 'edge-tree-mount',
+        });
+      }
+    }
+  }
+
+  return els;
+}
+
 const LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 30, rankSep: 90 };
+// Tree mode's mount pills can grow several lines tall (wrapped bind-mount paths) - graph mode's
+// nodeSep is tuned for its fixed-height container/group boxes and packs siblings too tightly once
+// pill heights vary. Extra room here also gives taxi-routed edges (edge-tree-proj/-mount) more
+// space to turn cleanly instead of elbowing through a tightly-packed neighbor.
+const TREE_LAYOUT = { ...LAYOUT, nodeSep: 70 };
 const GROUP_COLUMNS = 2;
 const NODE_COL_GAP = 200;
 const NODE_ROW_GAP = 96;
@@ -291,47 +521,72 @@ function saveCollapsedGroups(hostId, ids) {
   }
 }
 
-function loadPositions(hostId) {
+// Graph and tree mode lay the same host out completely differently, so a dragged arrangement or
+// camera saved in one mode would just be wrong (and fight with dagre) applied to the other -
+// each mode gets its own key segment and its own independent saved arrangement.
+function loadPositions(hostId, mode = 'graph') {
   if (!hostId) return {};
   try {
-    return JSON.parse(localStorage.getItem(POSITIONS_KEY_PREFIX + hostId)) || {};
+    return JSON.parse(localStorage.getItem(POSITIONS_KEY_PREFIX + mode + ':' + hostId)) || {};
   } catch {
     return {};
   }
 }
 
-function saveNodePosition(hostId, nodeId, position) {
+function saveNodePosition(hostId, nodeId, position, mode = 'graph') {
   if (!hostId) return;
   try {
-    const positions = loadPositions(hostId);
+    const positions = loadPositions(hostId, mode);
     positions[nodeId] = position;
-    localStorage.setItem(POSITIONS_KEY_PREFIX + hostId, JSON.stringify(positions));
+    localStorage.setItem(POSITIONS_KEY_PREFIX + mode + ':' + hostId, JSON.stringify(positions));
   } catch {
     /* localStorage unavailable/full - dragging still works, it just won't persist */
   }
 }
 
-function applySavedPositions(cy, hostId) {
-  const positions = loadPositions(hostId);
+function applySavedPositions(cy, hostId, mode = 'graph') {
+  const positions = loadPositions(hostId, mode);
   for (const [id, pos] of Object.entries(positions)) {
     const node = cy.$id(id);
     if (node.length && !node.hasClass('group')) node.position(pos);
   }
 }
 
-function loadViewport(hostId) {
+function loadViewport(hostId, mode = 'graph') {
   if (!hostId) return null;
   try {
-    return JSON.parse(localStorage.getItem(VIEWPORT_KEY_PREFIX + hostId));
+    return JSON.parse(localStorage.getItem(VIEWPORT_KEY_PREFIX + mode + ':' + hostId));
   } catch {
     return null;
   }
 }
 
-function saveViewport(hostId, viewport) {
+function saveViewport(hostId, viewport, mode = 'graph') {
   if (!hostId) return;
   try {
-    localStorage.setItem(VIEWPORT_KEY_PREFIX + hostId, JSON.stringify(viewport));
+    localStorage.setItem(VIEWPORT_KEY_PREFIX + mode + ':' + hostId, JSON.stringify(viewport));
+  } catch {
+    /* ignore */
+  }
+}
+
+// Flow mode itself (graph vs tree) is also saved per host, same rationale as positions/viewport
+// above - a host you've switched to tree mode for should reopen in tree mode next time.
+const FLOW_MODE_KEY_PREFIX = 'odw:flow:mode:';
+
+export function loadFlowMode(hostId) {
+  if (!hostId) return 'graph';
+  try {
+    return localStorage.getItem(FLOW_MODE_KEY_PREFIX + hostId) || 'graph';
+  } catch {
+    return 'graph';
+  }
+}
+
+export function saveFlowMode(hostId, mode) {
+  if (!hostId) return;
+  try {
+    localStorage.setItem(FLOW_MODE_KEY_PREFIX + hostId, mode);
   } catch {
     /* ignore */
   }
@@ -342,16 +597,27 @@ const NODE_WIDTH = 170;
 const FULL_LEAF_HEIGHT = 76;
 const FULL_GROUP_HEIGHT = 88;
 
+// Nodes that participate in drag/layout overlap resolution: container leaves and compose groups
+// (graph mode), plus tree mode's project/network/mount pills. One shared selector so the
+// obstacle set (resolveNodeOverlap) and the full sweep (resolveAllOverlaps) can't drift apart.
+const OVERLAP_NODE_SELECTOR = '.running, .stopped, .group, .proj, .net, .mount';
+
 // A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against on
 // its own - semantic zoom shrinks it to COMPACT_HEIGHT while zoomed out, and two nodes that are
 // just far enough apart while compact can end up overlapping once they grow back to full size on
 // zoom-in. Always reserving full-size spacing here means compact is purely a shrink into room
 // that was already there, never a size change that needs new room. A compound (expanded) group
 // has no such fixed size to fall back on - its box is inherently the union of whatever its
-// children currently render at, so that one's fine to read live.
+// children currently render at, so that one's fine to read live. Tree mode's pills aren't
+// touched by semantic zoom at all, so their current width/height already is their real size.
 function effectiveBoundingBox(node) {
   if (node.isParent()) return node.boundingBox();
   const pos = node.position();
+  if (node.hasClass('proj') || node.hasClass('net') || node.hasClass('mount')) {
+    const w = node.width();
+    const h = node.height();
+    return { x1: pos.x - w / 2, x2: pos.x + w / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
+  }
   const h = node.hasClass('cy-expand-collapse-collapsed-node') ? FULL_GROUP_HEIGHT : FULL_LEAF_HEIGHT;
   return { x1: pos.x - NODE_WIDTH / 2, x2: pos.x + NODE_WIDTH / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
 }
@@ -365,7 +631,7 @@ function effectiveBoundingBox(node) {
 // neither should register as a "collision" against the thing it's structurally part of.
 function resolveNodeOverlap(node) {
   const cy = node.cy();
-  const obstacles = cy.nodes('.running, .stopped, .group').not(node).not(node.ancestors()).not(node.descendants());
+  const obstacles = cy.nodes(OVERLAP_NODE_SELECTOR).not(node).not(node.ancestors()).not(node.descendants());
   obstacles.forEach((other) => {
     const a = effectiveBoundingBox(node);
     const b = effectiveBoundingBox(other);
@@ -387,7 +653,7 @@ function resolveNodeOverlap(node) {
 // a position saved before this feature existed) - same collision resolver, just run once over
 // everything instead of live during a drag gesture.
 function resolveAllOverlaps(cy) {
-  cy.nodes('.running, .stopped, .group').forEach((node) => resolveNodeOverlap(node));
+  cy.nodes(OVERLAP_NODE_SELECTOR).forEach((node) => resolveNodeOverlap(node));
 }
 
 // Compose groups with many members and no internal edges otherwise get laid out as one tall
@@ -434,13 +700,14 @@ function arrangeGroupsInColumns(cy) {
 // pass is settled - not before, or it'd be judged against whatever zoom happened to be active
 // before a fit-to-all changes it moments later.
 function runLayout(cy, { fit, hostId }) {
+  const mode = cy.scratch('_odw_mode') || 'graph';
   cy.nodes().data('compact', false);
-  const layout = cy.layout({ ...LAYOUT, fit: false });
+  const layout = cy.layout({ ...(mode === 'tree' ? TREE_LAYOUT : LAYOUT), fit: false });
   layout.one('layoutstop', () => {
     arrangeGroupsInColumns(cy);
-    applySavedPositions(cy, hostId);
+    applySavedPositions(cy, hostId, mode);
     resolveAllOverlaps(cy);
-    const savedViewport = loadViewport(hostId);
+    const savedViewport = loadViewport(hostId, mode);
     if (savedViewport) {
       cy.viewport(savedViewport);
     } else if (fit) {
@@ -449,6 +716,22 @@ function runLayout(cy, { fit, hostId }) {
     updateCompactFlag(cy);
   });
   layout.run();
+}
+
+// "Reset view" - clears any dragged positions and saved camera for the current mode+host, then
+// reruns dagre fresh and fits. Fit (the toolbar's other button) only moves the camera over the
+// existing arrangement; this also undoes manual dragging, for when a layout's been dragged into
+// a tangle and starting over is easier than untangling it by hand.
+export function resetView(cy, hostId) {
+  if (!cy) return;
+  const mode = cy.scratch('_odw_mode') || 'graph';
+  try {
+    localStorage.removeItem(POSITIONS_KEY_PREFIX + mode + ':' + hostId);
+    localStorage.removeItem(VIEWPORT_KEY_PREFIX + mode + ':' + hostId);
+  } catch {
+    /* ignore */
+  }
+  runLayout(cy, { fit: true, hostId });
 }
 
 // Updates an existing cytoscape instance in place instead of recreating it, so pan/zoom set by
@@ -557,7 +840,11 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
 
   const text = (filterText || '').trim().toLowerCase();
   if (text) {
-    const matching = cy.nodes().filter((n) => !n.hasClass('group') && (n.data('name') || '').toLowerCase().includes(text));
+    // name covers containers (both modes); label covers tree mode's project/network/mount
+    // pills, which have no `name` field of their own.
+    const matching = cy
+      .nodes()
+      .filter((n) => !n.hasClass('group') && (n.data('name') || n.data('label') || '').toLowerCase().includes(text));
     if (matching.length) {
       cy.nodes().not('.group').not(matching).addClass('faded');
       cy.edges().forEach((e) => {
@@ -597,24 +884,429 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
   });
 }
 
+// ---- SVG export ----
+// A vector export has no resolution ceiling to manage the way exportPng's EXPORT_SCALE/
+// container-resize dance has to - the whole graph is drawn at its natural size and the viewBox
+// just grows to fit, so a host with a lot of compose projects is never "too small to read or a
+// huge file" the way a raster export forces you to choose between. extractSvgGeometry (impure:
+// reads the live cy instance) and renderSvg (pure: geometry -> markup string) are kept separate
+// on purpose, mirroring buildElements/buildTreeElements' own pure-core/impure-adapter split -
+// renderSvg is unit-testable the same way, by feeding it a plain geometry object directly
+// instead of a live cytoscape instance.
+
+const BLAST_UPSTREAM_COLOR = '#a371f7';
+const BLAST_DOWNSTREAM_COLOR = '#f0883e';
+const ALERT_BADGE_COLOR = '#e5534b';
+
+function svgEscape(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function svgTruncate(str, max) {
+  const s = str || '';
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function svgNodeKind(n) {
+  if (n.hasClass('cy-expand-collapse-collapsed-node')) return 'group-collapsed';
+  if (n.hasClass('group')) return 'group-expanded';
+  if (n.hasClass('proj')) return 'proj';
+  if (n.hasClass('net')) return 'net';
+  if (n.hasClass('mount')) return 'mount';
+  if (n.hasClass('running') || n.hasClass('stopped')) return 'container';
+  return null;
+}
+
+// Text line spacing for a wrapped mount label, in svgPillNode below - kept as a shared constant
+// only so the "why 12" stays in one place.
+const MOUNT_PILL_LINE_HEIGHT = 12;
+
+function svgEdgeKind(e) {
+  if (e.hasClass('edge-network')) return 'network';
+  if (e.hasClass('edge-depends-on')) return 'depends_on';
+  if (e.hasClass('edge-manual')) return 'manual';
+  if (e.hasClass('edge-tree-proj')) return 'tree-proj';
+  if (e.hasClass('edge-tree-net')) return 'tree-net';
+  if (e.hasClass('edge-tree-mount')) return 'tree-mount';
+  return null;
+}
+
+// Reads whatever's currently rendered (either mode) into plain, cytoscape-free data - the
+// opposite direction from buildElements/buildTreeElements (data -> cy elements), but the same
+// idea of keeping "what's actually drawn" independent of the library that draws it. Leaf/
+// collapsed-group sizing deliberately ignores the node's current (possibly compact-shrunk)
+// rendered height in favor of the fixed FULL_LEAF_HEIGHT/FULL_GROUP_HEIGHT constants - a vector
+// export has no zoom-driven reason to hide detail the way the live semantic-zoom view does.
+export function extractSvgGeometry(cy) {
+  const nodes = [];
+  cy.nodes().forEach((n) => {
+    const kind = svgNodeKind(n);
+    if (!kind) return;
+    let x, y, width, height;
+    if (kind === 'group-expanded') {
+      const bb = n.boundingBox();
+      x = bb.x1 + bb.w / 2;
+      y = bb.y1 + bb.h / 2;
+      width = bb.w;
+      height = bb.h;
+    } else {
+      const pos = n.position();
+      x = pos.x;
+      y = pos.y;
+      if (kind === 'container') {
+        width = NODE_WIDTH;
+        height = FULL_LEAF_HEIGHT;
+      } else if (kind === 'group-collapsed') {
+        width = NODE_WIDTH;
+        height = FULL_GROUP_HEIGHT;
+      } else {
+        // Trust cytoscape's own live height here (unlike leaf/collapsed-group nodes above) -
+        // dagre's layout spaced this node's siblings assuming exactly this height, so drawing it
+        // any taller (e.g. to fit a wrapped mount label more generously) would overlap a
+        // neighbor dagre had no idea needed extra room. svgPillNode fits the text within
+        // whatever height this is instead of the other way around.
+        width = n.width();
+        height = n.height();
+      }
+    }
+    nodes.push({
+      id: n.id(),
+      kind,
+      x,
+      y,
+      width,
+      height,
+      data: n.data(),
+      running: n.hasClass('running'),
+      stopped: n.hasClass('stopped'),
+      unhealthy: n.hasClass('unhealthy'),
+      selected: n.hasClass('selected'),
+      faded: n.hasClass('faded'),
+      blastUpstream: n.hasClass('blast-upstream'),
+      blastDownstream: n.hasClass('blast-downstream'),
+    });
+  });
+
+  const edges = [];
+  cy.edges().forEach((e) => {
+    const kind = svgEdgeKind(e);
+    if (!kind) return;
+    edges.push({
+      id: e.id(),
+      kind,
+      source: e.sourceEndpoint(),
+      target: e.targetEndpoint(),
+      label: e.data('label') || '',
+      faded: e.hasClass('faded'),
+      blastUpstream: e.hasClass('blast-upstream'),
+      blastDownstream: e.hasClass('blast-downstream'),
+    });
+  });
+
+  return { nodes, edges };
+}
+
+// Mirrors .cy-node-metric-row: a "CPU"/"RAM" label (20px, matching .cy-node-metric-label's own
+// width) then the track fills the rest - the live template has never had bars with no label next
+// to them, so a bar alone here read as broken rather than just "0%".
+function svgMetricBars(x, y, width, cpuPct, memPct) {
+  const labelWidth = 20;
+  const trackX = x + labelWidth + 4;
+  const trackWidth = width - labelWidth - 4;
+  const rowGap = 6;
+  return (
+    `<text x="${x}" y="${y + 2.5}" font-size="5" font-weight="700" fill="#8b909c">CPU</text>` +
+    `<rect x="${trackX}" y="${y}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
+    `<rect x="${trackX}" y="${y}" width="${(trackWidth * clampPct(cpuPct)) / 100}" height="3" rx="1.5" fill="${CPU_COLOR}"/>` +
+    `<text x="${x}" y="${y + rowGap + 2.5}" font-size="5" font-weight="700" fill="#8b909c">RAM</text>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${(trackWidth * clampPct(memPct)) / 100}" height="3" rx="1.5" fill="${MEM_COLOR}"/>`
+  );
+}
+
+function svgAlertBadge(x, y, count) {
+  return `<circle cx="${x + 6}" cy="${y + 6}" r="6" fill="${ALERT_BADGE_COLOR}"/><text x="${x + 6}" y="${y + 9}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
+}
+
+// Mirrors the .cy-node-box HTML template's layout (public/style.css:491-618): state icon top
+// right, service badge + name, CPU/RAM bar rows, NET/DISK text, port/alert badges.
+function svgContainerNode(n) {
+  const d = n.data;
+  const x1 = n.x - n.width / 2;
+  const y1 = n.y - n.height / 2;
+  let border = n.stopped ? '#8b909c' : '#3fb950';
+  if (n.unhealthy) border = '#f85149';
+  if (n.selected) border = '#4f8cff';
+  let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
+  if (n.blastUpstream)
+    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_UPSTREAM_COLOR}" fill-opacity="0.22"/>`;
+  if (n.blastDownstream)
+    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_DOWNSTREAM_COLOR}" fill-opacity="0.22"/>`;
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"/>`;
+  if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${d.emoji}</g>`;
+  if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
+  if (d.icon) {
+    svg += `<circle cx="${x1 + 14.5}" cy="${y1 + 24.5}" r="8.5" fill="${d.icon.bg}"/>`;
+    svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
+  }
+  svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
+  svg += svgMetricBars(x1 + 8, y1 + n.height - 32, n.width - 16, d.cpuPerc, d.memPerc);
+  svg += `<text x="${x1 + 8}" y="${y1 + n.height - 10}" font-size="5" fill="#8b909c">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
+  if (d.ports) svg += `<text x="${x1 + 6}" y="${y1 + n.height - 2}" font-size="8" fill="#8b909c">${svgEscape(d.ports)}</text>`;
+  if (d.openAlerts > 0) svg += svgAlertBadge(x1 + 4, y1 + 2, d.openAlerts);
+  svg += `</g>`;
+  return svg;
+}
+
+// Collapsed compose group - mirrors the cy-expand-collapse-collapsed-node HTML template (health
+// dot, container count, averaged CPU/RAM). An *expanded* group (svgGroupBox below) shows none of
+// that - it's just the padded outline + label the live view actually draws for one.
+function svgGroupNode(n) {
+  const d = n.data;
+  const x1 = n.x - n.width / 2;
+  const y1 = n.y - n.height / 2;
+  const count = d.count || 0;
+  let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#2b2f38" stroke-width="1"/>`;
+  if (d.health) svg += `<circle cx="${x1 + n.width - 10}" cy="${y1 + 8}" r="3.5" fill="${healthColor(d.health)}"/>`;
+  svg += `<text x="${n.x}" y="${y1 + 26}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(d.label)}</text>`;
+  svg += `<text x="${n.x}" y="${y1 + 42}" text-anchor="middle" font-size="9" fill="#8b909c">${count} container${count === 1 ? '' : 's'}</text>`;
+  svg += svgMetricBars(x1 + 8, y1 + n.height - 24, n.width - 16, d.cpuAvg, d.memAvg);
+  if (d.openAlerts > 0) svg += svgAlertBadge(x1 + 4, y1 + 2, d.openAlerts);
+  svg += `</g>`;
+  return svg;
+}
+
+function svgGroupBox(n) {
+  const x1 = n.x - n.width / 2;
+  const y1 = n.y - n.height / 2;
+  return (
+    `<g opacity="${n.faded ? 0.15 : 1}">` +
+    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#2b2f38" stroke-width="1"/>` +
+    `<text x="${n.x}" y="${y1 + 16}" text-anchor="middle" font-size="12" fill="#8b909c">${svgEscape(n.data.label)}</text>` +
+    `</g>`
+  );
+}
+
+// Tree mode's project/network/mount pills - plain rect + centered text, matching CY_STYLE's
+// node.proj/.net/.mount. Mount labels already carry \n for wrapped long paths (see
+// wrapMountLabel) - split into one <tspan> per line rather than trying to word-wrap in SVG.
+//
+// The box is always exactly n.height - cytoscape's own live 'height: label' value, which is
+// also what dagre's layout used to space this node's siblings apart. Drawing it any taller to
+// fit the text more generously would overlap a neighbor dagre never reserved that extra room
+// from. So this fits the text INTO n.height instead: line spacing shrinks (down to a legibility
+// floor) if the box is tight relative to the line count, rather than the box growing to fit a
+// fixed line spacing - that reversed relationship is what caused the overlap.
+function svgPillNode(n, { border, text, bg }) {
+  const lines = String(n.data.label || '').split('\n');
+  const x1 = n.x - n.width / 2;
+  const y1 = n.y - n.height / 2;
+  const vPadding = 6;
+  const lineHeight =
+    lines.length > 1 ? Math.max(8, Math.min(MOUNT_PILL_LINE_HEIGHT, (n.height - vPadding) / lines.length)) : MOUNT_PILL_LINE_HEIGHT;
+  const textBlockHeight = lines.length * lineHeight;
+  const firstBaselineY = n.y - textBlockHeight / 2 + lineHeight * 0.75;
+  const tspans = lines.map((line, i) => `<tspan x="${n.x}" y="${firstBaselineY + i * lineHeight}">${svgEscape(line)}</tspan>`).join('');
+  return (
+    `<g opacity="${n.faded ? 0.15 : 1}">` +
+    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
+    `<text x="${n.x}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
+    `</g>`
+  );
+}
+
+function svgNode(n) {
+  switch (n.kind) {
+    case 'container':
+      return svgContainerNode(n);
+    case 'group-collapsed':
+      return svgGroupNode(n);
+    case 'group-expanded':
+      return svgGroupBox(n);
+    case 'proj':
+      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027' });
+    case 'net':
+      return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
+    case 'mount':
+      return svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
+    default:
+      return '';
+  }
+}
+
+const EDGE_SVG_STYLE = {
+  network: { color: '#2b2f38', dash: '6,4', arrow: false, taxi: false },
+  depends_on: { color: '#199e70', dash: null, arrow: true, taxi: false },
+  manual: { color: '#4f8cff', dash: null, arrow: true, taxi: false },
+  'tree-proj': { color: '#3a3f4b', dash: null, arrow: false, taxi: true },
+  'tree-net': { color: '#4f8cff', dash: '6,4', arrow: false, taxi: false },
+  'tree-mount': { color: '#d29922', dash: null, arrow: false, taxi: true },
+};
+
+// Matches CY_STYLE's taxi-turn: '50%' - a horizontal-vertical-horizontal elbow turning at the
+// x-midpoint between source and target, same formula cytoscape itself uses for edge-tree-proj/
+// edge-tree-mount.
+function taxiPoints(source, target) {
+  const midX = (source.x + target.x) / 2;
+  return [source, { x: midX, y: source.y }, { x: midX, y: target.y }, target];
+}
+
+function svgArrowHead(from, to, color) {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const size = 7;
+  const spread = 0.4;
+  const p1 = { x: to.x - size * Math.cos(angle - spread), y: to.y - size * Math.sin(angle - spread) };
+  const p2 = { x: to.x - size * Math.cos(angle + spread), y: to.y - size * Math.sin(angle + spread) };
+  return `<polygon points="${to.x},${to.y} ${p1.x},${p1.y} ${p2.x},${p2.y}" fill="${color}"/>`;
+}
+
+// Graph-mode edges (network/depends-on/manual) are bezier-curved in the live view - drawn here
+// as straight lines rather than reverse-engineering cytoscape's bezier control-point math, which
+// isn't worth the complexity for a visual difference this minor.
+function svgEdge(e) {
+  const style = EDGE_SVG_STYLE[e.kind];
+  if (!style) return '';
+  let color = style.color;
+  let width = 1.5;
+  if (e.blastUpstream) {
+    color = BLAST_UPSTREAM_COLOR;
+    width = 3;
+  } else if (e.blastDownstream) {
+    color = BLAST_DOWNSTREAM_COLOR;
+    width = 3;
+  }
+  const points = style.taxi ? taxiPoints(e.source, e.target) : [e.source, e.target];
+  const pointsAttr = points.map((p) => `${p.x},${p.y}`).join(' ');
+  const dashAttr = style.dash ? ` stroke-dasharray="${style.dash}"` : '';
+  let svg = `<g opacity="${e.faded ? 0.15 : 1}">`;
+  svg += `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}"${dashAttr}/>`;
+  if (style.arrow) svg += svgArrowHead(points[points.length - 2], points[points.length - 1], color);
+  if (e.label) {
+    const mx = (e.source.x + e.target.x) / 2;
+    const my = (e.source.y + e.target.y) / 2;
+    const label = svgEscape(e.label);
+    const boxWidth = label.length * 5.5 + 8;
+    svg += `<rect x="${mx - boxWidth / 2}" y="${my - 7}" width="${boxWidth}" height="14" fill="#14161a"/>`;
+    svg += `<text x="${mx}" y="${my + 4}" text-anchor="middle" font-size="10" fill="${color}">${label}</text>`;
+  }
+  svg += `</g>`;
+  return svg;
+}
+
+// Pure: geometry (from extractSvgGeometry, or a synthetic fixture in tests) -> a complete <svg>
+// document string. The viewBox grows to fit every node's bounds plus padding - no fixed
+// resolution/size decision to make, unlike the PNG export.
+export function renderSvg(geometry, { background = '#14161a' } = {}) {
+  const { nodes, edges } = geometry;
+  if (!nodes.length) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="${background}"/></svg>`;
+  }
+  const PAD = 40;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - n.width / 2);
+    minY = Math.min(minY, n.y - n.height / 2);
+    maxX = Math.max(maxX, n.x + n.width / 2);
+    maxY = Math.max(maxY, n.y + n.height / 2);
+  }
+  minX -= PAD;
+  minY -= PAD;
+  maxX += PAD;
+  maxY += PAD;
+  const width = maxX - minX;
+  const height = maxY - minY;
+
+  const edgesSvg = edges.map(svgEdge).join('\n');
+  const nodesSvg = nodes.map(svgNode).join('\n');
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}" font-family="sans-serif">`,
+    `<rect x="${minX}" y="${minY}" width="${width}" height="${height}" fill="${background}"/>`,
+    edgesSvg,
+    nodesSvg,
+    `</svg>`,
+  ].join('\n');
+}
+
+// cy.fit-to-all before extracting, matching exportPng's behavior - the export always captures
+// the whole graph, not just the current viewport. No container-resize or frame-wait needed the
+// way exportPng needs one: this reads cytoscape's own bounding boxes/positions, which are
+// already current the moment fit() returns, and never touches the DOM overlay at all.
+export async function exportSvg(cy) {
+  if (!cy) return;
+  const savedViewport = { zoom: cy.zoom(), pan: { ...cy.pan() } };
+  cy.fit(undefined, 30);
+
+  const svgString = renderSvg(extractSvgGeometry(cy));
+  const blob = new Blob([svgString], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `opendockwatch-flow-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.svg`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  cy.viewport(savedViewport);
+}
+
 // cy.png() only rasterizes cytoscape's own <canvas> layer - it has no way to see the
 // node-html-label plugin's DOM overlay, which is what actually renders everything inside
 // a node box (name, icon, CPU/RAM bars, badges). html2canvas screenshots the real on-screen
 // DOM instead, canvas included, so the export matches what's actually visible.
+const EXPORT_SCALE = 2;
+
 export async function exportPng(cy) {
   if (!cy || typeof html2canvas !== 'function') return;
   const container = cy.container();
 
-  // html2canvas captures whatever's currently in view, unlike the old cy.png({ full: true })
-  // which always exported the whole graph regardless of zoom/pan. Fit-to-all before
-  // capturing to keep that behavior, then restore exactly what the user had - the
-  // html-label overlay's own reflow needs a frame to catch up with the new positions.
+  // Exports exactly what's currently on screen - the user's own pan/zoom - rather than always
+  // fitting the whole graph regardless of what they'd zoomed into. (For "the whole graph,
+  // always, with no resolution ceiling at all" there's Export SVG.)
   const savedViewport = { zoom: cy.zoom(), pan: { ...cy.pan() } };
-  cy.fit(undefined, 30);
+  const savedWidth = container.style.width;
+  const savedHeight = container.style.height;
+
+  // html2canvas doesn't re-render cytoscape's <canvas> - it just copies its existing bitmap.
+  // On a standard (non-Retina) display that bitmap is only CSS-pixel resolution, so asking
+  // html2canvas for a higher `scale` was just stretching an already-low-res source, which reads
+  // as blurry. Temporarily rendering into a container EXPORT_SCALE times larger gives cytoscape
+  // a proportionally bigger canvas backing store (real pixels, not interpolated ones) to draw
+  // into - the node-html-label overlay scales up right along with it since its own transform
+  // tracks cytoscape's zoom, so text stays crisp too.
+  //
+  // Scaling the container size, zoom, AND pan all by the same EXPORT_SCALE is a uniform scale-up
+  // of the whole rendered coordinate system: renderedX = graphX * zoom + pan.x, so multiplying
+  // zoom/pan/container by the same factor leaves exactly the same graph-space area framed (the
+  // same crop, nothing added or cut off) - just with EXPORT_SCALE times as many real pixels to
+  // draw it into.
+  const rect = container.getBoundingClientRect();
+  container.style.width = `${rect.width * EXPORT_SCALE}px`;
+  container.style.height = `${rect.height * EXPORT_SCALE}px`;
+  // Setting style.width/height doesn't take effect synchronously - the browser can defer layout
+  // until the next paint, so calling cy.resize() right away risks it reading the container's OLD
+  // size. Reading offsetHeight forces an immediate layout flush, so resize() sees the real new
+  // size and actually reallocates cytoscape's canvas at it (not just stretch the old bitmap via
+  // CSS, which is what was producing the blur in the first place).
+  void container.offsetHeight;
+  cy.resize();
+  cy.viewport({
+    zoom: savedViewport.zoom * EXPORT_SCALE,
+    pan: { x: savedViewport.pan.x * EXPORT_SCALE, y: savedViewport.pan.y * EXPORT_SCALE },
+  });
   await new Promise((resolve) => requestAnimationFrame(resolve));
 
   try {
-    const canvas = await html2canvas(container, { backgroundColor: '#14161a', scale: 2 });
+    const canvas = await html2canvas(container, { backgroundColor: '#14161a', scale: 1 });
     const a = document.createElement('a');
     a.href = canvas.toDataURL('image/png');
     a.download = `opendockwatch-flow-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
@@ -622,16 +1314,20 @@ export async function exportPng(cy) {
     a.click();
     a.remove();
   } finally {
+    container.style.width = savedWidth;
+    container.style.height = savedHeight;
+    cy.resize();
     cy.viewport(savedViewport);
   }
 }
 
-export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
+export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, mode = 'graph') {
   const cy = cytoscape({
     container,
     elements,
     style: CY_STYLE,
   });
+  cy.scratch('_odw_mode', mode);
   cy.scratch('_odw_latestElements', elements);
   runLayout(cy, { fit: true, hostId });
   // runLayout's fit/viewport-restore happens synchronously above, before the 'viewport'
@@ -639,11 +1335,13 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
   // than relying on that first fit to have been caught by a listener that isn't registered yet.
   updateCompactFlag(cy);
 
-  if (!expandCollapseRegistered && typeof cytoscapeExpandCollapse !== 'undefined') {
+  // Tree mode has no compound group boxes to collapse - skip registering the plugin/its
+  // listeners entirely rather than have them sit there doing nothing every poll.
+  if (mode === 'graph' && !expandCollapseRegistered && typeof cytoscapeExpandCollapse !== 'undefined') {
     cytoscape.use(cytoscapeExpandCollapse);
     expandCollapseRegistered = true;
   }
-  if (typeof cy.expandCollapse === 'function') {
+  if (mode === 'graph' && typeof cy.expandCollapse === 'function') {
     // fisheye off: it distorts sibling node positions during the collapse/expand animation,
     // which fights with the dragged/saved positions this view otherwise goes out of its way to
     // preserve. undoable off: skips requiring the separate undo-redo extension this app doesn't
@@ -703,7 +1401,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
   cy.on('dragfree', 'node', (evt) => {
     const node = evt.target;
     resolveNodeOverlap(node);
-    if (!node.hasClass('group')) saveNodePosition(hostId, node.id(), node.position());
+    if (!node.hasClass('group')) saveNodePosition(hostId, node.id(), node.position(), mode);
   });
 
   let viewportSaveTimer = null;
@@ -711,7 +1409,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId) {
     updateCompactFlag(cy);
     clearTimeout(viewportSaveTimer);
     viewportSaveTimer = setTimeout(() => {
-      saveViewport(hostId, { zoom: cy.zoom(), pan: cy.pan() });
+      saveViewport(hostId, { zoom: cy.zoom(), pan: cy.pan() }, mode);
     }, 300);
   });
 

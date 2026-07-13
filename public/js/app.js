@@ -39,7 +39,20 @@ import {
   apiUpdateHost,
   apiDeleteHost,
 } from './api.js';
-import { buildElements, createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from './graph.js';
+import {
+  buildElements,
+  buildTreeElements,
+  createGraph,
+  updateGraph,
+  applyFading,
+  exportPng,
+  exportSvg,
+  collapseAllGroups,
+  expandAllGroups,
+  loadFlowMode,
+  saveFlowMode,
+  resetView,
+} from './graph.js';
 
 const { createApp } = Vue;
 
@@ -66,6 +79,10 @@ createApp({
       flowFilterText: '',
       edgeInfoText: null,
       flowFullscreen: false,
+      flowMode: 'graph', // 'graph' | 'tree'
+      treeShowNetworks: true,
+      treeShowMounts: true,
+      flowPillSelection: null, // id of a tapped proj:/net:/mount: pill in tree mode
 
       hostInfo: null,
       diskUsage: [],
@@ -292,6 +309,12 @@ createApp({
         if (this.view === 'flow') this.renderGraph();
       },
     },
+    treeShowNetworks() {
+      if (this.view === 'flow' && this.flowMode === 'tree') this.renderGraph();
+    },
+    treeShowMounts() {
+      if (this.view === 'flow' && this.flowMode === 'tree') this.renderGraph();
+    },
   },
   created() {
     // Plain (non-reactive) buffers for batching high-volume log streams - see
@@ -345,6 +368,8 @@ createApp({
         this.cy = null;
       }
       this.edgeInfoText = null;
+      this.flowPillSelection = null;
+      this.flowMode = loadFlowMode(id);
       this.stopPolling();
       this.fetchHostInfo();
       this.fetchDiskUsage();
@@ -550,7 +575,13 @@ createApp({
     },
     renderGraph() {
       if (!this.$refs.cy) return;
-      const elements = buildElements(this.filteredTopology.nodes, this.filteredTopology.edges, this.selectedContainerId);
+      const elements =
+        this.flowMode === 'tree'
+          ? buildTreeElements(this.topology.nodes, this.selectedContainerId, {
+              showNetworks: this.treeShowNetworks,
+              showMounts: this.treeShowMounts,
+            })
+          : buildElements(this.filteredTopology.nodes, this.filteredTopology.edges, this.selectedContainerId);
       if (this.cy) {
         updateGraph(this.cy, elements, this.selectedHostId);
       } else {
@@ -559,17 +590,58 @@ createApp({
           elements,
           (id) => this.selectContainerById(id),
           (edgeData) => this.showEdgeInfo(edgeData),
-          this.selectedHostId
+          this.selectedHostId,
+          this.flowMode
         );
       }
       this.applyFlowFading();
     },
     applyFlowFading() {
-      if (this.cy) applyFading(this.cy, { selectedId: this.selectedContainerId, filterText: this.flowFilterText });
+      if (this.cy)
+        applyFading(this.cy, { selectedId: this.selectedContainerId || this.flowPillSelection, filterText: this.flowFilterText });
+    },
+    setFlowMode(mode) {
+      if (this.flowMode === mode) return;
+      this.flowMode = mode;
+      saveFlowMode(this.selectedHostId, mode);
+      this.flowPillSelection = null;
+      this.edgeInfoText = null;
+      if (this.cy) {
+        this.cy.destroy();
+        this.cy = null;
+      }
+      this.renderGraph();
+    },
+    // Builds the tap-info text for a network/mount/project pill in tree mode - reuses the same
+    // edgeInfoText slot the graph-mode edge-tap info already renders into, rather than adding a
+    // second near-duplicate bit of UI.
+    showPillInfo(id) {
+      if (id.startsWith('proj:')) {
+        const name = id.slice('proj:'.length);
+        const count = this.topology.nodes.filter((n) => n.group === name).length;
+        this.edgeInfoText = `project ${name} — ${count} container${count === 1 ? '' : 's'}`;
+      } else if (id.startsWith('net:')) {
+        const name = id.slice('net:'.length);
+        const members = this.topology.nodes.filter((n) => (n.networks || []).includes(name)).map((n) => n.name);
+        this.edgeInfoText = `network ${name} — shared by ${members.join(', ') || 'no containers'}`;
+      } else if (id.startsWith('mount:')) {
+        const source = id.slice('mount:'.length);
+        const members = this.topology.nodes.filter((n) => (n.mounts || []).some((m) => m.source === source)).map((n) => n.name);
+        const mount = this.topology.nodes.flatMap((n) => n.mounts || []).find((m) => m.source === source);
+        const label =
+          mount?.kind === 'volume-anon' ? 'anonymous volume' : mount?.kind === 'bind' ? `bind mount ${source}` : `volume ${source}`;
+        this.edgeInfoText = `${label} — mounted by ${members.join(', ') || 'no containers'}`;
+      }
     },
     showEdgeInfo(edgeData) {
       if (!edgeData) {
         this.edgeInfoText = null;
+        // Tapping empty canvas is the only way to clear a tree-mode pill selection - unlike a
+        // selected container, a pill has no detail panel with its own close button.
+        if (this.flowPillSelection) {
+          this.flowPillSelection = null;
+          this.applyFlowFading();
+        }
         return;
       }
       const nameOf = (id) => this.topology.nodes.find((n) => n.id === id)?.name || id;
@@ -585,6 +657,9 @@ createApp({
     },
     async exportFlowPng() {
       await exportPng(this.cy);
+    },
+    async exportFlowSvg() {
+      await exportSvg(this.cy);
     },
     collapseAllFlowGroups() {
       collapseAllGroups(this.cy);
@@ -611,6 +686,9 @@ createApp({
     zoomFit() {
       if (this.cy) this.cy.fit(undefined, 30);
     },
+    resetFlowView() {
+      resetView(this.cy, this.selectedHostId);
+    },
     async doAction(container, action) {
       this.actionInFlight = { ...this.actionInFlight, [container.id]: action };
       try {
@@ -626,6 +704,18 @@ createApp({
     },
     selectContainerById(id) {
       this.settingsOpen = false;
+      // A tapped tree-mode pill isn't a real container - routing it into selectedContainerId
+      // would trip the watcher below into opening a log preview / fetching docker inspect for a
+      // fake id like "net:app-net". Kept in its own field instead, purely for fading + infobar.
+      if (id.startsWith('proj:') || id.startsWith('net:') || id.startsWith('mount:')) {
+        this.selectedContainerId = null;
+        this.flowPillSelection = this.flowPillSelection === id ? null : id;
+        if (this.flowPillSelection) this.showPillInfo(id);
+        else this.edgeInfoText = null;
+        this.applyFlowFading();
+        return;
+      }
+      this.flowPillSelection = null;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
     async openLogsFor(id) {
@@ -1171,24 +1261,41 @@ createApp({
               {{ flowFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
             </button>
             <div class="cy-toolbar">
+              <div class="view-toggle">
+                <button :class="{active: flowMode==='graph'}" @click="setFlowMode('graph')">Graph</button>
+                <button :class="{active: flowMode==='tree'}" @click="setFlowMode('tree')">Tree</button>
+              </div>
+              <span class="toolbar-sep"></span>
               <button @click="zoomBy(1.25)">Zoom in</button>
               <button @click="zoomBy(0.8)">Zoom out</button>
               <button @click="zoomFit">Fit</button>
+              <template v-if="flowMode === 'graph'">
+                <span class="toolbar-sep"></span>
+                <button @click="collapseAllFlowGroups">Collapse all</button>
+                <button @click="expandAllFlowGroups">Expand all</button>
+              </template>
+              <template v-else>
+                <button @click="resetFlowView" title="Undo any dragged positions and re-fit the camera">Reset view</button>
+              </template>
               <span class="toolbar-sep"></span>
-              <button @click="collapseAllFlowGroups">Collapse all</button>
-              <button @click="expandAllFlowGroups">Expand all</button>
-              <span class="toolbar-sep"></span>
-              <button @click="exportFlowPng">Export PNG</button>
+              <button @click="exportFlowPng" title="Exports exactly what's on screen right now - zoom/pan in first to crop it">Export PNG</button>
+              <button @click="exportFlowSvg" title="Vector export of the whole graph - no size ceiling, good for hosts with a lot of compose projects">Export SVG</button>
               <span class="toolbar-sep"></span>
               <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
               <span class="toolbar-sep"></span>
-              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
-              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.network" /> network</label>
-              <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.manual" /> manual</label>
+              <template v-if="flowMode === 'graph'">
+                <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>
+                <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.network" /> network</label>
+                <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.manual" /> manual</label>
+              </template>
+              <template v-else>
+                <label class="edge-toggle"><input type="checkbox" v-model="treeShowNetworks" /> networks</label>
+                <label class="edge-toggle"><input type="checkbox" v-model="treeShowMounts" /> mounts</label>
+              </template>
               <span v-if="edgeInfoText" class="edge-info-text">{{ edgeInfoText }}</span>
             </div>
             <div ref="cy" class="cy-container"></div>
-            <p class="muted legend">
+            <p v-if="flowMode === 'graph'" class="muted legend">
               <span class="legend-item"><span class="swatch swatch-running"></span> running</span>
               <span class="legend-item"><span class="swatch swatch-stopped"></span> stopped</span>
               <span class="legend-item"><span class="line line-network"></span> shared network</span>
@@ -1199,6 +1306,14 @@ createApp({
               <span class="legend-item"><span class="swatch swatch-blast-downstream"></span> will suffer if selection dies (on select)</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-cpu"></span> CPU</span>
               <span class="legend-item"><span class="bar-swatch bar-swatch-mem"></span> RAM</span>
+            </p>
+            <p v-else class="muted legend">
+              <span class="legend-item"><span class="swatch swatch-running"></span> running</span>
+              <span class="legend-item"><span class="swatch swatch-stopped"></span> stopped</span>
+              <span class="legend-item"><span class="swatch swatch-proj"></span> compose project</span>
+              <span class="legend-item"><span class="line line-tree-net"></span> network</span>
+              <span class="legend-item"><span class="line line-tree-mount"></span> volume / bind mount</span>
+              <span class="legend-item"><span class="swatch swatch-alert"></span> open alert</span>
             </p>
           </div>
 
