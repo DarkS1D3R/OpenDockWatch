@@ -597,16 +597,27 @@ const NODE_WIDTH = 170;
 const FULL_LEAF_HEIGHT = 76;
 const FULL_GROUP_HEIGHT = 88;
 
+// Nodes that participate in drag/layout overlap resolution: container leaves and compose groups
+// (graph mode), plus tree mode's project/network/mount pills. One shared selector so the
+// obstacle set (resolveNodeOverlap) and the full sweep (resolveAllOverlaps) can't drift apart.
+const OVERLAP_NODE_SELECTOR = '.running, .stopped, .group, .proj, .net, .mount';
+
 // A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against on
 // its own - semantic zoom shrinks it to COMPACT_HEIGHT while zoomed out, and two nodes that are
 // just far enough apart while compact can end up overlapping once they grow back to full size on
 // zoom-in. Always reserving full-size spacing here means compact is purely a shrink into room
 // that was already there, never a size change that needs new room. A compound (expanded) group
 // has no such fixed size to fall back on - its box is inherently the union of whatever its
-// children currently render at, so that one's fine to read live.
+// children currently render at, so that one's fine to read live. Tree mode's pills aren't
+// touched by semantic zoom at all, so their current width/height already is their real size.
 function effectiveBoundingBox(node) {
   if (node.isParent()) return node.boundingBox();
   const pos = node.position();
+  if (node.hasClass('proj') || node.hasClass('net') || node.hasClass('mount')) {
+    const w = node.width();
+    const h = node.height();
+    return { x1: pos.x - w / 2, x2: pos.x + w / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
+  }
   const h = node.hasClass('cy-expand-collapse-collapsed-node') ? FULL_GROUP_HEIGHT : FULL_LEAF_HEIGHT;
   return { x1: pos.x - NODE_WIDTH / 2, x2: pos.x + NODE_WIDTH / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
 }
@@ -620,7 +631,7 @@ function effectiveBoundingBox(node) {
 // neither should register as a "collision" against the thing it's structurally part of.
 function resolveNodeOverlap(node) {
   const cy = node.cy();
-  const obstacles = cy.nodes('.running, .stopped, .group').not(node).not(node.ancestors()).not(node.descendants());
+  const obstacles = cy.nodes(OVERLAP_NODE_SELECTOR).not(node).not(node.ancestors()).not(node.descendants());
   obstacles.forEach((other) => {
     const a = effectiveBoundingBox(node);
     const b = effectiveBoundingBox(other);
@@ -642,7 +653,7 @@ function resolveNodeOverlap(node) {
 // a position saved before this feature existed) - same collision resolver, just run once over
 // everything instead of live during a drag gesture.
 function resolveAllOverlaps(cy) {
-  cy.nodes('.running, .stopped, .group').forEach((node) => resolveNodeOverlap(node));
+  cy.nodes(OVERLAP_NODE_SELECTOR).forEach((node) => resolveNodeOverlap(node));
 }
 
 // Compose groups with many members and no internal edges otherwise get laid out as one tall
@@ -910,6 +921,10 @@ function svgNodeKind(n) {
   return null;
 }
 
+// Text line spacing for a wrapped mount label, in svgPillNode below - kept as a shared constant
+// only so the "why 12" stays in one place.
+const MOUNT_PILL_LINE_HEIGHT = 12;
+
 function svgEdgeKind(e) {
   if (e.hasClass('edge-network')) return 'network';
   if (e.hasClass('edge-depends-on')) return 'depends_on';
@@ -949,6 +964,11 @@ export function extractSvgGeometry(cy) {
         width = NODE_WIDTH;
         height = FULL_GROUP_HEIGHT;
       } else {
+        // Trust cytoscape's own live height here (unlike leaf/collapsed-group nodes above) -
+        // dagre's layout spaced this node's siblings assuming exactly this height, so drawing it
+        // any taller (e.g. to fit a wrapped mount label more generously) would overlap a
+        // neighbor dagre had no idea needed extra room. svgPillNode fits the text within
+        // whatever height this is instead of the other way around.
         width = n.width();
         height = n.height();
       }
@@ -990,13 +1010,21 @@ export function extractSvgGeometry(cy) {
   return { nodes, edges };
 }
 
+// Mirrors .cy-node-metric-row: a "CPU"/"RAM" label (20px, matching .cy-node-metric-label's own
+// width) then the track fills the rest - the live template has never had bars with no label next
+// to them, so a bar alone here read as broken rather than just "0%".
 function svgMetricBars(x, y, width, cpuPct, memPct) {
+  const labelWidth = 20;
+  const trackX = x + labelWidth + 4;
+  const trackWidth = width - labelWidth - 4;
   const rowGap = 6;
   return (
-    `<rect x="${x}" y="${y}" width="${width}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
-    `<rect x="${x}" y="${y}" width="${(width * clampPct(cpuPct)) / 100}" height="3" rx="1.5" fill="${CPU_COLOR}"/>` +
-    `<rect x="${x}" y="${y + rowGap}" width="${width}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
-    `<rect x="${x}" y="${y + rowGap}" width="${(width * clampPct(memPct)) / 100}" height="3" rx="1.5" fill="${MEM_COLOR}"/>`
+    `<text x="${x}" y="${y + 2.5}" font-size="5" font-weight="700" fill="#8b909c">CPU</text>` +
+    `<rect x="${trackX}" y="${y}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
+    `<rect x="${trackX}" y="${y}" width="${(trackWidth * clampPct(cpuPct)) / 100}" height="3" rx="1.5" fill="${CPU_COLOR}"/>` +
+    `<text x="${x}" y="${y + rowGap + 2.5}" font-size="5" font-weight="700" fill="#8b909c">RAM</text>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${(trackWidth * clampPct(memPct)) / 100}" height="3" rx="1.5" fill="${MEM_COLOR}"/>`
   );
 }
 
@@ -1067,17 +1095,27 @@ function svgGroupBox(n) {
 // Tree mode's project/network/mount pills - plain rect + centered text, matching CY_STYLE's
 // node.proj/.net/.mount. Mount labels already carry \n for wrapped long paths (see
 // wrapMountLabel) - split into one <tspan> per line rather than trying to word-wrap in SVG.
+//
+// The box is always exactly n.height - cytoscape's own live 'height: label' value, which is
+// also what dagre's layout used to space this node's siblings apart. Drawing it any taller to
+// fit the text more generously would overlap a neighbor dagre never reserved that extra room
+// from. So this fits the text INTO n.height instead: line spacing shrinks (down to a legibility
+// floor) if the box is tight relative to the line count, rather than the box growing to fit a
+// fixed line spacing - that reversed relationship is what caused the overlap.
 function svgPillNode(n, { border, text, bg }) {
+  const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
-  const lines = String(n.data.label || '').split('\n');
-  const lineHeight = 12;
-  const startY = n.y - ((lines.length - 1) * lineHeight) / 2 + 3;
-  const tspans = lines.map((line) => `<tspan x="${n.x}" dy="${lineHeight}">${svgEscape(line)}</tspan>`).join('');
+  const vPadding = 6;
+  const lineHeight =
+    lines.length > 1 ? Math.max(8, Math.min(MOUNT_PILL_LINE_HEIGHT, (n.height - vPadding) / lines.length)) : MOUNT_PILL_LINE_HEIGHT;
+  const textBlockHeight = lines.length * lineHeight;
+  const firstBaselineY = n.y - textBlockHeight / 2 + lineHeight * 0.75;
+  const tspans = lines.map((line, i) => `<tspan x="${n.x}" y="${firstBaselineY + i * lineHeight}">${svgEscape(line)}</tspan>`).join('');
   return (
     `<g opacity="${n.faded ? 0.15 : 1}">` +
     `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
-    `<text x="${n.x}" y="${startY - lineHeight}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
+    `<text x="${n.x}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
     `</g>`
   );
 }
