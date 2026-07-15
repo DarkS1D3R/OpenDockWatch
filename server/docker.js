@@ -7,9 +7,9 @@ function hostArgs(host) {
   return host && host.dockerHost ? ['-H', host.dockerHost] : [];
 }
 
-function run(args) {
+function run(args, timeoutMs = CMD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile('docker', args, { timeout: CMD_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         err.stderr = stderr;
         return reject(err);
@@ -357,8 +357,15 @@ function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
 
+// `docker system df` walks the whole build cache, which - unlike the other commands here, all
+// polled every 5s - can genuinely take well over CMD_TIMEOUT_MS on a host with a lot of build
+// history, so it gets a longer timeout of its own. Safe to be generous here specifically: this
+// is only ever called from the 60s disk-usage poll (see metricsCollector.js's DISK_POLL_MS), not
+// the 5s container poll, so a slow response here doesn't delay anything time-sensitive.
+const DISK_USAGE_TIMEOUT_MS = 30_000;
+
 async function getDiskUsage(host) {
-  const stdout = await run([...hostArgs(host), 'system', 'df', '--format', '{{json .}}']);
+  const stdout = await run([...hostArgs(host), 'system', 'df', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
   const rows = stdout
     .split('\n')
     .map((line) => line.trim())

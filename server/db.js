@@ -29,7 +29,10 @@ db.exec(`
     host_id TEXT NOT NULL,
     ts INTEGER NOT NULL,
     cpu_percent REAL,
-    mem_used_bytes INTEGER
+    mem_used_bytes INTEGER,
+    system_cpu_percent REAL,
+    system_mem_used_bytes INTEGER,
+    system_mem_total_bytes INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_host_metrics_lookup ON host_metrics (host_id, ts);
 
@@ -76,6 +79,20 @@ db.exec(`
   );
 `);
 
+// host_metrics gained these three columns after the table already existed for upgrading
+// installs - CREATE TABLE IF NOT EXISTS above only applies to a fresh database, so a plain
+// ALTER TABLE is needed to backfill them onto one that predates this. No migration framework
+// here (see CLAUDE.md), so this just runs unconditionally on every boot and swallows the
+// "duplicate column" error once it's already been applied - the simplest idempotent approach
+// available without a version-tracking table.
+for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER', 'system_mem_total_bytes INTEGER']) {
+  try {
+    db.exec(`ALTER TABLE host_metrics ADD COLUMN ${column}`);
+  } catch {
+    /* column already exists */
+  }
+}
+
 const stmts = {
   insertContainerMetric: db.prepare(`
     INSERT INTO container_metrics
@@ -83,8 +100,8 @@ const stmts = {
     VALUES (@hostId, @containerId, @ts, @cpuPerc, @memUsedBytes, @memPerc, @netRxBytes, @netTxBytes, @blockReadBytes, @blockWriteBytes)
   `),
   insertHostMetric: db.prepare(`
-    INSERT INTO host_metrics (host_id, ts, cpu_percent, mem_used_bytes)
-    VALUES (@hostId, @ts, @cpuPercent, @memUsedBytes)
+    INSERT INTO host_metrics (host_id, ts, cpu_percent, mem_used_bytes, system_cpu_percent, system_mem_used_bytes, system_mem_total_bytes)
+    VALUES (@hostId, @ts, @cpuPercent, @memUsedBytes, @systemCpuPercent, @systemMemUsedBytes, @systemMemTotalBytes)
   `),
   insertEvent: db.prepare(`
     INSERT INTO events (host_id, container_id, container_name, action, ts, raw_json)
@@ -265,7 +282,10 @@ function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
       SELECT
         (ts / @bucketMs) * @bucketMs AS bucket,
         AVG(cpu_percent) AS cpuPercent,
-        AVG(mem_used_bytes) AS memUsedBytes
+        AVG(mem_used_bytes) AS memUsedBytes,
+        AVG(system_cpu_percent) AS systemCpuPercent,
+        AVG(system_mem_used_bytes) AS systemMemUsedBytes,
+        AVG(system_mem_total_bytes) AS systemMemTotalBytes
       FROM host_metrics
       WHERE host_id = @hostId AND ts >= @sinceTs
       GROUP BY bucket

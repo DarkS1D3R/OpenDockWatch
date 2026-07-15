@@ -91,9 +91,24 @@ test('buildElements', async (t) => {
     const el = graph.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
     assert.equal(el.data.parent, 'grp:shop');
     assert.equal(el.data.name, 'web');
-    assert.equal(el.data.ports, ':8080');
+    assert.equal(el.data.ports, '8080:80');
+    assert.equal(el.data.portLines, 1);
     assert.equal(el.data.netIO, '1.5 kB/s / 0 B/s');
     assert.equal(el.data.openAlerts, 2);
+  });
+
+  await t.test('a container publishing enough ports to overflow one line wraps at mapping boundaries and reports the line count', () => {
+    const ports = Array.from({ length: 6 }, (_, i) => `0.0.0.0:800${i}->${i}0/tcp`).join(', ');
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', ports }];
+    const el = graph.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
+    const lines = el.data.ports.split('\n');
+    assert.ok(lines.length > 1, 'expected the port list to wrap onto more than one line');
+    assert.equal(el.data.portLines, lines.length);
+    // rejoining every line's tokens should reproduce exactly the 6 clean "host:container"
+    // mappings - proves none were dropped and none got split mid-token across a line break
+    const tokens = lines.join(', ').split(', ');
+    assert.equal(tokens.length, 6);
+    for (const token of tokens) assert.match(token, /^\d+:\d+$/);
   });
 
   await t.test('node classes reflect running/stopped, unhealthy, and selection', () => {
@@ -231,7 +246,7 @@ test('buildTreeElements', async (t) => {
     const el = graph.buildTreeElements(nodes, null).find((e) => e.data.id === 'a');
     assert.equal(el.data.parent, undefined);
     assert.equal(el.data.name, 'web');
-    assert.equal(el.data.ports, ':8080');
+    assert.equal(el.data.ports, '8080:80');
     assert.equal(el.data.netIO, '1.5 kB/s / 0 B/s');
     assert.equal(el.data.openAlerts, 2);
   });

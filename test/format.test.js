@@ -91,17 +91,21 @@ test('formatRatePair', () => {
 });
 
 test('parsePublishedPorts', async (t) => {
-  await t.test('extracts only "->" (published) ports, deduping IPv4/IPv6', () => {
-    assert.equal(format.parsePublishedPorts('0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp'), ':8080');
+  await t.test('extracts only "->" (published) ports as host:container pairs, deduping IPv4/IPv6', () => {
+    assert.equal(format.parsePublishedPorts('0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp'), '8080:80');
   });
 
-  await t.test('shows up to two ports comma-separated', () => {
-    assert.equal(format.parsePublishedPorts('0.0.0.0:8080->80/tcp, 0.0.0.0:9090->90/tcp'), ':8080, :9090');
+  await t.test('shows the host port even when it matches the container port', () => {
+    assert.equal(format.parsePublishedPorts('0.0.0.0:5432->5432/tcp'), '5432:5432');
   });
 
-  await t.test('truncates with an ellipsis beyond two ports', () => {
-    const ports = '0.0.0.0:1->1/tcp, 0.0.0.0:2->2/tcp, 0.0.0.0:3->3/tcp';
-    assert.equal(format.parsePublishedPorts(ports), ':1, :2…');
+  await t.test('shows multiple mappings comma-separated', () => {
+    assert.equal(format.parsePublishedPorts('0.0.0.0:8080->80/tcp, 0.0.0.0:9090->90/tcp'), '8080:80, 9090:90');
+  });
+
+  await t.test('shows every mapping, however many there are - no truncation', () => {
+    const ports = '0.0.0.0:1->1/tcp, 0.0.0.0:2->2/tcp, 0.0.0.0:3->3/tcp, 0.0.0.0:4->4/tcp, 0.0.0.0:5->5/tcp';
+    assert.equal(format.parsePublishedPorts(ports), '1:1, 2:2, 3:3, 4:4, 5:5');
   });
 
   await t.test('returns empty string when nothing is published', () => {

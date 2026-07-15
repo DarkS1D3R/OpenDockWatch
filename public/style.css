@@ -131,7 +131,12 @@ body {
 .host-tile-sub {
   font-size: 13px;
   color: var(--muted);
-  margin: 3px 0 10px;
+  margin: 3px 0;
+}
+.host-tile-system {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 10px;
 }
 .sparkline {
   position: relative;
@@ -162,6 +167,22 @@ body {
 }
 .spark-area-mem {
   fill: color-mix(in srgb, var(--seq-mem) 22%, transparent);
+}
+/* Host-total layer, drawn behind the Docker line/area above - same color, lower opacity, so it
+   reads as "the same thing, more of it" rather than a second unrelated series. */
+.spark-line-cpu-host {
+  stroke: var(--accent);
+  opacity: 0.35;
+}
+.spark-line-mem-host {
+  stroke: var(--seq-mem);
+  opacity: 0.35;
+}
+.spark-area-cpu-host {
+  fill: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.spark-area-mem-host {
+  fill: color-mix(in srgb, var(--seq-mem) 10%, transparent);
 }
 .spark-dot {
   position: absolute;
@@ -575,7 +596,10 @@ table.containers td:nth-child(7) {
   position: absolute;
   left: 8px;
   right: 8px;
-  bottom: 16px;
+  /* top-anchored (not bottom) so a taller box - see .cy-node-box's inline height, grown to fit
+     a wrapped port list - adds its extra room below the metrics/NET-DISK/ports cluster instead
+     of pushing this block down away from the name above it. */
+  top: 35px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -618,10 +642,21 @@ table.containers td:nth-child(7) {
 }
 .cy-node-port-badge {
   position: absolute;
-  bottom: 2px;
+  /* Same top-anchored reasoning as .cy-node-metrics - starts right after the NET/DISK row and
+     grows downward into whatever extra height containerFullHeight (graph.js) added for it.
+     white-space: pre-line respects the \n's wrapPortsLabel already inserted at mapping
+     boundaries; right (not just left) bounds the width so a still-too-long single line falls
+     back to the browser's own wrap rather than overflowing the box. */
+  top: 65px;
   left: 6px;
+  right: 6px;
   font-size: 8px;
+  /* 1.25 * 8px = 10px per line, matching PORT_EXTRA_LINE_HEIGHT (graph.js) exactly - the box's
+     own height only grows by that much per extra line, so a taller line-height here would push
+     the last line past the box's bottom edge. */
+  line-height: 1.25;
   color: var(--muted);
+  white-space: pre-line;
 }
 .cy-node-alert-badge {
   position: absolute;
@@ -742,6 +777,24 @@ table.containers td:nth-child(7) {
 }
 .bar-swatch-mem {
   background: var(--seq-mem);
+}
+/* Same color, lower opacity - matches the host-total sparkline layer's own treatment
+   (.spark-line-cpu-host/.spark-line-mem-host) so the legend swatch actually looks like the
+   line it's identifying. */
+.bar-swatch-cpu-host {
+  background: var(--accent);
+  opacity: 0.35;
+}
+.bar-swatch-mem-host {
+  background: var(--seq-mem);
+  opacity: 0.35;
+}
+/* Sits inside a single host-tile below its sparkline, rather than the wider Flow-view legend
+   this class borrows most of its styling from - tighter gap/padding/font to fit a narrow tile. */
+.host-usage-legend {
+  gap: 12px;
+  padding: 6px 0 0;
+  font-size: 11px;
 }
 
 .detail-panel {

@@ -83,13 +83,16 @@ export function formatRatePair(a, b) {
 
 // Docker's Ports string looks like "0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp" - only the
 // "->" entries are actually published to the host; the rest are just exposed. IPv4/IPv6 both
-// publish the same host port, hence the dedup. Returns a short display string, e.g. ":8080, :443".
+// publish the same host:container pair, hence the dedup. Returns every mapping in docker run's
+// own "host:container" notation, e.g. "8080:80, 9090:90" - showing only the host side (as this
+// used to) reads as the container's own port rather than what it's mapped to, which is wrong
+// whenever they differ and ambiguous even when they happen to match. Not truncated - callers
+// that need to fit a fixed space (graph.js's node badge) wrap it themselves instead of losing
+// mappings to an ellipsis.
 export function parsePublishedPorts(portsStr) {
   if (!portsStr) return '';
-  const hostPorts = [...new Set([...portsStr.matchAll(/:(\d+)->/g)].map((m) => m[1]))];
-  if (!hostPorts.length) return '';
-  const shown = hostPorts.slice(0, 2).map((p) => `:${p}`);
-  return hostPorts.length > 2 ? `${shown.join(', ')}…` : shown.join(', ');
+  const mappings = [...new Set([...portsStr.matchAll(/:(\d+)->(\d+)\/\w+/g)].map((m) => `${m[1]}:${m[2]}`))];
+  return mappings.join(', ');
 }
 
 const HEALTH_COLOR = { healthy: '#3fb950', unhealthy: '#f85149', starting: '#d29922' };

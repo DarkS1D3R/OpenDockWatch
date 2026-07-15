@@ -227,11 +227,65 @@ createApp({
     memPeak() {
       return this.memSamples.length ? Math.max(...this.memSamples) : 0;
     },
+    // Host-total figures - real host-wide CPU/mem (every process, not just this app's
+    // containers), local-host-only (null fields for a remote SSH host) - see hostUsage.js. Pulled
+    // from the same hostMetricsHistory rows the Docker cpuSamples/memSamples above already use
+    // (metricsCollector writes both into the same host_metrics row every poll), rather than a
+    // separate client-side buffer - that was tried first, but since it had no server-persisted
+    // history, a page refresh emptied it while the Docker numbers reloaded instantly from the DB,
+    // and its samples were positioned by stretching whatever few points existed across the full
+    // width each poll rather than a fixed per-slot position, which reflowed/reshuffled the whole
+    // line every 5s instead of extending it. Deriving from hostMetricsHistory fixes both: same
+    // persisted history behavior as Docker's own numbers, and the same fixed-slot positioning via
+    // hostCpuChartSlots/hostMemChartSlots below.
+    hostSystemUsage() {
+      const last = this.hostMetricsHistory[this.hostMetricsHistory.length - 1];
+      return last && last.systemMemTotalBytes != null
+        ? { cpuPercent: last.systemCpuPercent, memUsedBytes: last.systemMemUsedBytes, memTotalBytes: last.systemMemTotalBytes }
+        : null;
+    },
+    // Host-total sparklines - drawn as a lighter/lower-opacity layer behind the Docker ones
+    // below, sharing the same peak (sharedCpuPeak/sharedMemPeak) as the Docker line so the two
+    // are on one common y-axis - the host total (e.g. 0.9 GB) should actually sit visibly higher
+    // than Docker's own figure (e.g. 0.1 GB) when it really is ~9x larger, not end up looking
+    // similarly-tall because each was independently normalized to its own tiny range.
+    hostCpuSamples() {
+      return this.hostMetricsHistory.map((s) => s.systemCpuPercent);
+    },
+    hostMemSamples() {
+      return this.hostMetricsHistory.map((s) => s.systemMemUsedBytes);
+    },
+    hostCpuChartSlots() {
+      const pad = HOST_METRICS_HISTORY_LEN - this.hostCpuSamples.length;
+      return pad > 0 ? [...Array(pad).fill(null), ...this.hostCpuSamples] : this.hostCpuSamples;
+    },
+    hostMemChartSlots() {
+      const pad = HOST_METRICS_HISTORY_LEN - this.hostMemSamples.length;
+      return pad > 0 ? [...Array(pad).fill(null), ...this.hostMemSamples] : this.hostMemSamples;
+    },
+    hostCpuPeak() {
+      return this.hostCpuSamples.length ? Math.max(...this.hostCpuSamples) : 0;
+    },
+    hostMemPeak() {
+      return this.hostMemSamples.length ? Math.max(...this.hostMemSamples) : 0;
+    },
+    sharedCpuPeak() {
+      return Math.max(this.cpuPeak, this.hostCpuPeak);
+    },
+    sharedMemPeak() {
+      return Math.max(this.memPeak, this.hostMemPeak);
+    },
     cpuSparkPaths() {
-      return this.sparkPaths(this.cpuChartSlots, this.cpuPeak);
+      return this.sparkPaths(this.cpuChartSlots, this.sharedCpuPeak);
     },
     memSparkPaths() {
-      return this.sparkPaths(this.memChartSlots, this.memPeak);
+      return this.sparkPaths(this.memChartSlots, this.sharedMemPeak);
+    },
+    hostCpuSparkPaths() {
+      return this.sparkPaths(this.hostCpuChartSlots, this.sharedCpuPeak);
+    },
+    hostMemSparkPaths() {
+      return this.sparkPaths(this.hostMemChartSlots, this.sharedMemPeak);
     },
     containerMetricsView() {
       const out = {};
@@ -1121,8 +1175,13 @@ createApp({
             <div class="host-tile-label"><span class="tile-icon tile-icon-cpu"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="8.5" y="8.5" width="3" height="3" fill="currentColor"/><path d="M7 2v2M10 2v2M13 2v2M7 16v2M10 16v2M13 16v2M2 7h2M2 10h2M2 13h2M16 7h2M16 10h2M16 13h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span> {{ hostInfo.ncpu }} CPU</div>
             <div class="host-tile-value">{{ cpuNow.toFixed(1) }}%</div>
             <div class="host-tile-sub">avg {{ cpuAvg.toFixed(1) }}% &bull; pk {{ cpuPeak.toFixed(1) }}%</div>
+            <div v-if="hostSystemUsage" class="host-tile-system">
+              host total: {{ hostSystemUsage.cpuPercent != null ? hostSystemUsage.cpuPercent.toFixed(1) + '%' : '—' }}
+            </div>
             <div class="sparkline">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <path v-if="hostSystemUsage" class="spark-area spark-area-cpu-host" :d="hostCpuSparkPaths.area"></path>
+                <path v-if="hostSystemUsage" class="spark-line spark-line-cpu-host" :d="hostCpuSparkPaths.line" vector-effect="non-scaling-stroke"></path>
                 <path class="spark-area spark-area-cpu" :d="cpuSparkPaths.area"></path>
                 <path class="spark-line spark-line-cpu" :d="cpuSparkPaths.line" vector-effect="non-scaling-stroke"></path>
               </svg>
@@ -1133,13 +1192,22 @@ createApp({
                 :title="cpuNow.toFixed(1) + '%'"
               ></span>
             </div>
+            <p v-if="hostSystemUsage" class="muted legend host-usage-legend">
+              <span class="legend-item"><span class="bar-swatch bar-swatch-cpu"></span> Docker</span>
+              <span class="legend-item"><span class="bar-swatch bar-swatch-cpu-host"></span> host total</span>
+            </p>
           </div>
           <div class="host-tile">
             <div class="host-tile-label"><span class="tile-icon tile-icon-mem"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="16" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4.5M8 7V4.5M11 7V4.5M14 7V4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span> {{ fmtGB(hostInfo.memTotalBytes) }}</div>
             <div class="host-tile-value">{{ fmtGB(memNow) }}</div>
             <div class="host-tile-sub">avg {{ fmtGB(memAvg) }} &bull; pk {{ fmtGB(memPeak) }}</div>
+            <div v-if="hostSystemUsage" class="host-tile-system">
+              host total: {{ fmtGB(hostSystemUsage.memUsedBytes) }} / {{ fmtGB(hostSystemUsage.memTotalBytes) }}
+            </div>
             <div class="sparkline">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <path v-if="hostSystemUsage" class="spark-area spark-area-mem-host" :d="hostMemSparkPaths.area"></path>
+                <path v-if="hostSystemUsage" class="spark-line spark-line-mem-host" :d="hostMemSparkPaths.line" vector-effect="non-scaling-stroke"></path>
                 <path class="spark-area spark-area-mem" :d="memSparkPaths.area"></path>
                 <path class="spark-line spark-line-mem" :d="memSparkPaths.line" vector-effect="non-scaling-stroke"></path>
               </svg>
@@ -1150,6 +1218,10 @@ createApp({
                 :title="fmtGB(memNow)"
               ></span>
             </div>
+            <p v-if="hostSystemUsage" class="muted legend host-usage-legend">
+              <span class="legend-item"><span class="bar-swatch bar-swatch-mem"></span> Docker</span>
+              <span class="legend-item"><span class="bar-swatch bar-swatch-mem-host"></span> host total</span>
+            </p>
           </div>
           <div class="host-tile" v-if="diskUsage.length">
             <div class="host-tile-label"><span class="tile-icon tile-icon-disk"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="10" cy="5" rx="7" ry="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 5v10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5" stroke="currentColor" stroke-width="1.6"/><path d="M3 10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" stroke="currentColor" stroke-width="1.6"/></svg></span> Disk</div>
