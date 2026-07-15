@@ -88,6 +88,8 @@ createApp({
       diskUsage: [],
       hostMetricsHistory: [],
       containerMetricsHistory: {},
+      cpuHoverIndex: null, // sample index the mouse is over in the CPU tile's sparkline, or null
+      memHoverIndex: null, // same for the RAM tile
 
       alerts: [],
       alertSearch: '',
@@ -287,6 +289,15 @@ createApp({
     hostMemSparkPaths() {
       return this.sparkPaths(this.hostMemChartSlots, this.sharedMemPeak);
     },
+    // Docker + host-total point at whatever index the mouse is currently over (see
+    // onCpuHover/onMemHover), or null when not hovering - drives the crosshair line and the two
+    // marker dots drawn on top of each sparkline.
+    cpuHoverPoints() {
+      return this.hoverPoints(this.cpuHoverIndex, this.cpuChartSlots, this.hostCpuChartSlots, this.sharedCpuPeak);
+    },
+    memHoverPoints() {
+      return this.hoverPoints(this.memHoverIndex, this.memChartSlots, this.hostMemChartSlots, this.sharedMemPeak);
+    },
     containerMetricsView() {
       const out = {};
       for (const id of Object.keys(this.containerMetricsHistory)) {
@@ -414,6 +425,8 @@ createApp({
       this.diskUsage = [];
       this.hostMetricsHistory = [];
       this.containerMetricsHistory = {};
+      this.cpuHoverIndex = null;
+      this.memHoverIndex = null;
       this.alerts = [];
       this.closeActivityStream();
       this.activityEvents = [];
@@ -487,26 +500,59 @@ createApp({
     diskRow(type) {
       return this.diskUsage.find((r) => r.type === type) || null;
     },
-    sparkPaths(slots, peak) {
+    // x/y (in the 100x30 viewBox) plus the raw value for one sample - shared by sparkPaths
+    // (draws the whole line) and the hover crosshair (draws one point on demand at whatever
+    // index the mouse is over), so both agree on exactly the same coordinate mapping.
+    sparkPoint(slots, peak, i) {
       const w = 100;
       const h = 30;
       const topPad = 3;
       const usable = h - topPad;
+      const v = slots[i];
+      if (v === null || v === undefined) return null;
       const n = slots.length;
+      const x = n > 1 ? (i / (n - 1)) * w : w;
+      const y = peak ? topPad + usable - (v / peak) * usable : h;
+      return { x, y, v };
+    },
+    sparkPaths(slots, peak) {
+      const h = 30;
       const pts = [];
-      for (let i = 0; i < n; i++) {
-        const v = slots[i];
-        if (v === null) continue;
-        const x = n > 1 ? (i / (n - 1)) * w : w;
-        const y = peak ? topPad + usable - (v / peak) * usable : h;
-        pts.push([x, y]);
+      for (let i = 0; i < slots.length; i++) {
+        const p = this.sparkPoint(slots, peak, i);
+        if (p) pts.push(p);
       }
       if (!pts.length) return { line: '', area: '', dot: null };
-      const line = 'M' + pts.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' L');
+      const line = 'M' + pts.map((p) => p.x.toFixed(2) + ',' + p.y.toFixed(2)).join(' L');
       const first = pts[0];
       const last = pts[pts.length - 1];
-      const area = `${line} L${last[0].toFixed(2)},${h} L${first[0].toFixed(2)},${h} Z`;
-      return { line, area, dot: { x: last[0], y: last[1] } };
+      const area = `${line} L${last.x.toFixed(2)},${h} L${first.x.toFixed(2)},${h} Z`;
+      return { line, area, dot: { x: last.x, y: last.y } };
+    },
+    // Maps a mousemove clientX over a .sparkline element to the nearest sample index - shared by
+    // both tiles since cpuChartSlots/hostCpuChartSlots/memChartSlots/hostMemChartSlots are all
+    // padded to the same HOST_METRICS_HISTORY_LEN width (see cpuChartSlots).
+    sparkHoverIndex(event) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      if (!rect.width) return null;
+      const frac = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      return Math.round(frac * (HOST_METRICS_HISTORY_LEN - 1));
+    },
+    onCpuHover(event) {
+      this.cpuHoverIndex = this.sparkHoverIndex(event);
+    },
+    onMemHover(event) {
+      this.memHoverIndex = this.sparkHoverIndex(event);
+    },
+    // One point on the Docker line and one on the host-total line at the same hovered index -
+    // null fields (rather than a null point) when a series has no value there, e.g. hovering an
+    // index from before host-total sampling started, or on a remote host with no host data at all.
+    hoverPoints(idx, dockerSlots, hostSlots, peak) {
+      if (idx == null) return null;
+      const docker = this.sparkPoint(dockerSlots, peak, idx);
+      const host = this.sparkPoint(hostSlots, peak, idx);
+      if (!docker && !host) return null;
+      return { x: (docker || host).x, docker, host };
     },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
@@ -1184,18 +1230,51 @@ createApp({
                 host total<br />{{ hostSystemUsage.cpuPercent != null ? hostSystemUsage.cpuPercent.toFixed(1) + '%' : '—' }}
               </div>
             </div>
-            <div class="sparkline">
+            <div class="sparkline" @mousemove="onCpuHover" @mouseleave="cpuHoverIndex = null">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <line x1="0" y1="7.5" x2="100" y2="7.5" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="0" y1="15" x2="100" y2="15" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="0" y1="22.5" x2="100" y2="22.5" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="10" y1="0" x2="10" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="20" y1="0" x2="20" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="30" y1="0" x2="30" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="40" y1="0" x2="40" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="50" y1="0" x2="50" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="60" y1="0" x2="60" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="70" y1="0" x2="70" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="80" y1="0" x2="80" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="90" y1="0" x2="90" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
                 <path v-if="hostSystemUsage" class="spark-area spark-area-cpu-host" :d="hostCpuSparkPaths.area"></path>
                 <path v-if="hostSystemUsage" class="spark-line spark-line-cpu-host" :d="hostCpuSparkPaths.line" vector-effect="non-scaling-stroke"></path>
                 <path class="spark-area spark-area-cpu" :d="cpuSparkPaths.area"></path>
                 <path class="spark-line spark-line-cpu" :d="cpuSparkPaths.line" vector-effect="non-scaling-stroke"></path>
+                <line
+                  v-if="cpuHoverPoints"
+                  class="spark-hover-line"
+                  :x1="cpuHoverPoints.x"
+                  y1="0"
+                  :x2="cpuHoverPoints.x"
+                  y2="30"
+                  vector-effect="non-scaling-stroke"
+                ></line>
               </svg>
               <span
-                v-if="cpuSparkPaths.dot"
+                v-if="cpuSparkPaths.dot && !cpuHoverPoints"
                 class="spark-dot spark-dot-cpu"
                 :style="{ left: cpuSparkPaths.dot.x + '%', top: (cpuSparkPaths.dot.y / 30 * 100) + '%' }"
                 :title="cpuNow.toFixed(1) + '%'"
+              ></span>
+              <span
+                v-if="cpuHoverPoints && cpuHoverPoints.docker"
+                class="spark-dot spark-dot-cpu"
+                :style="{ left: cpuHoverPoints.docker.x + '%', top: (cpuHoverPoints.docker.y / 30 * 100) + '%' }"
+                :title="'Docker: ' + cpuHoverPoints.docker.v.toFixed(1) + '%'"
+              ></span>
+              <span
+                v-if="cpuHoverPoints && cpuHoverPoints.host"
+                class="spark-dot spark-dot-cpu-host"
+                :style="{ left: cpuHoverPoints.host.x + '%', top: (cpuHoverPoints.host.y / 30 * 100) + '%' }"
+                :title="'host total: ' + cpuHoverPoints.host.v.toFixed(1) + '%'"
               ></span>
             </div>
             <p v-if="hostSystemUsage" class="muted legend host-usage-legend">
@@ -1216,18 +1295,51 @@ createApp({
                 host total<br />{{ fmtGB(hostSystemUsage.memUsedBytes) }} / {{ fmtGB(hostSystemUsage.memTotalBytes) }}
               </div>
             </div>
-            <div class="sparkline">
+            <div class="sparkline" @mousemove="onMemHover" @mouseleave="memHoverIndex = null">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+                <line x1="0" y1="7.5" x2="100" y2="7.5" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="0" y1="15" x2="100" y2="15" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="0" y1="22.5" x2="100" y2="22.5" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="10" y1="0" x2="10" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="20" y1="0" x2="20" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="30" y1="0" x2="30" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="40" y1="0" x2="40" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="50" y1="0" x2="50" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="60" y1="0" x2="60" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="70" y1="0" x2="70" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="80" y1="0" x2="80" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
+                <line x1="90" y1="0" x2="90" y2="30" class="spark-grid-line" vector-effect="non-scaling-stroke" />
                 <path v-if="hostSystemUsage" class="spark-area spark-area-mem-host" :d="hostMemSparkPaths.area"></path>
                 <path v-if="hostSystemUsage" class="spark-line spark-line-mem-host" :d="hostMemSparkPaths.line" vector-effect="non-scaling-stroke"></path>
                 <path class="spark-area spark-area-mem" :d="memSparkPaths.area"></path>
                 <path class="spark-line spark-line-mem" :d="memSparkPaths.line" vector-effect="non-scaling-stroke"></path>
+                <line
+                  v-if="memHoverPoints"
+                  class="spark-hover-line"
+                  :x1="memHoverPoints.x"
+                  y1="0"
+                  :x2="memHoverPoints.x"
+                  y2="30"
+                  vector-effect="non-scaling-stroke"
+                ></line>
               </svg>
               <span
-                v-if="memSparkPaths.dot"
+                v-if="memSparkPaths.dot && !memHoverPoints"
                 class="spark-dot spark-dot-mem"
                 :style="{ left: memSparkPaths.dot.x + '%', top: (memSparkPaths.dot.y / 30 * 100) + '%' }"
                 :title="fmtGB(memNow)"
+              ></span>
+              <span
+                v-if="memHoverPoints && memHoverPoints.docker"
+                class="spark-dot spark-dot-mem"
+                :style="{ left: memHoverPoints.docker.x + '%', top: (memHoverPoints.docker.y / 30 * 100) + '%' }"
+                :title="'Docker: ' + fmtGB(memHoverPoints.docker.v)"
+              ></span>
+              <span
+                v-if="memHoverPoints && memHoverPoints.host"
+                class="spark-dot spark-dot-mem-host"
+                :style="{ left: memHoverPoints.host.x + '%', top: (memHoverPoints.host.y / 30 * 100) + '%' }"
+                :title="'host total: ' + fmtGB(memHoverPoints.host.v)"
               ></span>
             </div>
             <p v-if="hostSystemUsage" class="muted legend host-usage-legend">
