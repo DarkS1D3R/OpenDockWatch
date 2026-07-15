@@ -1172,11 +1172,17 @@ createApp({
         </div>
         <div class="host-tiles">
           <div class="host-tile">
-            <div class="host-tile-label"><span class="tile-icon tile-icon-cpu"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="8.5" y="8.5" width="3" height="3" fill="currentColor"/><path d="M7 2v2M10 2v2M13 2v2M7 16v2M10 16v2M13 16v2M2 7h2M2 10h2M2 13h2M16 7h2M16 10h2M16 13h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span> {{ hostInfo.ncpu }} CPU</div>
-            <div class="host-tile-value">{{ cpuNow.toFixed(1) }}%</div>
-            <div class="host-tile-sub">avg {{ cpuAvg.toFixed(1) }}% &bull; pk {{ cpuPeak.toFixed(1) }}%</div>
-            <div v-if="hostSystemUsage" class="host-tile-system">
-              host total: {{ hostSystemUsage.cpuPercent != null ? hostSystemUsage.cpuPercent.toFixed(1) + '%' : '—' }}
+            <div class="host-tile-top">
+              <div class="host-tile-left">
+                <div class="host-tile-label"><span class="tile-icon tile-icon-cpu"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="8.5" y="8.5" width="3" height="3" fill="currentColor"/><path d="M7 2v2M10 2v2M13 2v2M7 16v2M10 16v2M13 16v2M2 7h2M2 10h2M2 13h2M16 7h2M16 10h2M16 13h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span> {{ hostInfo.ncpu }} CPU</div>
+                <div class="host-tile-value-row">
+                  <span class="host-tile-value">{{ cpuNow.toFixed(1) }}%</span>
+                  <span class="host-tile-sub">avg {{ cpuAvg.toFixed(1) }}% &bull; pk {{ cpuPeak.toFixed(1) }}%</span>
+                </div>
+              </div>
+              <div v-if="hostSystemUsage" class="host-tile-system">
+                host total<br />{{ hostSystemUsage.cpuPercent != null ? hostSystemUsage.cpuPercent.toFixed(1) + '%' : '—' }}
+              </div>
             </div>
             <div class="sparkline">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
@@ -1198,11 +1204,17 @@ createApp({
             </p>
           </div>
           <div class="host-tile">
-            <div class="host-tile-label"><span class="tile-icon tile-icon-mem"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="16" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4.5M8 7V4.5M11 7V4.5M14 7V4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span> {{ fmtGB(hostInfo.memTotalBytes) }}</div>
-            <div class="host-tile-value">{{ fmtGB(memNow) }}</div>
-            <div class="host-tile-sub">avg {{ fmtGB(memAvg) }} &bull; pk {{ fmtGB(memPeak) }}</div>
-            <div v-if="hostSystemUsage" class="host-tile-system">
-              host total: {{ fmtGB(hostSystemUsage.memUsedBytes) }} / {{ fmtGB(hostSystemUsage.memTotalBytes) }}
+            <div class="host-tile-top">
+              <div class="host-tile-left">
+                <div class="host-tile-label"><span class="tile-icon tile-icon-mem"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="16" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4.5M8 7V4.5M11 7V4.5M14 7V4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span> {{ fmtGB(hostInfo.memTotalBytes) }}</div>
+                <div class="host-tile-value-row">
+                  <span class="host-tile-value">{{ fmtGB(memNow) }}</span>
+                  <span class="host-tile-sub">avg {{ fmtGB(memAvg) }} &bull; pk {{ fmtGB(memPeak) }}</span>
+                </div>
+              </div>
+              <div v-if="hostSystemUsage" class="host-tile-system">
+                host total<br />{{ fmtGB(hostSystemUsage.memUsedBytes) }} / {{ fmtGB(hostSystemUsage.memTotalBytes) }}
+              </div>
             </div>
             <div class="sparkline">
               <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
