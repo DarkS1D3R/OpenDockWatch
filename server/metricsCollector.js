@@ -1,5 +1,6 @@
 const { loadHosts } = require('./hosts');
 const { listContainers, getStats, getHostInfo, getDiskUsage, checkHost, parseMemUsedBytes, computeIoRates } = require('./docker');
+const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
 
@@ -8,6 +9,7 @@ const DISK_POLL_MS = 60_000;
 
 const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
 const hostStates = new Map(); // hostId -> { pollState, diskTimer } - lets addHost/removeHost target one host
+const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
 const globalTimers = [];
 
 function getSnapshot(hostId) {
@@ -18,10 +20,28 @@ function getAllSnapshots() {
   return snapshots;
 }
 
+// Real host-wide CPU/mem (not just this app's containers) - only possible for the local host,
+// see hostUsage.js. Sampled every poll regardless of Docker reachability, since it doesn't touch
+// Docker at all - the host itself can still be worth reporting on even if the daemon is down.
+function sampleLocalSystemUsage(hostId) {
+  const sample = hostUsage.sampleCpuTimes();
+  const cpuPercent = hostUsage.computeCpuPercent(localCpuTimesPrev.get(hostId), sample);
+  localCpuTimesPrev.set(hostId, sample);
+  const mem = hostUsage.getMemUsage();
+  return { cpuPercent, memUsedBytes: mem.usedBytes, memTotalBytes: mem.totalBytes };
+}
+
 async function pollHost(host) {
   const prev = snapshots.get(host.id);
   const reachable = await checkHost(host);
   alerts.handleHostReachability(host.id, host.name || host.id, reachable, prev ? prev.reachable : true);
+
+  // Sampled here (rather than inside the reachable/hostInfo block below) since it doesn't touch
+  // Docker at all - null for a remote host, see hostUsage.js. Persisted into the same
+  // host_metrics row as the Docker cpuPercent/memUsedBytes below so the frontend can pull both
+  // out of one history fetch and the host-total sparkline gets the exact same server-persisted,
+  // survives-a-refresh behavior the Docker one already has - no separate client-side buffer.
+  const localSystemUsage = host.dockerHost ? null : sampleLocalSystemUsage(host.id);
 
   // Keep serving the previous poll's containers/stats/hostInfo until the fresh values below are
   // ready, rather than clearing them up front - the docker calls below can take a noticeable
@@ -91,6 +111,9 @@ async function pollHost(host) {
         ts,
         cpuPercent: cpuSum / hostInfo.ncpu,
         memUsedBytes: memSum,
+        systemCpuPercent: localSystemUsage ? localSystemUsage.cpuPercent : null,
+        systemMemUsedBytes: localSystemUsage ? localSystemUsage.memUsedBytes : null,
+        systemMemTotalBytes: localSystemUsage ? localSystemUsage.memTotalBytes : null,
       });
       alerts.handleHostSample({
         hostId: host.id,

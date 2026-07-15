@@ -83,7 +83,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#3fb950',
       width: 170,
-      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 76),
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
       shape: 'round-rectangle',
     },
   },
@@ -94,7 +94,7 @@ const CY_STYLE = [
       'border-width': 2,
       'border-color': '#8b909c',
       width: 170,
-      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 76),
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
       shape: 'round-rectangle',
     },
   },
@@ -427,7 +427,34 @@ export function aggregateGroups(nodes) {
 // Container node data/classes shared by graph mode (buildElements, parented to a compose-group
 // box) and tree mode (buildTreeElements, no parent - see there) - factored out so both render
 // modes automatically pick up the same live CPU/RAM/health/badge fields from a single place.
+// Container node width (170px) minus the port badge's own left/right padding, at the badge's
+// 8px font - tuned so a wrapped line doesn't reach text-max-width's fallback wrap in the rare
+// case a mapping pushes it right up to the edge.
+const PORT_LABEL_LINE_CHARS = 26;
+
+// Ports wrap at whole "host:container" mapping boundaries (never splitting one mapping across
+// lines) rather than raw character count, since a broken "800\n1:80" reads far worse than an
+// earlier line break before it - same idea as wrapPillLabel, just token-based instead of
+// character-based since a mapping has no natural mid-token split point worth preferring.
+function wrapPortsLabel(text, maxLineChars) {
+  const tokens = text.split(', ');
+  const lines = [];
+  let current = '';
+  for (const token of tokens) {
+    const candidate = current ? `${current}, ${token}` : token;
+    if (current && candidate.length > maxLineChars) {
+      lines.push(current);
+      current = token;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.join('\n');
+}
+
 function containerNodeEl(n, selectedId, parent) {
+  const wrappedPorts = wrapPortsLabel(parsePublishedPorts(n.ports), PORT_LABEL_LINE_CHARS);
   const data = {
     id: n.id,
     name: n.name,
@@ -438,7 +465,11 @@ function containerNodeEl(n, selectedId, parent) {
     memPerc: n.memPerc,
     netIO: formatRatePair(n.netRxRate, n.netTxRate),
     blockIO: formatRatePair(n.blockReadRate, n.blockWriteRate),
-    ports: parsePublishedPorts(n.ports),
+    ports: wrappedPorts,
+    // Drives the box's own height (see containerFullHeight) - a container publishing enough
+    // ports to wrap onto several lines needs a taller box to fit them without overflowing, same
+    // principle as tree mode's mount/network pills, just leaf-node height instead of pill height.
+    portLines: wrappedPorts ? wrappedPorts.split('\n').length : 0,
     openAlerts: n.openAlerts || 0,
   };
   if (parent) data.parent = parent;
@@ -721,6 +752,16 @@ const NODE_GAP = 16;
 const NODE_WIDTH = 170;
 const FULL_LEAF_HEIGHT = 76;
 const FULL_GROUP_HEIGHT = 88;
+// Extra box height per wrapped port-badge line beyond the first (see wrapPortsLabel/portLines) -
+// a container publishing enough ports to need more than one line grows the box to fit them
+// instead of letting them overflow it. Read from data('portLines') by three places that all need
+// to agree on the same box size: the live CY_STYLE height below, effectiveBoundingBox (so
+// overlap resolution/dagre layout reserve the right amount of room), and the SVG exporter.
+const PORT_EXTRA_LINE_HEIGHT = 10;
+function containerFullHeight(portLines) {
+  const extraLines = Math.max(0, (portLines || 0) - 1);
+  return FULL_LEAF_HEIGHT + extraLines * PORT_EXTRA_LINE_HEIGHT;
+}
 
 // Nodes that participate in drag/layout overlap resolution: container leaves and compose groups
 // (graph mode), plus tree mode's project/network/mount pills. One shared selector so the
@@ -743,7 +784,7 @@ function effectiveBoundingBox(node) {
     const h = node.height();
     return { x1: pos.x - w / 2, x2: pos.x + w / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
   }
-  const h = node.hasClass('cy-expand-collapse-collapsed-node') ? FULL_GROUP_HEIGHT : FULL_LEAF_HEIGHT;
+  const h = node.hasClass('cy-expand-collapse-collapsed-node') ? FULL_GROUP_HEIGHT : containerFullHeight(node.data('portLines'));
   return { x1: pos.x - NODE_WIDTH / 2, x2: pos.x + NODE_WIDTH / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
 }
 
@@ -1065,8 +1106,9 @@ function svgEdgeKind(e) {
 // opposite direction from buildElements/buildTreeElements (data -> cy elements), but the same
 // idea of keeping "what's actually drawn" independent of the library that draws it. Leaf/
 // collapsed-group sizing deliberately ignores the node's current (possibly compact-shrunk)
-// rendered height in favor of the fixed FULL_LEAF_HEIGHT/FULL_GROUP_HEIGHT constants - a vector
-// export has no zoom-driven reason to hide detail the way the live semantic-zoom view does.
+// rendered height in favor of containerFullHeight/FULL_GROUP_HEIGHT (the same full-size-always
+// height CY_STYLE's own height function computes) - a vector export has no zoom-driven reason to
+// hide detail the way the live semantic-zoom view does.
 export function extractSvgGeometry(cy) {
   const nodes = [];
   cy.nodes().forEach((n) => {
@@ -1085,7 +1127,7 @@ export function extractSvgGeometry(cy) {
       y = pos.y;
       if (kind === 'container') {
         width = NODE_WIDTH;
-        height = FULL_LEAF_HEIGHT;
+        height = containerFullHeight(n.data('portLines'));
       } else if (kind === 'group-collapsed') {
         width = NODE_WIDTH;
         height = FULL_GROUP_HEIGHT;
@@ -1180,9 +1222,19 @@ function svgContainerNode(n) {
     svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
   }
   svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
-  svg += svgMetricBars(x1 + 8, y1 + n.height - 32, n.width - 16, d.cpuPerc, d.memPerc);
-  svg += `<text x="${x1 + 8}" y="${y1 + n.height - 10}" font-size="5" fill="#8b909c">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
-  if (d.ports) svg += `<text x="${x1 + 6}" y="${y1 + n.height - 2}" font-size="8" fill="#8b909c">${svgEscape(d.ports)}</text>`;
+  // Fixed offsets from FULL_LEAF_HEIGHT (the original, single-port-line box height), not n.height
+  // - n.height grows to fit a wrapped port list (see containerFullHeight), and all of that extra
+  // room needs to land below this cluster (for the wrapped lines) rather than stretching the gap
+  // between it and the name above, which is what anchoring to the real (taller) n.height would do.
+  svg += svgMetricBars(x1 + 8, y1 + FULL_LEAF_HEIGHT - 32, n.width - 16, d.cpuPerc, d.memPerc);
+  svg += `<text x="${x1 + 8}" y="${y1 + FULL_LEAF_HEIGHT - 10}" font-size="5" fill="#8b909c">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
+  if (d.ports) {
+    const portTspans = d.ports
+      .split('\n')
+      .map((line, i) => `<tspan x="${x1 + 6}" y="${y1 + FULL_LEAF_HEIGHT - 2 + i * PORT_EXTRA_LINE_HEIGHT}">${svgEscape(line)}</tspan>`)
+      .join('');
+    svg += `<text font-size="8" fill="#8b909c">${portTspans}</text>`;
+  }
   if (d.openAlerts > 0) svg += svgAlertBadge(x1 + 4, y1 + 2, d.openAlerts);
   svg += `</g>`;
   return svg;
@@ -1597,7 +1649,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
           </div>
         `
             : `
-          <div class="cy-node-box${data.faded ? ' faded' : ''}">
+          <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
             <span class="cy-node-emoji">${data.emoji}</span>
             <span class="cy-node-status">${data.status}</span>
             <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>

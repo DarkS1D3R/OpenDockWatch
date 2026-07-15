@@ -164,6 +164,7 @@ Instead of (or in addition to) `.env`, an admin account can set the webhook and 
 - Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
 - Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
 - The optional viewer login (`VIEWER_USER`/`VIEWER_PASS_HASH`) can see everything but gets a 403 from the server (not just a hidden button) on any start/stop/restart request — enforced server-side, not just in the UI.
+- The host card's CPU/RAM tiles show two numbers: the Docker figure (sum of container stats, the same one used by the `host_cpu`/`host_mem` alert rules) and, for the local host only, a "host total" line — real host-wide usage from every process, not just Docker's. It's local-only because there's no way to read a remote SSH host's own `/proc` without installing an agent there; a remote host's tile just omits that second line. If OpenDockWatch itself runs inside a container with a CPU/memory limit set, the host total still reports the underlying machine's real figures rather than the container's limit, since Node reads them from `/proc`, which isn't cgroup-virtualized.
 
 ## Contributing
 
