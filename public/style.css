@@ -719,6 +719,12 @@ table.containers td:nth-child(7) {
 .line-tree-mount {
   border-top: 2px solid #d29922;
 }
+.line-tree-volume {
+  border-top: 2px solid #e8c766;
+}
+.line-tree-shared {
+  border-top: 2px solid #f0883e;
+}
 .swatch-proj {
   border-color: #2d5fa8;
 }

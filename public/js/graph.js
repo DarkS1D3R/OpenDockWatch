@@ -12,6 +12,38 @@ let expandCollapseRegistered = false;
 const COMPACT_ZOOM_THRESHOLD = 1;
 const COMPACT_HEIGHT = 34;
 
+// Small "what type of node is this" glyphs for tree mode's project/network/mount pills - real
+// inline SVG (not emoji), reused two ways: wrapped in a data URI for CY_STYLE's background-image
+// below (so the live canvas view and PNG export, which just screenshots the canvas, draw them for
+// free), and inlined directly as <g> markup by svgPillIcon for the hand-drawn SVG exporter, which
+// has no canvas to reference a background-image on. Coordinates are in a shared 0-12 local space.
+const PROJ_ICON_SVG =
+  '<path d="M6 1.2 11 3.6 6 6 1 3.6Z" fill="none" stroke="#2d5fa8" stroke-width="1" stroke-linejoin="round"/>' +
+  '<path d="M1.5 6 6 8.2 10.5 6" fill="none" stroke="#2d5fa8" stroke-width="1" stroke-linejoin="round"/>' +
+  '<path d="M1.5 8.4 6 10.6 10.5 8.4" fill="none" stroke="#2d5fa8" stroke-width="1" stroke-linejoin="round"/>';
+const NET_ICON_SVG =
+  '<circle cx="6" cy="2" r="1.3" fill="#4f8cff"/><circle cx="2" cy="9.5" r="1.3" fill="#4f8cff"/><circle cx="10" cy="9.5" r="1.3" fill="#4f8cff"/>' +
+  '<path d="M6 3.3 2 8.3M6 3.3 10 8.3" stroke="#4f8cff" stroke-width="1"/>';
+const MOUNT_BIND_ICON_SVG =
+  '<path d="M1.5 3.3c0-.7.6-1.3 1.3-1.3h2l1 1h3.4c.7 0 1.3.6 1.3 1.3v4.4c0 .7-.6 1.3-1.3 1.3H2.8c-.7 0-1.3-.6-1.3-1.3Z" fill="none" stroke="#d29922" stroke-width="1" stroke-linejoin="round"/>';
+const MOUNT_VOLUME_ICON_SVG =
+  '<ellipse cx="6" cy="2.6" rx="4.3" ry="1.4" fill="none" stroke="#e8c766" stroke-width="1"/>' +
+  '<path d="M1.7 2.6v6.3c0 .8 1.9 1.4 4.3 1.4s4.3-.6 4.3-1.4V2.6" fill="none" stroke="#e8c766" stroke-width="1"/>' +
+  '<path d="M1.7 5.8c0 .8 1.9 1.4 4.3 1.4s4.3-.6 4.3-1.4" fill="none" stroke="#e8c766" stroke-width="1"/>';
+
+function pillIconDataUri(inner) {
+  return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">${inner}</svg>`)}`;
+}
+const PROJ_ICON_URI = pillIconDataUri(PROJ_ICON_SVG);
+const NET_ICON_URI = pillIconDataUri(NET_ICON_SVG);
+const MOUNT_BIND_ICON_URI = pillIconDataUri(MOUNT_BIND_ICON_SVG);
+const MOUNT_VOLUME_ICON_URI = pillIconDataUri(MOUNT_VOLUME_ICON_SVG);
+
+// A mount/volume referenced by 2+ containers (data('shared'), set in buildTreeElements) is
+// shared infrastructure - worth flagging at a glance over and above its bind-vs-volume kind, so
+// it gets this color instead of the usual amber/light-yellow regardless of which of those it is.
+const SHARED_MOUNT_COLOR = '#f0883e';
+
 const CY_STYLE = [
   {
     selector: 'node.group',
@@ -151,14 +183,25 @@ const CY_STYLE = [
       color: '#e4e6eb',
       'text-valign': 'center',
       'text-halign': 'center',
+      'text-margin-x': 8,
       width: 140,
       height: 30,
       shape: 'round-rectangle',
+      'background-image': PROJ_ICON_URI,
+      'background-width': 12,
+      'background-height': 12,
+      'background-position-x': 10,
+      'background-position-y': '50%',
+      'background-repeat': 'no-repeat',
+      'background-clip': 'none',
     },
   },
   {
     selector: 'node.net',
     style: {
+      // A long "<project>_<network>" name used to overflow this fixed-height, single-line pill
+      // past its own border - wrap + height: 'label' grows the box the same way node.mount
+      // already handles long bind-mount paths (see wrapPillLabel), rather than truncating it.
       'background-color': '#182234',
       'border-width': 1,
       'border-color': '#4f8cff',
@@ -167,9 +210,20 @@ const CY_STYLE = [
       color: '#4f8cff',
       'text-valign': 'center',
       'text-halign': 'center',
+      'text-wrap': 'wrap',
+      'text-max-width': 95,
+      'text-margin-x': 7,
       width: 120,
-      height: 26,
+      height: 'label',
+      padding: '6px',
       shape: 'round-rectangle',
+      'background-image': NET_ICON_URI,
+      'background-width': 11,
+      'background-height': 11,
+      'background-position-x': 8,
+      'background-position-y': '50%',
+      'background-repeat': 'no-repeat',
+      'background-clip': 'none',
     },
   },
   {
@@ -177,22 +231,58 @@ const CY_STYLE = [
     // /mnt/... path) - a fixed width with text-wrap forces long paths onto multiple lines
     // instead of overflowing a single-line pill; height: 'label' then grows the box to fit
     // however many wrapped lines that took (short volume names still fit on one line).
+    // Colors and icon are split into .mount-bind/.mount-volume below - a bind mount (host path)
+    // and a named/anonymous volume are different Docker concepts that used to render identically.
     selector: 'node.mount',
     style: {
-      'background-color': '#241d14',
-      'border-width': 1,
-      'border-color': '#d29922',
       label: 'data(label)',
       'font-size': 10,
-      color: '#d29922',
       'text-valign': 'center',
       'text-halign': 'center',
       'text-wrap': 'wrap',
       'text-max-width': 150,
+      'text-margin-x': 9,
       width: 170,
       height: 'label',
       padding: '8px',
       shape: 'round-rectangle',
+      'background-width': 12,
+      'background-height': 12,
+      'background-position-x': 8,
+      'background-position-y': '50%',
+      'background-repeat': 'no-repeat',
+      'background-clip': 'none',
+    },
+  },
+  {
+    selector: 'node.mount-bind',
+    style: {
+      'background-color': '#241d14',
+      'border-width': 1,
+      'border-color': '#d29922',
+      color: '#d29922',
+      'background-image': MOUNT_BIND_ICON_URI,
+    },
+  },
+  {
+    selector: 'node.mount-volume',
+    style: {
+      'background-color': '#2b2413',
+      'border-width': 1,
+      'border-color': '#e8c766',
+      color: '#e8c766',
+      'background-image': MOUNT_VOLUME_ICON_URI,
+    },
+  },
+  {
+    // Listed after .mount-bind/.mount-volume so this wins the border/text/background color
+    // cascade for a shared mount or volume without needing to also repeat their
+    // background-image - the folder/cylinder icon still shows which kind it is underneath.
+    selector: 'node.mount[?shared]',
+    style: {
+      'background-color': '#2e1c0f',
+      'border-color': SHARED_MOUNT_COLOR,
+      color: SHARED_MOUNT_COLOR,
     },
   },
   {
@@ -236,7 +326,14 @@ const CY_STYLE = [
     // the turn points more room, as a further safety margin against tight-quarters overlap.
     selector: 'edge.edge-tree-mount',
     style: {
-      'line-color': '#d29922',
+      // Matches whichever pill it leads to (shared orange, else mount-bind's darker amber vs
+      // mount-volume's lighter yellow) rather than one flat color, so the line itself hints at
+      // what's on the other end before you even reach the pill.
+      'line-color': (edge) => {
+        const target = edge.target();
+        if (target.data('shared')) return SHARED_MOUNT_COLOR;
+        return target.hasClass('mount-volume') ? '#e8c766' : '#d29922';
+      },
       width: 1.5,
       'curve-style': 'taxi',
       'taxi-direction': 'horizontal',
@@ -393,27 +490,31 @@ export function buildElements(nodes, edges, selectedId) {
 const NO_PROJECT = 'ungrouped';
 
 const MOUNT_LABEL_LINE_CHARS = 22;
+// Network pills are a narrower box than mount pills (120px vs 170px) - a shorter line length
+// keeps wrapped network names from overflowing them the same way long ones used to.
+const NET_LABEL_LINE_CHARS = 14;
 
-// Cytoscape's text-wrap: 'wrap' only auto-wraps at whitespace, and mount paths/volume names
-// have none - a 90-char bind-mount path is one unbreakable "word" as far as it's concerned, so
-// it renders on one (very wide) line no matter what text-max-width says. Pre-splitting into
-// explicit lines here, preferring path-separator boundaries for readability, is what actually
-// makes long labels wrap - text-max-width in CY_STYLE is just a fallback for the rare line that's
-// still too long after this (e.g. one giant filename with no separators at all).
-function wrapMountLabel(text) {
-  if (text.length <= MOUNT_LABEL_LINE_CHARS) return text;
+// Cytoscape's text-wrap: 'wrap' only auto-wraps at whitespace, and mount paths/volume/network
+// names have none - a 90-char bind-mount path (or a long "<project>_<network>" name) is one
+// unbreakable "word" as far as it's concerned, so it renders on one (very wide) line no matter
+// what text-max-width says, overflowing the pill. Pre-splitting into explicit lines here,
+// preferring path/word-separator boundaries for readability, is what actually makes long labels
+// wrap - text-max-width in CY_STYLE is just a fallback for the rare line that's still too long
+// after this (e.g. one giant filename with no separators at all).
+function wrapPillLabel(text, maxChars) {
+  if (text.length <= maxChars) return text;
   const parts = text.split(/(?<=[/_-])/);
   const lines = [];
   let current = '';
   for (const part of parts) {
-    if (current && (current + part).length > MOUNT_LABEL_LINE_CHARS) {
+    if (current && (current + part).length > maxChars) {
       lines.push(current);
       current = '';
     }
     current += part;
-    while (current.length > MOUNT_LABEL_LINE_CHARS) {
-      lines.push(current.slice(0, MOUNT_LABEL_LINE_CHARS));
-      current = current.slice(MOUNT_LABEL_LINE_CHARS);
+    while (current.length > maxChars) {
+      lines.push(current.slice(0, maxChars));
+      current = current.slice(maxChars);
     }
   }
   if (current) lines.push(current);
@@ -425,7 +526,7 @@ function mountLabel(source, kind) {
   // shown shortened so the pill stays readable; the node's own `id` keeps the full source so
   // it's still stable/unique across polls (see buildTreeElements).
   const text = kind === 'volume-anon' ? `anon:${source.slice(0, 12)}…` : source;
-  return wrapMountLabel(text);
+  return wrapPillLabel(text, MOUNT_LABEL_LINE_CHARS);
 }
 
 // ArgoCD-style tree for the Flow view's tree mode: project -> container -> (network | mount),
@@ -441,19 +542,33 @@ function mountLabel(source, kind) {
 export function buildTreeElements(nodes, selectedId, { showNetworks = true, showMounts = true } = {}) {
   const projectIds = new Set();
   const netNames = new Set();
+  // source -> { kind, count } - count is containers referencing it, used to split the mount
+  // column into shared-first/unshared-second below (see TREE_LAYOUT's minLen).
   const mountSources = new Map();
 
   for (const n of nodes) {
     if (n.group && n.group !== NO_PROJECT) projectIds.add(n.group);
     if (showNetworks) for (const net of n.networks || []) netNames.add(net);
-    if (showMounts) for (const m of n.mounts || []) if (!mountSources.has(m.source)) mountSources.set(m.source, m.kind);
+    if (showMounts) {
+      const seen = new Set();
+      for (const m of n.mounts || []) {
+        if (seen.has(m.source)) continue;
+        seen.add(m.source);
+        const existing = mountSources.get(m.source);
+        if (existing) existing.count += 1;
+        else mountSources.set(m.source, { kind: m.kind, count: 1 });
+      }
+    }
   }
 
   const els = [];
   for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: g }, classes: 'proj' });
-  for (const net of netNames) els.push({ data: { id: `net:${net}`, label: net }, classes: 'net' });
-  for (const [source, kind] of mountSources) {
-    els.push({ data: { id: `mount:${source}`, label: mountLabel(source, kind), kind }, classes: 'mount' });
+  for (const net of netNames) els.push({ data: { id: `net:${net}`, label: wrapPillLabel(net, NET_LABEL_LINE_CHARS) }, classes: 'net' });
+  for (const [source, { kind, count }] of mountSources) {
+    els.push({
+      data: { id: `mount:${source}`, label: mountLabel(source, kind), kind, shared: count > 1 },
+      classes: `mount ${kind === 'bind' ? 'mount-bind' : 'mount-volume'}`,
+    });
   }
 
   for (const n of nodes) {
@@ -490,7 +605,17 @@ const LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 30, rankSep: 90 };
 // nodeSep is tuned for its fixed-height container/group boxes and packs siblings too tightly once
 // pill heights vary. Extra room here also gives taxi-routed edges (edge-tree-proj/-mount) more
 // space to turn cleanly instead of elbowing through a tightly-packed neighbor.
-const TREE_LAYOUT = { ...LAYOUT, nodeSep: 70 };
+// Mount/network pills have no edges except the one from their container, so dagre's automatic
+// ranking would otherwise put shared mounts, unshared mounts, and networks all in the same
+// column right after it (nothing forces them apart). cytoscape-dagre's minLen hook stretches
+// an edge's minimum rank distance per-edge, which is what actually produces the desired
+// left-to-right order: container -> shared mounts -> unshared mounts -> networks.
+function treeMinLen(edge) {
+  if (edge.hasClass('edge-tree-mount')) return edge.target().data('shared') ? 1 : 2;
+  if (edge.hasClass('edge-tree-net')) return 3;
+  return 1;
+}
+const TREE_LAYOUT = { ...LAYOUT, nodeSep: 70, minLen: treeMinLen };
 const GROUP_COLUMNS = 2;
 const NODE_COL_GAP = 200;
 const NODE_ROW_GAP = 96;
@@ -916,7 +1041,8 @@ function svgNodeKind(n) {
   if (n.hasClass('group')) return 'group-expanded';
   if (n.hasClass('proj')) return 'proj';
   if (n.hasClass('net')) return 'net';
-  if (n.hasClass('mount')) return 'mount';
+  if (n.hasClass('mount-bind')) return 'mount-bind';
+  if (n.hasClass('mount-volume')) return 'mount-volume';
   if (n.hasClass('running') || n.hasClass('stopped')) return 'container';
   return null;
 }
@@ -1092,9 +1218,23 @@ function svgGroupBox(n) {
   );
 }
 
-// Tree mode's project/network/mount pills - plain rect + centered text, matching CY_STYLE's
-// node.proj/.net/.mount. Mount labels already carry \n for wrapped long paths (see
-// wrapMountLabel) - split into one <tspan> per line rather than trying to word-wrap in SVG.
+// Mirrors the live view's CY_STYLE background-image icons (PROJ_ICON_SVG etc. above) - drawn as
+// real SVG elements here since the exporter has no canvas to reference a background-image on.
+// Coordinates in the icon constants are already in the shared 0-12 local space, so this just
+// translates that space to sit at the pill's left edge, vertically centered.
+function svgPillIcon(kind, x1, cy) {
+  const svg = { proj: PROJ_ICON_SVG, net: NET_ICON_SVG, 'mount-bind': MOUNT_BIND_ICON_SVG, 'mount-volume': MOUNT_VOLUME_ICON_SVG }[kind];
+  if (!svg) return '';
+  return `<g transform="translate(${x1 + 2}, ${cy - 6})">${svg}</g>`;
+}
+
+// Shifts the pill's text right of center, mirroring CY_STYLE's text-margin-x, to leave room for
+// svgPillIcon at the left edge.
+const PILL_ICON_TEXT_SHIFT = 8;
+
+// Tree mode's project/network/mount pills - rect + left-edge type icon + centered text, matching
+// CY_STYLE's node.proj/.net/.mount(-bind|-volume). Mount labels already carry \n for wrapped long
+// paths (see wrapMountLabel) - split into one <tspan> per line rather than trying to word-wrap in SVG.
 //
 // The box is always exactly n.height - cytoscape's own live 'height: label' value, which is
 // also what dagre's layout used to space this node's siblings apart. Drawing it any taller to
@@ -1106,16 +1246,18 @@ function svgPillNode(n, { border, text, bg }) {
   const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
+  const textX = n.x + PILL_ICON_TEXT_SHIFT;
   const vPadding = 6;
   const lineHeight =
     lines.length > 1 ? Math.max(8, Math.min(MOUNT_PILL_LINE_HEIGHT, (n.height - vPadding) / lines.length)) : MOUNT_PILL_LINE_HEIGHT;
   const textBlockHeight = lines.length * lineHeight;
   const firstBaselineY = n.y - textBlockHeight / 2 + lineHeight * 0.75;
-  const tspans = lines.map((line, i) => `<tspan x="${n.x}" y="${firstBaselineY + i * lineHeight}">${svgEscape(line)}</tspan>`).join('');
+  const tspans = lines.map((line, i) => `<tspan x="${textX}" y="${firstBaselineY + i * lineHeight}">${svgEscape(line)}</tspan>`).join('');
   return (
     `<g opacity="${n.faded ? 0.15 : 1}">` +
     `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
-    `<text x="${n.x}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
+    svgPillIcon(n.kind, x1, n.y) +
+    `<text x="${textX}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
     `</g>`
   );
 }
@@ -1132,8 +1274,14 @@ function svgNode(n) {
       return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027' });
     case 'net':
       return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
-    case 'mount':
-      return svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
+    case 'mount-bind':
+      return n.data.shared
+        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
+        : svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
+    case 'mount-volume':
+      return n.data.shared
+        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
+        : svgPillNode(n, { border: '#e8c766', text: '#e8c766', bg: '#2b2413' });
     default:
       return '';
   }

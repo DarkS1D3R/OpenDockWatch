@@ -144,10 +144,20 @@ test('buildTreeElements', async (t) => {
     assert.deepEqual(netEdges.map((e) => e.data.source).sort(), ['a', 'b']);
   });
 
+  await t.test('wraps a long compose network name onto multiple lines rather than overflowing the pill', () => {
+    const longName = 'opendockwatch_default_network';
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [longName], mounts: [] }];
+    const netNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'net');
+    assert.ok(netNode.data.label.includes('\n'), 'expected the long network name to be wrapped onto multiple lines');
+    assert.equal(netNode.data.label.replace(/\n/g, ''), longName);
+    // net:<id> in the id keeps the unwrapped name, same as mount:<source> does for mounts.
+    assert.equal(netNode.data.id, `net:${longName}`);
+  });
+
   await t.test('shortens an anonymous-volume label but keeps the full source as the stable id', () => {
     const anonId = 'a'.repeat(64);
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: anonId, kind: 'volume-anon' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
     assert.equal(mountNode.data.id, `mount:${anonId}`);
     assert.equal(mountNode.data.label, `anon:${anonId.slice(0, 12)}…`);
   });
@@ -155,7 +165,7 @@ test('buildTreeElements', async (t) => {
   await t.test('wraps a long bind-mount path onto multiple lines at path-separator boundaries', () => {
     const longPath = '/mnt/c/Projects/bm-server/application/target/bm-server-files/bm-server-1.0.0-SNAPSHOT.jar';
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: longPath, kind: 'bind' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-bind');
     assert.ok(mountNode.data.label.includes('\n'), 'expected the long path to be wrapped onto multiple lines');
     assert.ok(
       mountNode.data.label.split('\n').every((line) => line.length <= 22),
@@ -166,7 +176,7 @@ test('buildTreeElements', async (t) => {
 
   await t.test('leaves a short mount source on a single line, unwrapped', () => {
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: 'pgdata', kind: 'volume-named' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount');
+    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
     assert.equal(mountNode.data.label, 'pgdata');
   });
 
@@ -198,7 +208,7 @@ test('buildTreeElements', async (t) => {
     ];
     const els = graph.buildTreeElements(nodes, null, { showNetworks: false, showMounts: false });
     assert.equal(els.filter((el) => el.classes === 'net').length, 0);
-    assert.equal(els.filter((el) => el.classes === 'mount').length, 0);
+    assert.equal(els.filter((el) => el.classes && el.classes.startsWith('mount')).length, 0);
     assert.equal(els.filter((el) => el.data.id && el.data.id.startsWith('edge:tree:a->')).length, 0);
   });
 
@@ -281,10 +291,10 @@ test('renderSvg', async (t) => {
     assert.match(svg, /stroke="#4f8cff"/);
   });
 
-  await t.test('a mount pill with a wrapped multi-line label emits one tspan per line', () => {
+  await t.test('a bind-mount pill with a wrapped multi-line label emits one tspan per line', () => {
     const node = {
       id: 'mount:/a/very/long/path',
-      kind: 'mount',
+      kind: 'mount-bind',
       x: 200,
       y: 200,
       width: 170,
@@ -297,6 +307,32 @@ test('renderSvg', async (t) => {
     assert.equal(tspanCount, 2);
     assert.match(svg, /\/a\/very\//);
     assert.match(svg, /long\/path/);
+  });
+
+  await t.test('a volume pill renders in the lighter volume color, distinct from a bind mount', () => {
+    const bindSvg = graph.renderSvg({
+      nodes: [{ id: 'm1', kind: 'mount-bind', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x' } }],
+      edges: [],
+    });
+    const volumeSvg = graph.renderSvg({
+      nodes: [{ id: 'm2', kind: 'mount-volume', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x' } }],
+      edges: [],
+    });
+    assert.match(bindSvg, /stroke="#d29922"/);
+    assert.match(volumeSvg, /stroke="#e8c766"/);
+  });
+
+  await t.test('a shared mount or volume renders in the shared color regardless of kind', () => {
+    const sharedBindSvg = graph.renderSvg({
+      nodes: [{ id: 'm1', kind: 'mount-bind', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
+      edges: [],
+    });
+    const sharedVolumeSvg = graph.renderSvg({
+      nodes: [{ id: 'm2', kind: 'mount-volume', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
+      edges: [],
+    });
+    assert.match(sharedBindSvg, /stroke="#f0883e"/);
+    assert.match(sharedVolumeSvg, /stroke="#f0883e"/);
   });
 
   const edgeKinds = [

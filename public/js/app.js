@@ -577,7 +577,7 @@ createApp({
       if (!this.$refs.cy) return;
       const elements =
         this.flowMode === 'tree'
-          ? buildTreeElements(this.topology.nodes, this.selectedContainerId, {
+          ? buildTreeElements(this.filteredTopology.nodes, this.selectedContainerId, {
               showNetworks: this.treeShowNetworks,
               showMounts: this.treeShowMounts,
             })
@@ -1312,7 +1312,9 @@ createApp({
               <span class="legend-item"><span class="swatch swatch-stopped"></span> stopped</span>
               <span class="legend-item"><span class="swatch swatch-proj"></span> compose project</span>
               <span class="legend-item"><span class="line line-tree-net"></span> network</span>
-              <span class="legend-item"><span class="line line-tree-mount"></span> volume / bind mount</span>
+              <span class="legend-item"><span class="line line-tree-mount"></span> bind mount</span>
+              <span class="legend-item"><span class="line line-tree-volume"></span> volume</span>
+              <span class="legend-item"><span class="line line-tree-shared"></span> shared by 2+ containers</span>
               <span class="legend-item"><span class="swatch swatch-alert"></span> open alert</span>
             </p>
           </div>
