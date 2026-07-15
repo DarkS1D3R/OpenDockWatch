@@ -577,7 +577,7 @@ createApp({
       if (!this.$refs.cy) return;
       const elements =
         this.flowMode === 'tree'
-          ? buildTreeElements(this.topology.nodes, this.selectedContainerId, {
+          ? buildTreeElements(this.filteredTopology.nodes, this.selectedContainerId, {
               showNetworks: this.treeShowNetworks,
               showMounts: this.treeShowMounts,
             })
