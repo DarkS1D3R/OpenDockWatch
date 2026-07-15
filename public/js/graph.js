@@ -441,19 +441,33 @@ function mountLabel(source, kind) {
 export function buildTreeElements(nodes, selectedId, { showNetworks = true, showMounts = true } = {}) {
   const projectIds = new Set();
   const netNames = new Set();
+  // source -> { kind, count } - count is containers referencing it, used to split the mount
+  // column into shared-first/unshared-second below (see TREE_LAYOUT's minLen).
   const mountSources = new Map();
 
   for (const n of nodes) {
     if (n.group && n.group !== NO_PROJECT) projectIds.add(n.group);
     if (showNetworks) for (const net of n.networks || []) netNames.add(net);
-    if (showMounts) for (const m of n.mounts || []) if (!mountSources.has(m.source)) mountSources.set(m.source, m.kind);
+    if (showMounts) {
+      const seen = new Set();
+      for (const m of n.mounts || []) {
+        if (seen.has(m.source)) continue;
+        seen.add(m.source);
+        const existing = mountSources.get(m.source);
+        if (existing) existing.count += 1;
+        else mountSources.set(m.source, { kind: m.kind, count: 1 });
+      }
+    }
   }
 
   const els = [];
   for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: g }, classes: 'proj' });
   for (const net of netNames) els.push({ data: { id: `net:${net}`, label: net }, classes: 'net' });
-  for (const [source, kind] of mountSources) {
-    els.push({ data: { id: `mount:${source}`, label: mountLabel(source, kind), kind }, classes: 'mount' });
+  for (const [source, { kind, count }] of mountSources) {
+    els.push({
+      data: { id: `mount:${source}`, label: mountLabel(source, kind), kind, shared: count > 1 },
+      classes: 'mount',
+    });
   }
 
   for (const n of nodes) {
@@ -490,7 +504,17 @@ const LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 30, rankSep: 90 };
 // nodeSep is tuned for its fixed-height container/group boxes and packs siblings too tightly once
 // pill heights vary. Extra room here also gives taxi-routed edges (edge-tree-proj/-mount) more
 // space to turn cleanly instead of elbowing through a tightly-packed neighbor.
-const TREE_LAYOUT = { ...LAYOUT, nodeSep: 70 };
+// Mount/network pills have no edges except the one from their container, so dagre's automatic
+// ranking would otherwise put shared mounts, unshared mounts, and networks all in the same
+// column right after it (nothing forces them apart). cytoscape-dagre's minLen hook stretches
+// an edge's minimum rank distance per-edge, which is what actually produces the desired
+// left-to-right order: container -> shared mounts -> unshared mounts -> networks.
+function treeMinLen(edge) {
+  if (edge.hasClass('edge-tree-mount')) return edge.target().data('shared') ? 1 : 2;
+  if (edge.hasClass('edge-tree-net')) return 3;
+  return 1;
+}
+const TREE_LAYOUT = { ...LAYOUT, nodeSep: 70, minLen: treeMinLen };
 const GROUP_COLUMNS = 2;
 const NODE_COL_GAP = 200;
 const NODE_ROW_GAP = 96;
