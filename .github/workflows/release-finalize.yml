@@ -2,7 +2,9 @@ name: Release Finalize
 
 # Phase 2 of 2: runs when a release/* PR is merged into main (see release.yml).
 #
-# 1. finalize: tags the merge commit, publishes the GitHub Release, opens a PR
+# 1. finalize: tags the merge commit, publishes the GitHub Release (notes built
+#    from the commit log since the previous tag - see the "Generate release notes"
+#    step for why gh's own --generate-notes doesn't work well here), opens a PR
 #    to sync main back into develop (auto-merged - develop is protected, so
 #    this goes through the same required-PR path as everything else instead
 #    of a bypass), and deletes the release branch.
@@ -52,6 +54,29 @@ jobs:
           git tag -a "${{ steps.version.outputs.value }}" -m "${{ steps.version.outputs.value }}"
           git push origin "${{ steps.version.outputs.value }}"
 
+      # Feature work here is pushed straight to develop rather than one-PR-per-feature
+      # (only release/* and chore/sync-develop-* PRs exist), so gh's own --generate-notes
+      # (which groups by merged PR) has nothing to group and produces near-empty notes.
+      # Build them from the actual commit log between the previous and new tag instead -
+      # commit messages in this repo are already descriptive prose, so a plain bulleted
+      # list reads fine with no conventional-commit tagging required.
+      - name: Generate release notes from commit log
+        id: notes
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${{ steps.version.outputs.value }}$" | head -1 || true)
+          RANGE="HEAD"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          {
+            echo "## Changes"
+            echo
+            git log "$RANGE" --no-merges --format='- %s' | grep -v '^- Bump version to ' || true
+          } > release-notes.md
+
+          cat release-notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,7 +84,7 @@ jobs:
           gh release create "${{ steps.version.outputs.value }}" \
             --title "${{ steps.version.outputs.value }}" \
             --target main \
-            --generate-notes
+            --notes-file release-notes.md
 
       - name: Open a PR to sync develop with the released main
         env:
