@@ -322,6 +322,19 @@ test('renderSvg', async (t) => {
     assert.match(volumeSvg, /stroke="#e8c766"/);
   });
 
+  await t.test('a shared mount or volume renders in the shared color regardless of kind', () => {
+    const sharedBindSvg = graph.renderSvg({
+      nodes: [{ id: 'm1', kind: 'mount-bind', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
+      edges: [],
+    });
+    const sharedVolumeSvg = graph.renderSvg({
+      nodes: [{ id: 'm2', kind: 'mount-volume', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
+      edges: [],
+    });
+    assert.match(sharedBindSvg, /stroke="#f0883e"/);
+    assert.match(sharedVolumeSvg, /stroke="#f0883e"/);
+  });
+
   const edgeKinds = [
     ['network', '#2b2f38'],
     ['depends_on', '#199e70'],

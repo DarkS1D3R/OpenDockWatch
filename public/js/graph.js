@@ -39,6 +39,11 @@ const NET_ICON_URI = pillIconDataUri(NET_ICON_SVG);
 const MOUNT_BIND_ICON_URI = pillIconDataUri(MOUNT_BIND_ICON_SVG);
 const MOUNT_VOLUME_ICON_URI = pillIconDataUri(MOUNT_VOLUME_ICON_SVG);
 
+// A mount/volume referenced by 2+ containers (data('shared'), set in buildTreeElements) is
+// shared infrastructure - worth flagging at a glance over and above its bind-vs-volume kind, so
+// it gets this color instead of the usual amber/light-yellow regardless of which of those it is.
+const SHARED_MOUNT_COLOR = '#f0883e';
+
 const CY_STYLE = [
   {
     selector: 'node.group',
@@ -270,6 +275,17 @@ const CY_STYLE = [
     },
   },
   {
+    // Listed after .mount-bind/.mount-volume so this wins the border/text/background color
+    // cascade for a shared mount or volume without needing to also repeat their
+    // background-image - the folder/cylinder icon still shows which kind it is underneath.
+    selector: 'node.mount[?shared]',
+    style: {
+      'background-color': '#2e1c0f',
+      'border-color': SHARED_MOUNT_COLOR,
+      color: SHARED_MOUNT_COLOR,
+    },
+  },
+  {
     // Orthogonal "taxi" routing (horizontal-vertical-horizontal), matching ArgoCD's own resource
     // tree connectors - reads more like a hierarchy diagram than the diagonal bezier edges graph
     // mode uses for network/depends-on/manual relationships. No arrowhead, same reason ArgoCD's
@@ -310,10 +326,14 @@ const CY_STYLE = [
     // the turn points more room, as a further safety margin against tight-quarters overlap.
     selector: 'edge.edge-tree-mount',
     style: {
-      // Matches whichever pill it leads to (mount-bind's darker amber vs mount-volume's lighter
-      // yellow) rather than one flat color, so the line itself hints at what's on the other end
-      // before you even reach the pill.
-      'line-color': (edge) => (edge.target().hasClass('mount-volume') ? '#e8c766' : '#d29922'),
+      // Matches whichever pill it leads to (shared orange, else mount-bind's darker amber vs
+      // mount-volume's lighter yellow) rather than one flat color, so the line itself hints at
+      // what's on the other end before you even reach the pill.
+      'line-color': (edge) => {
+        const target = edge.target();
+        if (target.data('shared')) return SHARED_MOUNT_COLOR;
+        return target.hasClass('mount-volume') ? '#e8c766' : '#d29922';
+      },
       width: 1.5,
       'curve-style': 'taxi',
       'taxi-direction': 'horizontal',
@@ -1255,9 +1275,13 @@ function svgNode(n) {
     case 'net':
       return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
     case 'mount-bind':
-      return svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
+      return n.data.shared
+        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
+        : svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
     case 'mount-volume':
-      return svgPillNode(n, { border: '#e8c766', text: '#e8c766', bg: '#2b2413' });
+      return n.data.shared
+        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
+        : svgPillNode(n, { border: '#e8c766', text: '#e8c766', bg: '#2b2413' });
     default:
       return '';
   }
