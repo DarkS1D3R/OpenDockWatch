@@ -2,16 +2,8 @@ import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS
 import { createLogStream } from './lib/logStream.js';
 import SparkTile from './components/SparkTile.js';
 import HostCard from './components/HostCard.js';
-import {
-  parseMemUsedBytes,
-  formatGB,
-  formatRatePair,
-  healthColor,
-  healthLabel,
-  detectLogLevel,
-  highlightLine,
-  stripAnsi,
-} from './format.js';
+import LogViewer from './components/LogViewer.js';
+import { parseMemUsedBytes, formatGB, formatRatePair, healthColor, healthLabel, highlightLine } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -21,7 +13,6 @@ import {
   apiContainerAction,
   apiGetContainerInspect,
   logsUrl,
-  downloadLogsUrl,
   apiLogout,
   apiGetSession,
   apiGetDiskUsage,
@@ -63,6 +54,7 @@ createApp({
   components: {
     SparkTile,
     HostCard,
+    LogViewer,
   },
   data() {
     return {
@@ -111,15 +103,7 @@ createApp({
       previewLoading: false,
 
       logViewerOpen: false,
-      logViewerTail: 200,
-      logViewerFilter: '',
-      logViewerRegexMode: false,
-      logViewerLevels: { error: true, warn: true, info: true, debug: true },
-      logViewerLines: [],
-      logViewerAtBottom: true,
-      logViewerLoading: false,
       logViewerFullscreen: false,
-      logViewerShowTimestamps: true,
 
       settingsOpen: false,
       webhookUrl: '',
@@ -215,35 +199,6 @@ createApp({
       }
       return out;
     },
-    logViewerTestRegex() {
-      if (!this.logViewerRegexMode) return null;
-      const pattern = this.logViewerFilter.trim();
-      if (!pattern) return null;
-      try {
-        return new RegExp(pattern, 'i');
-      } catch {
-        return null;
-      }
-    },
-    logViewerRegexError() {
-      if (!this.logViewerRegexMode || !this.logViewerFilter.trim()) return null;
-      return this.logViewerTestRegex ? null : 'Invalid regex';
-    },
-    filteredLogViewerLines() {
-      const filterText = this.logViewerFilter.trim();
-      const filterLower = filterText.toLowerCase();
-      const regexMode = this.logViewerRegexMode;
-      const testRegex = this.logViewerTestRegex;
-      return this.logViewerLines
-        .filter((line) => {
-          const level = detectLogLevel(stripAnsi(line.text));
-          if (level && !this.logViewerLevels[level]) return false;
-          if (!filterText) return true;
-          if (regexMode) return testRegex ? testRegex.test(line.text) : true;
-          return line.text.toLowerCase().includes(filterLower);
-        })
-        .map((line) => ({ id: line.id, html: highlightLine(line.text, filterText, regexMode && !!testRegex) }));
-    },
   },
   watch: {
     selectedContainerId(newId) {
@@ -282,10 +237,9 @@ createApp({
     },
   },
   created() {
-    // Plain (non-reactive) log stream handles - see openPreviewStream/startLogViewerStream.
-    // Keeping these off the reactive `data()` object avoids Vue tracking their internals.
+    // Plain (non-reactive) log stream handle - see openPreviewStream. Keeping it off the
+    // reactive `data()` object avoids Vue tracking its internals.
     this._previewStream = null;
-    this._logViewerStream = null;
   },
   async mounted() {
     try {
@@ -705,68 +659,13 @@ createApp({
     formatPreviewLine(text) {
       return highlightLine(text, '', false);
     },
-    async openLogViewer() {
+    openLogViewer() {
       if (!this.selectedContainerId) return;
       this.logViewerOpen = true;
-      this.startLogViewerStream();
-      await this.$nextTick();
-      this.$refs.logPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
     closeLogViewer() {
       this.logViewerOpen = false;
       this.logViewerFullscreen = false;
-      if (this._logViewerStream) {
-        this._logViewerStream.stop();
-        this._logViewerStream = null;
-      }
-      this.logViewerLines = [];
-      this.logViewerLoading = false;
-    },
-    startLogViewerStream() {
-      if (!this.selectedContainerId) return;
-      if (this._logViewerStream) this._logViewerStream.stop();
-      this.logViewerLines = [];
-      this.logViewerAtBottom = true;
-      this._logViewerStream = createLogStream({
-        url: logsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail),
-        onFlush: (lines) => this.appendLogViewerLines(lines),
-        onLoadingChange: (loading) => {
-          this.logViewerLoading = loading;
-        },
-      });
-      this._logViewerStream.start();
-    },
-    appendLogViewerLines(lines) {
-      for (const line of lines) this.logViewerLines.push(line);
-      if (this.logViewerLines.length > MAX_LOG_LINES) {
-        this.logViewerLines.splice(0, this.logViewerLines.length - MAX_LOG_LINES);
-      }
-      if (this.logViewerAtBottom) {
-        this.$nextTick(() => {
-          const el = this.$refs.logViewerLogView;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      }
-    },
-    changeLogViewerTail(newTail) {
-      this.logViewerTail = newTail;
-      this.startLogViewerStream();
-    },
-    downloadLogs() {
-      if (!this.selectedContainerId) return;
-      window.location.href = downloadLogsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail);
-    },
-    onLogViewerScroll() {
-      const el = this.$refs.logViewerLogView;
-      if (el) this.logViewerAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    },
-    scrollLogViewerToBottom() {
-      this.logViewerAtBottom = true;
-      const el = this.$refs.logViewerLogView;
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    toggleLevel(level) {
-      this.logViewerLevels = { ...this.logViewerLevels, [level]: !this.logViewerLevels[level] };
     },
     toggleGroup(name) {
       this.collapsedGroups = { ...this.collapsedGroups, [name]: !this.collapsedGroups[name] };
@@ -1271,74 +1170,15 @@ createApp({
         </aside>
       </div>
 
-      <div
+      <log-viewer
         v-if="logViewerOpen"
-        ref="logPanel"
-        class="log-panel"
-        :class="{ 'with-detail': !!selectedContainer && !logViewerFullscreen, fullscreen: logViewerFullscreen }"
-      >
-        <div class="log-panel-header">
-          <strong>{{ selectedContainer ? selectedContainer.name : '' }}</strong>
-          <div class="log-panel-controls">
-            <div class="log-level-toggle">
-              <button :class="{active: logViewerLevels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-              <button :class="{active: logViewerLevels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-              <button :class="{active: logViewerLevels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-              <button :class="{active: logViewerLevels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
-            </div>
-            <div class="log-filter-group">
-              <div class="log-filter-input-wrap">
-                <input
-                  type="text"
-                  v-model="logViewerFilter"
-                  :placeholder="logViewerRegexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
-                  :class="{ 'filter-invalid': logViewerRegexError }"
-                />
-                <button v-if="logViewerFilter" class="filter-clear-btn" @click="logViewerFilter = ''" title="Clear filter">✕</button>
-              </div>
-              <button
-                class="small-btn regex-toggle-btn"
-                :class="{ active: logViewerRegexMode }"
-                @click="logViewerRegexMode = !logViewerRegexMode"
-                title="Treat filter text as a regular expression"
-              >
-                .*
-              </button>
-              <span v-if="logViewerRegexError" class="filter-error-text">{{ logViewerRegexError }}</span>
-              <span v-else-if="logViewerFilter" class="filter-count-text">{{ filteredLogViewerLines.length }} / {{ logViewerLines.length }}</span>
-            </div>
-            <select :value="logViewerTail" @change="changeLogViewerTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
-              <option :value="100">Last 100 lines</option>
-              <option :value="200">Last 200 lines</option>
-              <option :value="1000">Last 1000 lines</option>
-              <option :value="5000">Last 5000 lines</option>
-              <option value="all">All lines</option>
-            </select>
-            <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
-            <button
-              class="small-btn"
-              :class="{ active: logViewerShowTimestamps }"
-              @click="logViewerShowTimestamps = !logViewerShowTimestamps"
-              title="Toggle the docker timestamp shown at the start of each line"
-            >
-              🕐 Time
-            </button>
-            <button
-              class="small-btn"
-              @click="logViewerFullscreen = !logViewerFullscreen"
-              :title="logViewerFullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'"
-            >
-              {{ logViewerFullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
-            </button>
-            <button @click="closeLogViewer">Close</button>
-          </div>
-        </div>
-        <div class="log-view-wrap">
-          <div v-if="logViewerLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-          <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !logViewerShowTimestamps }" ref="logViewerLogView" @scroll="onLogViewerScroll"><div v-for="line in filteredLogViewerLines" :key="line.id" v-html="line.html"></div></pre>
-          <button v-show="!logViewerAtBottom" class="scroll-bottom-btn" @click="scrollLogViewerToBottom" title="Scroll to bottom">&#8595; Bottom</button>
-        </div>
-      </div>
+        :host-id="selectedHostId"
+        :container-id="selectedContainerId"
+        :container-name="selectedContainer ? selectedContainer.name : ''"
+        :with-detail="!!selectedContainer"
+        v-model:fullscreen="logViewerFullscreen"
+        @close="closeLogViewer"
+      ></log-viewer>
 
       <aside v-if="settingsOpen" class="detail-panel">
         <div class="detail-header">
