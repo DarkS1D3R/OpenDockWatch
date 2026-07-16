@@ -20,6 +20,7 @@ const {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getDiskUsageImages,
   getContainerInspect,
 } = require('./docker');
 const db = require('./db');
@@ -218,6 +219,19 @@ api.get('/hosts/:hostId/disk-usage', async (req, res) => {
   if (snapshot && snapshot.diskUsage) return res.json(snapshot.diskUsage);
   try {
     res.json(await getDiskUsage(host));
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
+});
+
+// Separate from the route above (and not part of the regular disk-usage poll/snapshot) since -v
+// is extra work to walk every image's shared/unique layer sizes - only fetched on demand, when
+// the Images disclosure in the Disk tile is actually opened.
+api.get('/hosts/:hostId/disk-usage/images', async (req, res) => {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    res.json(await getDiskUsageImages(host));
   } catch (err) {
     res.status(502).json({ error: err.stderr || err.message });
   }

@@ -69,6 +69,10 @@ export async function apiGetDiskUsage(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage`));
 }
 
+export async function apiGetDiskUsageImages(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`));
+}
+
 export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
   const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));

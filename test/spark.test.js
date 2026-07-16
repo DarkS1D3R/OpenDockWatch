@@ -104,3 +104,37 @@ test('hoverPoints', async (t) => {
     assert.equal(p.x, p.host.x);
   });
 });
+
+test('axisTickIndices', async (t) => {
+  await t.test('returns an empty array for an empty slots array', () => {
+    assert.deepEqual(spark.axisTickIndices([], 4), []);
+  });
+
+  await t.test('picks evenly-spaced indices across a fully-populated array', () => {
+    const slots = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    assert.deepEqual(spark.axisTickIndices(slots, 4), [0, 3, 6, 9]);
+  });
+
+  await t.test('a count of 1 picks only the last index', () => {
+    assert.deepEqual(spark.axisTickIndices([1, 2, 3], 1), [2]);
+  });
+
+  await t.test('skips still-null (not-yet-populated) slots', () => {
+    const slots = [null, null, null, null, null, 6, 7, 8, 9, 10];
+    // Desired positions 0/3/6/9 -> only 6 and 9 land on real data.
+    assert.deepEqual(spark.axisTickIndices(slots, 4), [6, 9]);
+  });
+
+  await t.test('de-dupes when a short real-data run rounds several desired ticks to the same index', () => {
+    const slots = [null, null, null, null, null, null, null, null, 9, 10];
+    // Desired positions 0/3/6 all round into the null region and get skipped; the middle-to-last
+    // desired positions can collapse onto the same real index - only unique indices come back.
+    const result = spark.axisTickIndices(slots, 4);
+    assert.equal(new Set(result).size, result.length);
+    assert.ok(result.every((i) => slots[i] !== null));
+  });
+
+  await t.test('an all-null array returns no ticks', () => {
+    assert.deepEqual(spark.axisTickIndices([null, null, null], 4), []);
+  });
+});

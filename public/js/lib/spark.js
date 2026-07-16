@@ -50,3 +50,20 @@ export function hoverPoints(idx, dockerSlots, hostSlots, peak) {
   if (!docker && !host) return null;
   return { x: (docker || host).x, docker, host };
 }
+
+// Picks up to `count` evenly-spaced indices into a padded slots array for x-axis tick labels,
+// skipping any that land on a still-null (not-yet-populated) slot and de-duping - e.g. a
+// freshly-selected host with only a few real samples would otherwise ask for several ticks that
+// all round to the same early index. Returns indices only (not labels/x-positions), so the caller
+// decides formatting and coordinate mapping - this just answers "which slots have real data to
+// label" for a given desired tick count.
+export function axisTickIndices(slots, count) {
+  const n = slots.length;
+  if (!n || count < 1) return [];
+  const indices = [];
+  for (let k = 0; k < count; k++) {
+    const i = count > 1 ? Math.round((k / (count - 1)) * (n - 1)) : n - 1;
+    if (slots[i] !== null && slots[i] !== undefined && !indices.includes(i)) indices.push(i);
+  }
+  return indices;
+}

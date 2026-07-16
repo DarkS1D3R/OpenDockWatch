@@ -56,6 +56,7 @@ createApp({
       flowFullscreen: false,
 
       hostInfo: null,
+      hostCardFullscreen: false,
       diskUsage: [],
       hostMetricsHistory: [],
       containerMetricsHistory: {},
@@ -352,12 +353,14 @@ createApp({
         v-if="hostInfo && !logViewerFullscreen && !flowFullscreen"
         :host-info="hostInfo"
         :host-name="currentHostName"
+        :host-id="selectedHostId"
         :metrics-history="hostMetricsHistory"
         :disk-usage="diskUsage"
         :with-detail="!!selectedContainer || settingsOpen"
+        v-model:fullscreen="hostCardFullscreen"
       ></host-card>
 
-      <div v-show="!logViewerFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
+      <div v-show="!logViewerFullscreen && !hostCardFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
             <container-list
