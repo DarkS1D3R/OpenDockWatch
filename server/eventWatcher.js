@@ -8,6 +8,10 @@ const broadcaster = new Broadcaster();
 
 const RESTART_BASE_DELAY_MS = 2000;
 const RESTART_MAX_DELAY_MS = 30000;
+// How long a stream has to stay up before we consider it "healthy" and reset the backoff -
+// spawning succeeds even for a doomed connection (e.g. SSH auth failure kills it right after),
+// so resetting on 'spawn' never actually backs off for a permanently unreachable host.
+const HEALTHY_AFTER_MS = 30000;
 
 const watchers = new Map(); // hostId -> { child, stopped, restartDelay }
 
@@ -76,12 +80,16 @@ function startWatcher(host) {
 
   child.on('spawn', () => {
     const s = watchers.get(host.id);
-    if (s) s.restartDelay = RESTART_BASE_DELAY_MS;
+    if (!s) return;
+    s.healthyTimer = setTimeout(() => {
+      s.restartDelay = RESTART_BASE_DELAY_MS;
+    }, HEALTHY_AFTER_MS);
   });
 
   child.on('exit', () => {
     const s = watchers.get(host.id);
     if (!s || s.stopped) return;
+    if (s.healthyTimer) clearTimeout(s.healthyTimer);
     const delay = Math.min(s.restartDelay, RESTART_MAX_DELAY_MS);
     setTimeout(() => {
       const current = watchers.get(host.id);
@@ -108,6 +116,7 @@ function removeHost(hostId) {
   const state = watchers.get(hostId);
   if (!state) return;
   state.stopped = true;
+  if (state.healthyTimer) clearTimeout(state.healthyTimer);
   if (state.child) state.child.kill();
   watchers.delete(hostId);
 }
@@ -115,6 +124,7 @@ function removeHost(hostId) {
 function stop() {
   for (const state of watchers.values()) {
     state.stopped = true;
+    if (state.healthyTimer) clearTimeout(state.healthyTimer);
     if (state.child) state.child.kill();
   }
 }
