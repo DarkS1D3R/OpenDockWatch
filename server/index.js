@@ -274,6 +274,13 @@ api.post('/alerts/:id/ack', (req, res) => {
   res.json({ ok: true });
 });
 
+api.post('/alerts/ack-all', (req, res) => {
+  const hostId = req.query.hostId;
+  if (!hostId) return res.status(400).json({ error: 'hostId required' });
+  const count = db.ackAllAlerts(hostId);
+  res.json({ ok: true, count });
+});
+
 // Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as
 // container control.
 const ALLOWED_WEBHOOK_SCHEMES = new Set(['http:', 'https:', 'discord:', 'ntfy:', 'gotify:', 'gotifys:']);

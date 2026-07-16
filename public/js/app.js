@@ -21,6 +21,7 @@ import {
   apiGetMetricsHistory,
   apiGetAlerts,
   apiAckAlert,
+  apiAckAllAlerts,
 } from './api.js';
 
 const { createApp } = Vue;
@@ -209,6 +210,15 @@ createApp({
         /* best-effort */
       }
     },
+    async ackAllAlertsAction() {
+      if (!this.selectedHostId) return;
+      try {
+        await apiAckAllAlerts(this.selectedHostId);
+        for (const a of this.alerts) a.acknowledged = 1;
+      } catch {
+        /* best-effort */
+      }
+    },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
       for (const id of Object.keys(this.containerMetricsHistory)) {
@@ -374,7 +384,13 @@ createApp({
             @select="selectContainerById"
           ></flow-view>
 
-          <activity-view v-if="view === 'activity'" :host-id="selectedHostId" :alerts="alerts" @ack="ackAlertAction"></activity-view>
+          <activity-view
+            v-if="view === 'activity'"
+            :host-id="selectedHostId"
+            :alerts="alerts"
+            @ack="ackAlertAction"
+            @ack-all="ackAllAlertsAction"
+          ></activity-view>
         </div>
 
         <container-detail

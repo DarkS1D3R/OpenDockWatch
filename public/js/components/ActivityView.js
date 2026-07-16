@@ -13,7 +13,7 @@ export default {
     hostId: { type: String, required: true },
     alerts: { type: Array, default: () => [] },
   },
-  emits: ['ack'],
+  emits: ['ack', 'ack-all'],
   data() {
     return {
       alertSearch: '',
@@ -24,6 +24,11 @@ export default {
     };
   },
   computed: {
+    // Acknowledge-all acts on every open alert for this host, not just the ones the current
+    // search happens to match - clearing the badge should always actually clear the badge.
+    hasUnacknowledged() {
+      return this.alerts.some((a) => !a.acknowledged);
+    },
     searchedAlerts() {
       const q = this.alertSearch.trim().toLowerCase();
       if (!q) return this.alerts;
@@ -110,7 +115,10 @@ export default {
   template: `
     <div class="activity-wrap">
       <div class="activity-column">
-        <h3>Alerts</h3>
+        <div class="log-section-header">
+          <h3>Alerts</h3>
+          <button v-if="hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
+        </div>
         <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
         <div v-else class="activity-list-wrap">

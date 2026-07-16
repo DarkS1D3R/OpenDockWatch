@@ -92,6 +92,10 @@ export async function apiAckAlert(id) {
   return jsonOrThrow(await apiFetch(`/api/alerts/${id}/ack`, { method: 'POST' }));
 }
 
+export async function apiAckAllAlerts(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/alerts/ack-all?hostId=${encodeURIComponent(hostId)}`, { method: 'POST' }));
+}
+
 export async function apiGetWebhookConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook'));
 }
