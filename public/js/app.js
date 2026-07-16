@@ -364,16 +364,15 @@ createApp({
             <p v-if="!loadingContainers && !containers.length" class="muted">No containers found.</p>
           </div>
 
-          <div v-show="view === 'flow'">
-            <flow-view
-              :topology="topology"
-              :host-id="selectedHostId"
-              :selected-container-id="selectedContainerId"
-              :state-filter="stateFilter"
-              v-model:fullscreen="flowFullscreen"
-              @select="selectContainerById"
-            ></flow-view>
-          </div>
+          <flow-view
+            v-show="view === 'flow'"
+            :topology="topology"
+            :host-id="selectedHostId"
+            :selected-container-id="selectedContainerId"
+            :state-filter="stateFilter"
+            v-model:fullscreen="flowFullscreen"
+            @select="selectContainerById"
+          ></flow-view>
 
           <activity-view v-if="view === 'activity'" :host-id="selectedHostId" :alerts="alerts" @ack="ackAlertAction"></activity-view>
         </div>
