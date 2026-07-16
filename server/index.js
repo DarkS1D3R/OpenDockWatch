@@ -20,6 +20,7 @@ const {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getDiskUsageImages,
   getContainerInspect,
 } = require('./docker');
 const db = require('./db');
@@ -223,6 +224,19 @@ api.get('/hosts/:hostId/disk-usage', async (req, res) => {
   }
 });
 
+// Separate from the route above (and not part of the regular disk-usage poll/snapshot) since -v
+// is extra work to walk every image's shared/unique layer sizes - only fetched on demand, when
+// the Images disclosure in the Disk tile is actually opened.
+api.get('/hosts/:hostId/disk-usage/images', async (req, res) => {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    res.json(await getDiskUsageImages(host));
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
+});
+
 api.get('/hosts/:hostId/metrics/history', (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
@@ -272,6 +286,13 @@ api.get('/alerts', (req, res) => {
 api.post('/alerts/:id/ack', (req, res) => {
   db.ackAlert(Number(req.params.id));
   res.json({ ok: true });
+});
+
+api.post('/alerts/ack-all', (req, res) => {
+  const hostId = req.query.hostId;
+  if (!hostId) return res.status(400).json({ error: 'hostId required' });
+  const count = db.ackAllAlerts(hostId);
+  res.json({ ok: true, count });
 });
 
 // Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as

@@ -116,9 +116,10 @@ const stmts = {
     VALUES (@ts, @hostId, @containerId, @containerName, @rule, @severity, @message, 0)
   `),
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ?`),
+  ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0`),
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
-    WHERE host_id = ? AND container_id = ? AND rule = ?
+    WHERE host_id = ? AND container_id IS ? AND rule = ?
     ORDER BY ts DESC LIMIT 1
   `),
   countRestartsSince: db.prepare(`
@@ -180,6 +181,10 @@ function insertAlert(alert) {
 
 function ackAlert(id) {
   stmts.ackAlert.run(id);
+}
+
+function ackAllAlerts(hostId) {
+  return stmts.ackAllAlerts.run(hostId).changes;
 }
 
 function getLastAlertFireTs(hostId, containerId, rule) {
@@ -316,6 +321,7 @@ module.exports = {
   insertAuditLog,
   insertAlert,
   ackAlert,
+  ackAllAlerts,
   getLastAlertFireTs,
   countRestartsSince,
   getRestartCountsByContainer,

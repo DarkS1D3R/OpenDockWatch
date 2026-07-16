@@ -83,9 +83,36 @@ body {
 .meta-item svg {
   flex: none;
 }
+.host-card.fullscreen .host-tiles {
+  flex-direction: column;
+}
+.host-card.fullscreen .host-tile {
+  flex: none;
+  width: 100%;
+}
+.host-card.fullscreen .disk-tile {
+  max-height: none;
+  overflow-y: visible;
+}
 .host-tiles {
   display: flex;
   gap: 12px;
+}
+/* The three tiles already match height via the row's default stretch-to-tallest-sibling
+   behavior (nothing overrides align-items on .host-tiles), which is what keeps the disk tile
+   exactly as tall as CPU/RAM whether the Images disclosure is collapsed or not. The Images list
+   can want more room than that once expanded, though - max-height/overflow cap the disk tile at
+   the CPU/RAM tiles' own height (226px - sparkline 80px + header/legend/padding, all fixed
+   values; revisit this if those change) instead of growing past it and dragging CPU/RAM taller
+   along with it, scrolling internally for the rest. Fullscreen is exempt (see above) - the
+   user's explicitly fine with it growing there. */
+.disk-tile {
+  max-height: 226px;
+  overflow-y: auto;
+}
+.disk-tile .inspect-list {
+  max-height: none;
+  overflow-y: visible;
 }
 .host-tile {
   flex: 1;
@@ -157,6 +184,13 @@ body {
   margin-top: 4px;
   cursor: crosshair;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* Fullscreen host-usage tiles are full-width and stacked instead of sharing a row with their
+   sibling, so there's plenty of vertical room to spare - a taller chart plus the finer grid/axis
+   detail SparkTile switches on for `fullscreen` (see SparkTile.js) makes small fluctuations in
+   the line actually readable instead of being lost in a flat 80px band. */
+.host-card.fullscreen .sparkline {
+  height: 260px;
 }
 .spark-svg {
   width: 100%;
@@ -231,6 +265,40 @@ body {
   stroke-width: 1;
   stroke-dasharray: 2, 2;
   pointer-events: none;
+}
+.spark-hover-time {
+  position: absolute;
+  top: -2px;
+  transform: translate(-50%, -100%);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.spark-axis {
+  position: relative;
+  height: 14px;
+  margin-top: 2px;
+}
+.spark-axis-tick {
+  position: absolute;
+  top: 0;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.spark-axis-tick-left {
+  transform: none;
+}
+.spark-axis-tick-center {
+  transform: translateX(-50%);
+}
+.spark-axis-tick-right {
+  transform: translateX(-100%);
 }
 
 .cell-metric-row {

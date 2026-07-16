@@ -69,6 +69,10 @@ export async function apiGetDiskUsage(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage`));
 }
 
+export async function apiGetDiskUsageImages(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`));
+}
+
 export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
   const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));
@@ -90,6 +94,10 @@ export async function apiGetAlerts(hostId, limit) {
 
 export async function apiAckAlert(id) {
   return jsonOrThrow(await apiFetch(`/api/alerts/${id}/ack`, { method: 'POST' }));
+}
+
+export async function apiAckAllAlerts(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/alerts/ack-all?hostId=${encodeURIComponent(hostId)}`, { method: 'POST' }));
 }
 
 export async function apiGetWebhookConfig() {

@@ -10,6 +10,7 @@ const {
   parseMountsList,
   computeRate,
   computeIoRates,
+  parseDiskUsageImages,
 } = require('../server/docker');
 
 test('parseByteString', async (t) => {
@@ -254,5 +255,70 @@ test('parseMountsList', async (t) => {
     const fullId = 'f'.repeat(64);
     const byId = parseMountsList(`${fullId}\t/data`);
     assert.deepEqual(byId.get(fullId.slice(0, 12)), [{ source: '/data', kind: 'bind' }]);
+  });
+});
+
+test('parseDiskUsageImages', async (t) => {
+  await t.test('maps docker system df -v fields to a clean shape', () => {
+    const images = parseDiskUsageImages({
+      Images: [
+        {
+          ID: 'sha256:abcdef123456789000000000000000000000000000000000000000000000',
+          Repository: 'postgres',
+          Tag: '16-alpine',
+          Size: '420MB',
+          SharedSize: '9.07MB',
+          UniqueSize: '410MB',
+          Containers: '2',
+          CreatedSince: '9 days ago',
+        },
+      ],
+    });
+    assert.deepEqual(images, [
+      {
+        id: 'abcdef123456',
+        repository: 'postgres',
+        tag: '16-alpine',
+        size: '420MB',
+        sharedSize: '9.07MB',
+        uniqueSize: '410MB',
+        containers: 2,
+        createdSince: '9 days ago',
+      },
+    ]);
+  });
+
+  await t.test('sorts largest size first', () => {
+    const images = parseDiskUsageImages({
+      Images: [
+        { ID: 'sha256:aaa', Repository: 'small', Tag: 'latest', Size: '10MB', Containers: '0' },
+        { ID: 'sha256:bbb', Repository: 'big', Tag: 'latest', Size: '2GB', Containers: '0' },
+        { ID: 'sha256:ccc', Repository: 'medium', Tag: 'latest', Size: '500MB', Containers: '0' },
+      ],
+    });
+    assert.deepEqual(
+      images.map((i) => i.repository),
+      ['big', 'medium', 'small']
+    );
+  });
+
+  await t.test('maps <none> repository/tag to null (dangling image)', () => {
+    const images = parseDiskUsageImages({
+      Images: [{ ID: 'sha256:aaa', Repository: '<none>', Tag: '<none>', Size: '10MB', Containers: '0' }],
+    });
+    assert.equal(images[0].repository, null);
+    assert.equal(images[0].tag, null);
+  });
+
+  await t.test('a container count of 0 is not in use', () => {
+    const images = parseDiskUsageImages({
+      Images: [{ ID: 'sha256:aaa', Repository: 'unused', Tag: 'latest', Size: '10MB', Containers: '0' }],
+    });
+    assert.equal(images[0].containers, 0);
+  });
+
+  await t.test('returns an empty array when there are no images', () => {
+    assert.deepEqual(parseDiskUsageImages({ Images: [] }), []);
+    assert.deepEqual(parseDiskUsageImages({}), []);
   });
 });

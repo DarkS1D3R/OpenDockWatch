@@ -380,6 +380,36 @@ async function getDiskUsage(host) {
   }));
 }
 
+// `docker system df -v`'s parsed JSON -> a clean, sorted (largest first - what you'd actually
+// want to look at when deciding what to prune) per-image list. Kept pure and separate from
+// getDiskUsageImages below so it's unit-testable without mocking child_process, same as the
+// other CLI-output parsers in this file.
+function parseDiskUsageImages(data) {
+  const images = (data && data.Images) || [];
+  return images
+    .map((r) => ({
+      id: (r.ID || '').replace(/^sha256:/, '').slice(0, 12),
+      repository: r.Repository && r.Repository !== '<none>' ? r.Repository : null,
+      tag: r.Tag && r.Tag !== '<none>' ? r.Tag : null,
+      size: r.Size,
+      sharedSize: r.SharedSize,
+      uniqueSize: r.UniqueSize,
+      containers: parseInt(r.Containers, 10) || 0,
+      createdSince: r.CreatedSince,
+    }))
+    .sort((a, b) => parseByteString(b.size) - parseByteString(a.size));
+}
+
+// The -v (verbose) form of the same command returns one JSON object with a per-image (and
+// per-container/volume/build-cache) breakdown instead of just the aggregate type rows above -
+// only fetched on demand (see HostCard's Images disclosure), not on the regular disk-usage poll,
+// since walking every image's shared/unique layer sizes is extra work nobody needs unless they
+// actually open the list.
+async function getDiskUsageImages(host) {
+  const stdout = await run([...hostArgs(host), 'system', 'df', '-v', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
+  return parseDiskUsageImages(JSON.parse(stdout.trim()));
+}
+
 module.exports = {
   checkHost,
   listContainers,
@@ -391,6 +421,8 @@ module.exports = {
   getTopology,
   getHostInfo,
   getDiskUsage,
+  getDiskUsageImages,
+  parseDiskUsageImages,
   getContainerInspect,
   parseByteString,
   parseMemUsedBytes,
