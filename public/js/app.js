@@ -1,4 +1,5 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
+import { padSlots, sparkPaths, hoverPoints } from './lib/spark.js';
 import {
   parseMemUsedBytes,
   formatGB,
@@ -204,12 +205,10 @@ createApp({
       );
     },
     cpuChartSlots() {
-      const pad = HOST_METRICS_HISTORY_LEN - this.cpuSamples.length;
-      return pad > 0 ? [...Array(pad).fill(null), ...this.cpuSamples] : this.cpuSamples;
+      return padSlots(this.cpuSamples, HOST_METRICS_HISTORY_LEN);
     },
     memChartSlots() {
-      const pad = HOST_METRICS_HISTORY_LEN - this.memSamples.length;
-      return pad > 0 ? [...Array(pad).fill(null), ...this.memSamples] : this.memSamples;
+      return padSlots(this.memSamples, HOST_METRICS_HISTORY_LEN);
     },
     cpuNow() {
       return this.cpuSamples.length ? this.cpuSamples[this.cpuSamples.length - 1] : 0;
@@ -258,12 +257,10 @@ createApp({
       return this.hostMetricsHistory.map((s) => s.systemMemUsedBytes);
     },
     hostCpuChartSlots() {
-      const pad = HOST_METRICS_HISTORY_LEN - this.hostCpuSamples.length;
-      return pad > 0 ? [...Array(pad).fill(null), ...this.hostCpuSamples] : this.hostCpuSamples;
+      return padSlots(this.hostCpuSamples, HOST_METRICS_HISTORY_LEN);
     },
     hostMemChartSlots() {
-      const pad = HOST_METRICS_HISTORY_LEN - this.hostMemSamples.length;
-      return pad > 0 ? [...Array(pad).fill(null), ...this.hostMemSamples] : this.hostMemSamples;
+      return padSlots(this.hostMemSamples, HOST_METRICS_HISTORY_LEN);
     },
     hostCpuPeak() {
       return this.hostCpuSamples.length ? Math.max(...this.hostCpuSamples) : 0;
@@ -278,25 +275,25 @@ createApp({
       return Math.max(this.memPeak, this.hostMemPeak);
     },
     cpuSparkPaths() {
-      return this.sparkPaths(this.cpuChartSlots, this.sharedCpuPeak);
+      return sparkPaths(this.cpuChartSlots, this.sharedCpuPeak);
     },
     memSparkPaths() {
-      return this.sparkPaths(this.memChartSlots, this.sharedMemPeak);
+      return sparkPaths(this.memChartSlots, this.sharedMemPeak);
     },
     hostCpuSparkPaths() {
-      return this.sparkPaths(this.hostCpuChartSlots, this.sharedCpuPeak);
+      return sparkPaths(this.hostCpuChartSlots, this.sharedCpuPeak);
     },
     hostMemSparkPaths() {
-      return this.sparkPaths(this.hostMemChartSlots, this.sharedMemPeak);
+      return sparkPaths(this.hostMemChartSlots, this.sharedMemPeak);
     },
     // Docker + host-total point at whatever index the mouse is currently over (see
     // onCpuHover/onMemHover), or null when not hovering - drives the crosshair line and the two
     // marker dots drawn on top of each sparkline.
     cpuHoverPoints() {
-      return this.hoverPoints(this.cpuHoverIndex, this.cpuChartSlots, this.hostCpuChartSlots, this.sharedCpuPeak);
+      return hoverPoints(this.cpuHoverIndex, this.cpuChartSlots, this.hostCpuChartSlots, this.sharedCpuPeak);
     },
     memHoverPoints() {
-      return this.hoverPoints(this.memHoverIndex, this.memChartSlots, this.hostMemChartSlots, this.sharedMemPeak);
+      return hoverPoints(this.memHoverIndex, this.memChartSlots, this.hostMemChartSlots, this.sharedMemPeak);
     },
     containerMetricsView() {
       const out = {};
@@ -500,35 +497,6 @@ createApp({
     diskRow(type) {
       return this.diskUsage.find((r) => r.type === type) || null;
     },
-    // x/y (in the 100x30 viewBox) plus the raw value for one sample - shared by sparkPaths
-    // (draws the whole line) and the hover crosshair (draws one point on demand at whatever
-    // index the mouse is over), so both agree on exactly the same coordinate mapping.
-    sparkPoint(slots, peak, i) {
-      const w = 100;
-      const h = 30;
-      const topPad = 3;
-      const usable = h - topPad;
-      const v = slots[i];
-      if (v === null || v === undefined) return null;
-      const n = slots.length;
-      const x = n > 1 ? (i / (n - 1)) * w : w;
-      const y = peak ? topPad + usable - (v / peak) * usable : h;
-      return { x, y, v };
-    },
-    sparkPaths(slots, peak) {
-      const h = 30;
-      const pts = [];
-      for (let i = 0; i < slots.length; i++) {
-        const p = this.sparkPoint(slots, peak, i);
-        if (p) pts.push(p);
-      }
-      if (!pts.length) return { line: '', area: '', dot: null };
-      const line = 'M' + pts.map((p) => p.x.toFixed(2) + ',' + p.y.toFixed(2)).join(' L');
-      const first = pts[0];
-      const last = pts[pts.length - 1];
-      const area = `${line} L${last.x.toFixed(2)},${h} L${first.x.toFixed(2)},${h} Z`;
-      return { line, area, dot: { x: last.x, y: last.y } };
-    },
     // Maps a mousemove clientX over a .sparkline element to the nearest sample index - shared by
     // both tiles since cpuChartSlots/hostCpuChartSlots/memChartSlots/hostMemChartSlots are all
     // padded to the same HOST_METRICS_HISTORY_LEN width (see cpuChartSlots).
@@ -543,16 +511,6 @@ createApp({
     },
     onMemHover(event) {
       this.memHoverIndex = this.sparkHoverIndex(event);
-    },
-    // One point on the Docker line and one on the host-total line at the same hovered index -
-    // null fields (rather than a null point) when a series has no value there, e.g. hovering an
-    // index from before host-total sampling started, or on a remote host with no host data at all.
-    hoverPoints(idx, dockerSlots, hostSlots, peak) {
-      if (idx == null) return null;
-      const docker = this.sparkPoint(dockerSlots, peak, idx);
-      const host = this.sparkPoint(hostSlots, peak, idx);
-      if (!docker && !host) return null;
-      return { x: (docker || host).x, docker, host };
     },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
