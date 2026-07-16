@@ -1,5 +1,6 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
 import { padSlots, sparkPaths, hoverPoints } from './lib/spark.js';
+import { createLogStream } from './lib/logStream.js';
 import {
   parseMemUsedBytes,
   formatGB,
@@ -103,7 +104,6 @@ createApp({
       selectedContainerId: null,
       containerInspect: null,
       previewLogLines: [],
-      previewEventSource: null,
       previewAtBottom: true,
       previewLoading: false,
 
@@ -113,7 +113,6 @@ createApp({
       logViewerRegexMode: false,
       logViewerLevels: { error: true, warn: true, info: true, debug: true },
       logViewerLines: [],
-      logViewerEventSource: null,
       logViewerAtBottom: true,
       logViewerLoading: false,
       logViewerFullscreen: false,
@@ -345,8 +344,6 @@ createApp({
       this.closePreviewStream();
       this.closeLogViewer();
       this.previewLogLines = [];
-      this._previewBuffer = [];
-      this._previewFlushPending = false;
       this.previewLoading = false;
       if (this.cy) {
         this.cy.nodes().removeClass('selected');
@@ -379,17 +376,10 @@ createApp({
     },
   },
   created() {
-    // Plain (non-reactive) buffers for batching high-volume log streams - see
-    // queuePreviewLine/queueLogViewerLine. Keeping these off the reactive `data()`
-    // object avoids Vue tracking every push into them.
-    this._previewBuffer = [];
-    this._previewFlushPending = false;
-    this._previewNextId = 0;
-    this._previewLoadingTimer = null;
-    this._logViewerBuffer = [];
-    this._logViewerFlushPending = false;
-    this._logViewerNextId = 0;
-    this._logViewerLoadingTimer = null;
+    // Plain (non-reactive) log stream handles - see openPreviewStream/startLogViewerStream.
+    // Keeping these off the reactive `data()` object avoids Vue tracking their internals.
+    this._previewStream = null;
+    this._logViewerStream = null;
   },
   async mounted() {
     try {
@@ -790,50 +780,26 @@ createApp({
     },
     openPreviewStream(id) {
       this.previewAtBottom = true;
-      this.previewLoading = true;
-      this._previewBuffer = [];
-      clearTimeout(this._previewLoadingTimer);
-      // A container with no log output at all would otherwise never clear the
-      // spinner, since that only happens once a line actually arrives.
-      this._previewLoadingTimer = setTimeout(() => {
-        this.previewLoading = false;
-      }, 2000);
-      this.previewEventSource = new EventSource(logsUrl(this.selectedHostId, id, PREVIEW_TAIL));
-      this.previewEventSource.onmessage = (e) => {
-        this.queuePreviewLine(e.data);
-      };
-      this.previewEventSource.onerror = () => {
-        this.queuePreviewLine('[opendockwatch] log stream disconnected');
-      };
+      this._previewStream = createLogStream({
+        url: logsUrl(this.selectedHostId, id, PREVIEW_TAIL),
+        onFlush: (lines) => this.appendPreviewLines(lines),
+        onLoadingChange: (loading) => {
+          this.previewLoading = loading;
+        },
+      });
+      this._previewStream.start();
     },
     closePreviewStream() {
-      clearTimeout(this._previewLoadingTimer);
-      if (this.previewEventSource) {
-        this.previewEventSource.close();
-        this.previewEventSource = null;
+      if (this._previewStream) {
+        this._previewStream.stop();
+        this._previewStream = null;
       }
     },
-    // Log lines can arrive in a fast burst (e.g. a large tail on open), and each one
-    // used to trigger its own reactive push + array-splice + render. On a big backlog
-    // that was thousands of full-list re-renders in a row and froze the tab. Buffering
-    // them and flushing once per animation frame turns that into a handful of renders.
-    queuePreviewLine(text) {
-      this._previewBuffer.push(text);
-      if (this._previewFlushPending) return;
-      this._previewFlushPending = true;
-      requestAnimationFrame(() => this.flushPreviewLines());
-    },
-    flushPreviewLines() {
-      this._previewFlushPending = false;
-      const lines = this._previewBuffer;
-      this._previewBuffer = [];
-      if (!lines.length) return;
-      for (const text of lines) this.previewLogLines.push({ id: this._previewNextId++, text });
+    appendPreviewLines(lines) {
+      for (const line of lines) this.previewLogLines.push(line);
       if (this.previewLogLines.length > MAX_LOG_LINES) {
         this.previewLogLines.splice(0, this.previewLogLines.length - MAX_LOG_LINES);
       }
-      clearTimeout(this._previewLoadingTimer);
-      this.previewLoading = false;
       if (this.previewAtBottom) {
         this.$nextTick(() => {
           const el = this.$refs.previewLogView;
@@ -863,53 +829,32 @@ createApp({
     closeLogViewer() {
       this.logViewerOpen = false;
       this.logViewerFullscreen = false;
-      clearTimeout(this._logViewerLoadingTimer);
-      if (this.logViewerEventSource) {
-        this.logViewerEventSource.close();
-        this.logViewerEventSource = null;
+      if (this._logViewerStream) {
+        this._logViewerStream.stop();
+        this._logViewerStream = null;
       }
       this.logViewerLines = [];
-      this._logViewerBuffer = [];
-      this._logViewerFlushPending = false;
       this.logViewerLoading = false;
     },
     startLogViewerStream() {
       if (!this.selectedContainerId) return;
-      if (this.logViewerEventSource) this.logViewerEventSource.close();
+      if (this._logViewerStream) this._logViewerStream.stop();
       this.logViewerLines = [];
-      this._logViewerBuffer = [];
-      this._logViewerNextId = 0;
       this.logViewerAtBottom = true;
-      this.logViewerLoading = true;
-      clearTimeout(this._logViewerLoadingTimer);
-      this._logViewerLoadingTimer = setTimeout(() => {
-        this.logViewerLoading = false;
-      }, 2000);
-      this.logViewerEventSource = new EventSource(logsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail));
-      this.logViewerEventSource.onmessage = (e) => {
-        this.queueLogViewerLine(e.data);
-      };
-      this.logViewerEventSource.onerror = () => {
-        this.queueLogViewerLine('[opendockwatch] log stream disconnected');
-      };
+      this._logViewerStream = createLogStream({
+        url: logsUrl(this.selectedHostId, this.selectedContainerId, this.logViewerTail),
+        onFlush: (lines) => this.appendLogViewerLines(lines),
+        onLoadingChange: (loading) => {
+          this.logViewerLoading = loading;
+        },
+      });
+      this._logViewerStream.start();
     },
-    queueLogViewerLine(text) {
-      this._logViewerBuffer.push(text);
-      if (this._logViewerFlushPending) return;
-      this._logViewerFlushPending = true;
-      requestAnimationFrame(() => this.flushLogViewerLines());
-    },
-    flushLogViewerLines() {
-      this._logViewerFlushPending = false;
-      const lines = this._logViewerBuffer;
-      this._logViewerBuffer = [];
-      if (!lines.length) return;
-      for (const text of lines) this.logViewerLines.push({ id: this._logViewerNextId++, text });
+    appendLogViewerLines(lines) {
+      for (const line of lines) this.logViewerLines.push(line);
       if (this.logViewerLines.length > MAX_LOG_LINES) {
         this.logViewerLines.splice(0, this.logViewerLines.length - MAX_LOG_LINES);
       }
-      clearTimeout(this._logViewerLoadingTimer);
-      this.logViewerLoading = false;
       if (this.logViewerAtBottom) {
         this.$nextTick(() => {
           const el = this.$refs.logViewerLogView;
