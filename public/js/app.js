@@ -1,9 +1,9 @@
-import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
-import { createLogStream } from './lib/logStream.js';
+import { POLL_MS, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
 import SparkTile from './components/SparkTile.js';
 import HostCard from './components/HostCard.js';
 import LogViewer from './components/LogViewer.js';
-import { parseMemUsedBytes, formatGB, formatRatePair, healthColor, healthLabel, highlightLine } from './format.js';
+import ContainerDetail from './components/ContainerDetail.js';
+import { parseMemUsedBytes, formatGB, healthColor, healthLabel } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -11,8 +11,6 @@ import {
   apiGetTopology,
   apiGetHostInfo,
   apiContainerAction,
-  apiGetContainerInspect,
-  logsUrl,
   apiLogout,
   apiGetSession,
   apiGetDiskUsage,
@@ -55,6 +53,7 @@ createApp({
     SparkTile,
     HostCard,
     LogViewer,
+    ContainerDetail,
   },
   data() {
     return {
@@ -97,10 +96,6 @@ createApp({
       eventsAtTop: true,
 
       selectedContainerId: null,
-      containerInspect: null,
-      previewLogLines: [],
-      previewAtBottom: true,
-      previewLoading: false,
 
       logViewerOpen: false,
       logViewerFullscreen: false,
@@ -201,20 +196,15 @@ createApp({
     },
   },
   watch: {
+    // Preview-stream/inspect state now lives entirely in ContainerDetail, keyed off its own
+    // `container.id` watcher - this only needs to close the (sibling) log viewer and keep the
+    // Flow view's cy selection in sync.
     selectedContainerId(newId) {
-      this.closePreviewStream();
       this.closeLogViewer();
-      this.previewLogLines = [];
-      this.previewLoading = false;
       if (this.cy) {
         this.cy.nodes().removeClass('selected');
         if (newId) this.cy.$id(newId).addClass('selected');
         if (this.view === 'flow') this.applyFlowFading();
-      }
-      this.containerInspect = null;
-      if (newId) {
-        this.openPreviewStream(newId);
-        this.fetchContainerInspect(newId);
       }
     },
     stateFilter() {
@@ -236,11 +226,6 @@ createApp({
       if (this.view === 'flow' && this.flowMode === 'tree') this.renderGraph();
     },
   },
-  created() {
-    // Plain (non-reactive) log stream handle - see openPreviewStream. Keeping it off the
-    // reactive `data()` object avoids Vue tracking its internals.
-    this._previewStream = null;
-  },
   async mounted() {
     try {
       const session = await apiGetSession();
@@ -256,7 +241,6 @@ createApp({
   },
   beforeUnmount() {
     this.stopPolling();
-    this.closePreviewStream();
     this.closeLogViewer();
     this.closeActivityStream();
     if (this.cy) this.cy.destroy();
@@ -440,17 +424,6 @@ createApp({
         /* stats are best-effort */
       }
     },
-    async fetchContainerInspect(id) {
-      if (!this.selectedHostId) return;
-      try {
-        const inspect = await apiGetContainerInspect(this.selectedHostId, id);
-        // The user may have clicked a different container (or closed the panel) before this
-        // resolved - only apply it if it's still the one being looked at.
-        if (this.selectedContainerId === id) this.containerInspect = inspect;
-      } catch {
-        /* inspect details are best-effort */
-      }
-    },
     async fetchTopology() {
       if (!this.selectedHostId) return;
       try {
@@ -618,47 +591,6 @@ createApp({
     closeDetail() {
       this.selectedContainerId = null;
     },
-    openPreviewStream(id) {
-      this.previewAtBottom = true;
-      this._previewStream = createLogStream({
-        url: logsUrl(this.selectedHostId, id, PREVIEW_TAIL),
-        onFlush: (lines) => this.appendPreviewLines(lines),
-        onLoadingChange: (loading) => {
-          this.previewLoading = loading;
-        },
-      });
-      this._previewStream.start();
-    },
-    closePreviewStream() {
-      if (this._previewStream) {
-        this._previewStream.stop();
-        this._previewStream = null;
-      }
-    },
-    appendPreviewLines(lines) {
-      for (const line of lines) this.previewLogLines.push(line);
-      if (this.previewLogLines.length > MAX_LOG_LINES) {
-        this.previewLogLines.splice(0, this.previewLogLines.length - MAX_LOG_LINES);
-      }
-      if (this.previewAtBottom) {
-        this.$nextTick(() => {
-          const el = this.$refs.previewLogView;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      }
-    },
-    onPreviewScroll() {
-      const el = this.$refs.previewLogView;
-      if (el) this.previewAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    },
-    scrollPreviewToBottom() {
-      this.previewAtBottom = true;
-      const el = this.$refs.previewLogView;
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    formatPreviewLine(text) {
-      return highlightLine(text, '', false);
-    },
     openLogViewer() {
       if (!this.selectedContainerId) return;
       this.logViewerOpen = true;
@@ -678,18 +610,6 @@ createApp({
     },
     fmtGB(bytes) {
       return formatGB(bytes || 0);
-    },
-    fmtRatePair(a, b) {
-      return formatRatePair(a, b);
-    },
-    fmtCreated(iso) {
-      return iso ? new Date(iso).toLocaleString() : '—';
-    },
-    fmtRestartPolicy(inspect) {
-      if (!inspect || !inspect.restartPolicy) return '—';
-      const labels = { no: 'No', always: 'Always', 'unless-stopped': 'Unless stopped', 'on-failure': 'On failure' };
-      const label = labels[inspect.restartPolicy] || inspect.restartPolicy;
-      return inspect.restartPolicy === 'on-failure' && inspect.restartMaxRetries ? `${label} (max ${inspect.restartMaxRetries})` : label;
     },
     healthDotColor(health) {
       return healthColor(health);
@@ -1099,75 +1019,17 @@ createApp({
           </div>
         </div>
 
-        <aside v-if="selectedContainer" class="detail-panel">
-          <div class="detail-header">
-            <div>
-              <strong>{{ selectedContainer.name }}</strong>
-              <div class="muted small">{{ selectedContainer.composeProject || 'ungrouped' }} / {{ selectedContainer.composeService || '—' }}</div>
-            </div>
-            <button @click="closeDetail">✕</button>
-          </div>
-          <div class="detail-body">
-            <div class="detail-row"><span class="label">Status</span><span :class="stateClass(selectedContainer)">{{ selectedContainer.status }}</span></div>
-            <div class="detail-row" v-if="selectedContainer.health"><span class="label">Health</span><span><span class="health-dot" :style="{ background: healthDotColor(selectedContainer.health) }"></span> {{ healthTitle(selectedContainer.health) }}</span></div>
-            <div class="detail-row" v-if="selectedContainer.restartCount1h"><span class="label">Restarts (1h)</span><span>{{ selectedContainer.restartCount1h }}</span></div>
-            <div class="detail-row"><span class="label">Image</span><span>{{ selectedContainer.image }}</span></div>
-            <div class="detail-row"><span class="label">CPU</span><span>{{ statFor(selectedContainer.id).cpuPerc || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Memory</span><span>{{ statFor(selectedContainer.id).memUsage || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Net I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).netRxRate, statFor(selectedContainer.id).netTxRate) }}</span></div>
-            <div class="detail-row"><span class="label">Block I/O</span><span>{{ fmtRatePair(statFor(selectedContainer.id).blockReadRate, statFor(selectedContainer.id).blockWriteRate) }}</span></div>
-            <div class="detail-row"><span class="label">Ports</span><span>{{ selectedContainer.ports || '—' }}</span></div>
-            <div class="detail-row"><span class="label">Networks</span><span>{{ selectedContainer.networks.join(', ') || '—' }}</span></div>
-
-            <template v-if="containerInspect">
-              <div class="detail-row"><span class="label">Created</span><span>{{ fmtCreated(containerInspect.createdAt) }}</span></div>
-              <div class="detail-row"><span class="label">Restart Policy</span><span>{{ fmtRestartPolicy(containerInspect) }}</span></div>
-
-              <details class="inspect-section">
-                <summary>Environment ({{ containerInspect.env.length }})</summary>
-                <div class="inspect-list">
-                  <div v-for="(line, i) in containerInspect.env" :key="i" class="inspect-line mono">{{ line }}</div>
-                  <div v-if="!containerInspect.env.length" class="muted small">None</div>
-                </div>
-              </details>
-
-              <details class="inspect-section">
-                <summary>Mounts ({{ containerInspect.mounts.length }})</summary>
-                <div class="inspect-list">
-                  <div v-for="(m, i) in containerInspect.mounts" :key="i" class="inspect-line">
-                    <span class="mono">{{ m.source || m.type }}</span> → <span class="mono">{{ m.destination }}</span>
-                    <span class="muted small">({{ m.rw ? 'rw' : 'ro' }})</span>
-                  </div>
-                  <div v-if="!containerInspect.mounts.length" class="muted small">None</div>
-                </div>
-              </details>
-
-              <details class="inspect-section">
-                <summary>Labels ({{ Object.keys(containerInspect.labels).length }})</summary>
-                <div class="inspect-list">
-                  <div v-for="(v, k) in containerInspect.labels" :key="k" class="inspect-line mono">{{ k }}={{ v }}</div>
-                  <div v-if="!Object.keys(containerInspect.labels).length" class="muted small">None</div>
-                </div>
-              </details>
-            </template>
-
-            <div class="detail-actions" v-if="isAdmin">
-              <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'start')">Start</button>
-              <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'stop')">Stop</button>
-              <button :disabled="!!actionInFlight[selectedContainer.id]" @click="doAction(selectedContainer, 'restart')">Restart</button>
-            </div>
-
-            <div class="log-section-header">
-              <h3>Logs</h3>
-              <button class="small-btn" @click="openLogViewer" title="Open larger log view with filtering">Log Viewer ⤢</button>
-            </div>
-            <div class="log-view-wrap">
-              <div v-if="previewLoading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-              <pre class="log-view detail-log" ref="previewLogView" @scroll="onPreviewScroll"><div v-for="line in previewLogLines" :key="line.id" v-html="formatPreviewLine(line.text)"></div></pre>
-              <button v-show="!previewAtBottom" class="scroll-bottom-btn" @click="scrollPreviewToBottom" title="Scroll to bottom">&#8595; Bottom</button>
-            </div>
-          </div>
-        </aside>
+        <container-detail
+          v-if="selectedContainer"
+          :container="selectedContainer"
+          :stats="stats"
+          :host-id="selectedHostId"
+          :is-admin="isAdmin"
+          :action-in-flight="actionInFlight"
+          @close="closeDetail"
+          @action="doAction"
+          @open-log-viewer="openLogViewer"
+        ></container-detail>
       </div>
 
       <log-viewer
