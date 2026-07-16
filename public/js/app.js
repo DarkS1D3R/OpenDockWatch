@@ -5,7 +5,8 @@ import LogViewer from './components/LogViewer.js';
 import ContainerDetail from './components/ContainerDetail.js';
 import ActivityView from './components/ActivityView.js';
 import SettingsPanel from './components/SettingsPanel.js';
-import { parseMemUsedBytes, formatGB, healthColor, healthLabel } from './format.js';
+import ContainerList from './components/ContainerList.js';
+import { parseMemUsedBytes } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -45,6 +46,7 @@ createApp({
     ContainerDetail,
     ActivityView,
     SettingsPanel,
+    ContainerList,
   },
   data() {
     return {
@@ -58,7 +60,6 @@ createApp({
       loadingContainers: false,
       pollTimer: null,
       actionInFlight: {},
-      collapsedGroups: {},
 
       view: 'list', // 'list' | 'flow'
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
@@ -487,27 +488,6 @@ createApp({
       this.logViewerOpen = false;
       this.logViewerFullscreen = false;
     },
-    toggleGroup(name) {
-      this.collapsedGroups = { ...this.collapsedGroups, [name]: !this.collapsedGroups[name] };
-    },
-    statFor(id) {
-      return this.stats[id] || {};
-    },
-    metricsFor(id) {
-      return this.containerMetricsView[id] || { cpu: [], mem: [], cpuPeak: 0, memPeak: 0 };
-    },
-    fmtGB(bytes) {
-      return formatGB(bytes || 0);
-    },
-    healthDotColor(health) {
-      return healthColor(health);
-    },
-    healthTitle(health) {
-      return healthLabel(health);
-    },
-    stateClass(container) {
-      return container.state === 'running' ? 'state-running' : 'state-stopped';
-    },
     async logout() {
       await apiLogout();
       window.location.href = '/login';
@@ -561,85 +541,17 @@ createApp({
       <div v-show="!logViewerFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
-            <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
-              <div class="group-header" @click="toggleGroup(groupName)">
-                <span class="chevron" :class="{open: !collapsedGroups[groupName]}">&#9656;</span>
-                {{ groupName }} <span class="muted">({{ items.length }})</span>
-              </div>
-              <table v-show="!collapsedGroups[groupName]" class="containers">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Image</th>
-                    <th>Status</th>
-                    <th>CPU</th>
-                    <th>Memory</th>
-                    <th>Ports</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="c in items"
-                    :key="c.id"
-                    class="row-clickable"
-                    :class="{'row-selected': c.id === selectedContainerId}"
-                    @click="selectContainerById(c.id)"
-                  >
-                    <td>{{ c.name }}</td>
-                    <td class="muted">{{ c.image }}</td>
-                    <td>
-                      <span :class="stateClass(c)">{{ c.status }}</span>
-                      <span
-                        v-if="c.health"
-                        class="health-dot"
-                        :style="{ background: healthDotColor(c.health) }"
-                        :title="healthTitle(c.health)"
-                      ></span>
-                      <span v-if="c.restartCount1h" class="restart-badge" title="Restarts in the last hour">⟳ {{ c.restartCount1h }}</span>
-                    </td>
-                    <td class="muted">
-                      <div class="cell-metric-row">
-                        <span>{{ statFor(c.id).cpuPerc || '—' }}</span>
-                        <div class="mini-spark">
-                          <div
-                            v-for="(v, i) in metricsFor(c.id).cpu"
-                            :key="i"
-                            class="mini-bar mini-cpu"
-                            :class="{ current: i === metricsFor(c.id).cpu.length - 1 }"
-                            :style="{ height: (metricsFor(c.id).cpuPeak ? (v / metricsFor(c.id).cpuPeak * 100) : 0) + '%' }"
-                          ></div>
-                        </div>
-                      </div>
-                    </td>
-                    <td class="muted">
-                      <div class="cell-metric-row">
-                        <span>{{ statFor(c.id).memUsage || '—' }}</span>
-                        <div class="mini-spark">
-                          <div
-                            v-for="(v, i) in metricsFor(c.id).mem"
-                            :key="i"
-                            class="mini-bar mini-mem"
-                            :class="{ current: i === metricsFor(c.id).mem.length - 1 }"
-                            :style="{ height: (metricsFor(c.id).memPeak ? (v / metricsFor(c.id).memPeak * 100) : 0) + '%' }"
-                          ></div>
-                        </div>
-                      </div>
-                    </td>
-                    <td class="muted" :title="c.ports">{{ c.ports }}</td>
-                    <td class="actions" @click.stop>
-                      <button @click="openLogsFor(c.id)" title="Open the log viewer for this container">Logs</button>
-                      <template v-if="isAdmin">
-                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'start')">Start</button>
-                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'stop')">Stop</button>
-                        <button :disabled="!!actionInFlight[c.id]" @click="doAction(c, 'restart')">Restart</button>
-                      </template>
-                      <span v-else class="muted small">read-only</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <container-list
+              :grouped-containers="groupedContainers"
+              :stats="stats"
+              :metrics-view="containerMetricsView"
+              :action-in-flight="actionInFlight"
+              :selected-container-id="selectedContainerId"
+              :is-admin="isAdmin"
+              @select="selectContainerById"
+              @action="doAction"
+              @open-logs="openLogsFor"
+            ></container-list>
             <p v-if="!loadingContainers && !containers.length" class="muted">No containers found.</p>
           </div>
 
