@@ -1,8 +1,9 @@
-import { POLL_MS, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
+import { POLL_MS, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN } from './constants.js';
 import SparkTile from './components/SparkTile.js';
 import HostCard from './components/HostCard.js';
 import LogViewer from './components/LogViewer.js';
 import ContainerDetail from './components/ContainerDetail.js';
+import ActivityView from './components/ActivityView.js';
 import { parseMemUsedBytes, formatGB, healthColor, healthLabel } from './format.js';
 import {
   apiGetHosts,
@@ -15,8 +16,6 @@ import {
   apiGetSession,
   apiGetDiskUsage,
   apiGetMetricsHistory,
-  apiGetEvents,
-  eventsStreamUrl,
   apiGetAlerts,
   apiAckAlert,
   apiGetWebhookConfig,
@@ -54,6 +53,7 @@ createApp({
     HostCard,
     LogViewer,
     ContainerDetail,
+    ActivityView,
   },
   data() {
     return {
@@ -88,12 +88,6 @@ createApp({
       containerMetricsHistory: {},
 
       alerts: [],
-      alertSearch: '',
-      activityEvents: [],
-      eventSearch: '',
-      activityEventSource: null,
-      alertsAtTop: true,
-      eventsAtTop: true,
 
       selectedContainerId: null,
 
@@ -162,23 +156,6 @@ createApp({
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
     },
-    searchedAlerts() {
-      const q = this.alertSearch.trim().toLowerCase();
-      if (!q) return this.alerts;
-      return this.alerts.filter(
-        (a) =>
-          (a.rule || '').toLowerCase().includes(q) ||
-          (a.message || '').toLowerCase().includes(q) ||
-          (a.containerName || '').toLowerCase().includes(q)
-      );
-    },
-    searchedActivityEvents() {
-      const q = this.eventSearch.trim().toLowerCase();
-      if (!q) return this.activityEvents;
-      return this.activityEvents.filter(
-        (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
-      );
-    },
     containerMetricsView() {
       const out = {};
       for (const id of Object.keys(this.containerMetricsHistory)) {
@@ -242,7 +219,6 @@ createApp({
   beforeUnmount() {
     this.stopPolling();
     this.closeLogViewer();
-    this.closeActivityStream();
     if (this.cy) this.cy.destroy();
   },
   methods: {
@@ -257,8 +233,6 @@ createApp({
       this.hostMetricsHistory = [];
       this.containerMetricsHistory = {};
       this.alerts = [];
-      this.closeActivityStream();
-      this.activityEvents = [];
       if (this.cy) {
         this.cy.destroy();
         this.cy = null;
@@ -270,7 +244,6 @@ createApp({
       this.fetchHostInfo();
       this.fetchDiskUsage();
       this.refresh();
-      if (this.view === 'activity') this.enterActivityView();
       this.pollTimer = setInterval(() => this.refresh(), POLL_MS);
     },
     stopPolling() {
@@ -347,62 +320,7 @@ createApp({
     async setView(v) {
       this.view = v;
       if (v !== 'flow') this.flowFullscreen = false;
-      if (v === 'flow') {
-        await this.fetchTopology();
-      } else if (v === 'activity') {
-        await this.enterActivityView();
-      } else {
-        this.closeActivityStream();
-      }
-    },
-    async enterActivityView() {
-      if (!this.selectedHostId) return;
-      try {
-        this.activityEvents = await apiGetEvents(this.selectedHostId, { limit: 200 });
-      } catch {
-        /* events are best-effort */
-      }
-      this.openActivityStream();
-    },
-    openActivityStream() {
-      this.closeActivityStream();
-      this.activityEventSource = new EventSource(eventsStreamUrl(this.selectedHostId));
-      this.activityEventSource.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          this.activityEvents.unshift(event);
-          if (this.activityEvents.length > MAX_ACTIVITY_EVENTS) this.activityEvents.length = MAX_ACTIVITY_EVENTS;
-        } catch {
-          /* ignore malformed event */
-        }
-      };
-    },
-    closeActivityStream() {
-      if (this.activityEventSource) {
-        this.activityEventSource.close();
-        this.activityEventSource = null;
-      }
-    },
-    formatEventTime(ts) {
-      return new Date(ts).toLocaleTimeString();
-    },
-    onAlertsScroll() {
-      const el = this.$refs.alertsListView;
-      if (el) this.alertsAtTop = el.scrollTop < 40;
-    },
-    scrollAlertsToTop() {
-      const el = this.$refs.alertsListView;
-      if (el) el.scrollTop = 0;
-      this.alertsAtTop = true;
-    },
-    onEventsScroll() {
-      const el = this.$refs.eventsListView;
-      if (el) this.eventsAtTop = el.scrollTop < 40;
-    },
-    scrollEventsToTop() {
-      const el = this.$refs.eventsListView;
-      if (el) el.scrollTop = 0;
-      this.eventsAtTop = true;
+      if (v === 'flow') await this.fetchTopology();
     },
     async fetchContainers() {
       if (!this.selectedHostId) return;
@@ -976,47 +894,7 @@ createApp({
             </p>
           </div>
 
-          <div v-show="view === 'activity'" class="activity-wrap">
-            <div class="activity-column">
-              <h3>Alerts</h3>
-              <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
-              <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
-              <div v-else class="activity-list-wrap">
-                <div class="activity-list" ref="alertsListView" @scroll="onAlertsScroll">
-                  <div v-for="a in searchedAlerts" :key="a.id" class="alert-row" :class="'severity-' + a.severity">
-                    <div class="alert-row-main">
-                      <strong>{{ a.rule }}</strong>
-                      <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
-                    </div>
-                    <div class="alert-message">{{ a.message }}</div>
-                    <button v-if="!a.acknowledged" class="small-btn" @click="ackAlertAction(a)">Acknowledge</button>
-                    <span v-else class="ack-tick">✓ Acknowledged</span>
-                  </div>
-                </div>
-                <button v-show="!alertsAtTop" class="scroll-top-btn" @click="scrollAlertsToTop" title="Scroll to top">&#8593; Top</button>
-              </div>
-            </div>
-            <div class="activity-column">
-              <h3>Events</h3>
-              <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
-              <p v-if="!searchedActivityEvents.length" class="muted">{{ activityEvents.length ? 'No matching events.' : 'No events yet.' }}</p>
-              <div v-else class="activity-list-wrap">
-                <div class="activity-list" ref="eventsListView" @scroll="onEventsScroll">
-                  <table class="containers">
-                    <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
-                    <tbody>
-                      <tr v-for="(e, i) in searchedActivityEvents" :key="i">
-                        <td class="muted">{{ formatEventTime(e.ts) }}</td>
-                        <td>{{ e.containerName || e.containerId || '—' }}</td>
-                        <td class="muted">{{ e.action }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <button v-show="!eventsAtTop" class="scroll-top-btn" @click="scrollEventsToTop" title="Scroll to top">&#8593; Top</button>
-              </div>
-            </div>
-          </div>
+          <activity-view v-if="view === 'activity'" :host-id="selectedHostId" :alerts="alerts" @ack="ackAlertAction"></activity-view>
         </div>
 
         <container-detail
