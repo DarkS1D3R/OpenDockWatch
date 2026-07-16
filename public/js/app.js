@@ -1,6 +1,7 @@
 import { POLL_MS, MAX_LOG_LINES, PREVIEW_TAIL, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN, MAX_ACTIVITY_EVENTS } from './constants.js';
 import { createLogStream } from './lib/logStream.js';
 import SparkTile from './components/SparkTile.js';
+import HostCard from './components/HostCard.js';
 import {
   parseMemUsedBytes,
   formatGB,
@@ -61,6 +62,7 @@ const { createApp } = Vue;
 createApp({
   components: {
     SparkTile,
+    HostCard,
   },
   data() {
     return {
@@ -178,12 +180,6 @@ createApp({
       const h = this.hosts.find((h) => h.id === this.selectedHostId);
       return h ? h.name : '';
     },
-    cpuSamples() {
-      return this.hostMetricsHistory.map((s) => s.cpuPercent);
-    },
-    memSamples() {
-      return this.hostMetricsHistory.map((s) => s.memUsedBytes);
-    },
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
     },
@@ -203,29 +199,6 @@ createApp({
       return this.activityEvents.filter(
         (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
       );
-    },
-    // Host-total figures - real host-wide CPU/mem (every process, not just this app's
-    // containers), local-host-only (null fields for a remote SSH host) - see hostUsage.js. Pulled
-    // from the same hostMetricsHistory rows the Docker cpuSamples/memSamples above already use
-    // (metricsCollector writes both into the same host_metrics row every poll), rather than a
-    // separate client-side buffer - that was tried first, but since it had no server-persisted
-    // history, a page refresh emptied it while the Docker numbers reloaded instantly from the DB,
-    // and its samples were positioned by stretching whatever few points existed across the full
-    // width each poll rather than a fixed per-slot position, which reflowed/reshuffled the whole
-    // line every 5s instead of extending it. Deriving from hostMetricsHistory fixes both: same
-    // persisted history behavior as Docker's own numbers, and the same fixed-slot positioning
-    // SparkTile applies to both series.
-    hostSystemUsage() {
-      const last = this.hostMetricsHistory[this.hostMetricsHistory.length - 1];
-      return last && last.systemMemTotalBytes != null
-        ? { cpuPercent: last.systemCpuPercent, memUsedBytes: last.systemMemUsedBytes, memTotalBytes: last.systemMemTotalBytes }
-        : null;
-    },
-    hostCpuSamples() {
-      return this.hostMetricsHistory.map((s) => s.systemCpuPercent);
-    },
-    hostMemSamples() {
-      return this.hostMetricsHistory.map((s) => s.systemMemUsedBytes);
     },
     containerMetricsView() {
       const out = {};
@@ -414,9 +387,6 @@ createApp({
       } catch {
         /* best-effort */
       }
-    },
-    diskRow(type) {
-      return this.diskUsage.find((r) => r.type === type) || null;
     },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
@@ -810,9 +780,6 @@ createApp({
     fmtGB(bytes) {
       return formatGB(bytes || 0);
     },
-    fmtPercent(v) {
-      return (v || 0).toFixed(1) + '%';
-    },
     fmtRatePair(a, b) {
       return formatRatePair(a, b);
     },
@@ -1029,55 +996,14 @@ createApp({
 
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
-      <div v-if="hostInfo && !logViewerFullscreen && !flowFullscreen" class="host-card" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
-        <div class="host-card-header">
-          <span class="host-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="2" y="11" width="16" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="6" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/></svg></span>
-          <strong>{{ currentHostName }}</strong>
-          <span class="host-card-meta">
-            <span class="meta-item"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 2.5 17 6.5V13.5L10 17.5 3 13.5V6.5L10 2.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 6.5 10 10.5 17 6.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 10.5V17.5" stroke="currentColor" stroke-width="1.6"/></svg> {{ hostInfo.containers }} containers</span>
-            <span class="meta-item"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h7l7 7-7 7-7-7V3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="6.7" cy="6.7" r="1.3" fill="currentColor"/></svg> {{ hostInfo.serverVersion }}</span>
-          </span>
-        </div>
-        <div class="host-tiles">
-          <spark-tile
-            variant="cpu"
-            :label="hostInfo.ncpu + ' CPU'"
-            :samples="cpuSamples"
-            :host-samples="hostSystemUsage ? hostCpuSamples : null"
-            :host-total-label="hostSystemUsage ? (hostSystemUsage.cpuPercent != null ? hostSystemUsage.cpuPercent.toFixed(1) + '%' : '—') : null"
-            :format-value="fmtPercent"
-          >
-            <template #icon
-              ><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="8.5" y="8.5" width="3" height="3" fill="currentColor"/><path d="M7 2v2M10 2v2M13 2v2M7 16v2M10 16v2M13 16v2M2 7h2M2 10h2M2 13h2M16 7h2M16 10h2M16 13h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></template
-            >
-          </spark-tile>
-          <spark-tile
-            variant="mem"
-            :label="fmtGB(hostInfo.memTotalBytes)"
-            :samples="memSamples"
-            :host-samples="hostSystemUsage ? hostMemSamples : null"
-            :host-total-label="hostSystemUsage ? fmtGB(hostSystemUsage.memUsedBytes) + ' / ' + fmtGB(hostSystemUsage.memTotalBytes) : null"
-            :format-value="fmtGB"
-          >
-            <template #icon
-              ><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="16" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4.5M8 7V4.5M11 7V4.5M14 7V4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></template
-            >
-          </spark-tile>
-          <div class="host-tile" v-if="diskUsage.length">
-            <div class="host-tile-label"><span class="tile-icon tile-icon-disk"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="10" cy="5" rx="7" ry="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 5v10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5" stroke="currentColor" stroke-width="1.6"/><path d="M3 10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" stroke="currentColor" stroke-width="1.6"/></svg></span> Disk</div>
-            <div class="disk-usage-rows">
-              <div class="disk-usage-row" v-if="diskRow('Images')">
-                <span class="muted">Images ({{ diskRow('Images').total }})</span>
-                <span>{{ diskRow('Images').size }} <span class="muted small">· {{ diskRow('Images').reclaimable }} reclaimable</span></span>
-              </div>
-              <div class="disk-usage-row" v-if="diskRow('Local Volumes')">
-                <span class="muted">Volumes ({{ diskRow('Local Volumes').total }})</span>
-                <span>{{ diskRow('Local Volumes').size }} <span class="muted small">· {{ diskRow('Local Volumes').reclaimable }} reclaimable</span></span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <host-card
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen"
+        :host-info="hostInfo"
+        :host-name="currentHostName"
+        :metrics-history="hostMetricsHistory"
+        :disk-usage="diskUsage"
+        :with-detail="!!selectedContainer || settingsOpen"
+      ></host-card>
 
       <div v-show="!logViewerFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
         <div class="main">
