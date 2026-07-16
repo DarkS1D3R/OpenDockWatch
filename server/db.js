@@ -118,7 +118,7 @@ const stmts = {
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ?`),
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
-    WHERE host_id = ? AND container_id = ? AND rule = ?
+    WHERE host_id = ? AND container_id IS ? AND rule = ?
     ORDER BY ts DESC LIMIT 1
   `),
   countRestartsSince: db.prepare(`
