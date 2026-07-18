@@ -366,6 +366,36 @@ test('renderSvg', async (t) => {
     });
   }
 
+  await t.test('a tree-mount edge to a volume pill renders in the volume color, not the flat bind default', () => {
+    const edge = {
+      id: 'e-vol',
+      kind: 'tree-mount',
+      source: { x: 0, y: 0 },
+      target: { x: 100, y: 50 },
+      label: '',
+      faded: false,
+      mountShared: false,
+      mountVolume: true,
+    };
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    assert.match(svg, /stroke="#e8c766"/);
+  });
+
+  await t.test('a tree-mount edge to a shared mount/volume renders in the shared color, overriding kind', () => {
+    const edge = {
+      id: 'e-shared',
+      kind: 'tree-mount',
+      source: { x: 0, y: 0 },
+      target: { x: 100, y: 50 },
+      label: '',
+      faded: false,
+      mountShared: true,
+      mountVolume: true,
+    };
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    assert.match(svg, /stroke="#f0883e"/);
+  });
+
   await t.test('depends_on and manual edges render their label text', () => {
     const edge = { id: 'e1', kind: 'depends_on', source: { x: 0, y: 0 }, target: { x: 100, y: 0 }, label: 'service_healthy', faded: false };
     const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
