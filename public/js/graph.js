@@ -619,7 +619,15 @@ export function buildTreeElements(nodes, selectedId, { showNetworks = true, show
       }
     }
     if (showMounts) {
+      // Same de-dupe-per-container the pill-building pass above already does (a container
+      // mounting the same volume at two destinations only needs one edge to that one pill) -
+      // without it, this pass emits two edge elements sharing the same id. cytoscape's own
+      // `cy.add()` silently drops the second one today, but that's incidental, not a contract -
+      // deduping here makes it correct by construction instead of relying on that.
+      const seenMounts = new Set();
       for (const m of n.mounts || []) {
+        if (seenMounts.has(m.source)) continue;
+        seenMounts.add(m.source);
         els.push({
           data: { id: `edge:tree:${n.id}->mount:${m.source}`, source: n.id, target: `mount:${m.source}`, kind: 'mount', label: '' },
           classes: 'edge-tree-mount',
