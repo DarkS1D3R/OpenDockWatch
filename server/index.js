@@ -533,18 +533,32 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
 
   child.stdout.on('data', makeSender());
   child.stderr.on('data', makeSender());
-  child.on('error', (err) => {
-    res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
-  });
 
   // Behind nginx or any proxy with an idle timeout, a quiet log stream gets cut -
   // a periodic comment line keeps the connection alive.
   const heartbeat = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
 
-  req.on('close', () => {
+  // Either side can end this first: the client disconnecting (req 'close'), or `docker logs -f`
+  // itself exiting - a removed container or a restarted daemon ends the process without the
+  // client doing anything. Without ending the response on the latter, the heartbeat kept the
+  // connection looking alive forever and the viewer just silently stopped receiving lines.
+  // Ending it here lets EventSource's own reconnect-on-close behavior take over instead.
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     child.kill();
+    res.end();
+  };
+
+  child.on('error', (err) => {
+    res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
+    cleanup();
   });
+  child.on('close', cleanup);
+
+  req.on('close', cleanup);
 });
 
 api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
