@@ -159,8 +159,12 @@ function addHost(host) {
   const pollState = { stopped: false, timer: null };
   const diskTimer = setInterval(() => pollDiskUsage(host), DISK_POLL_MS);
   hostStates.set(host.id, { pollState, diskTimer });
-  pollHost(host);
-  pollDiskUsage(host);
+  // pollDiskUsage reads the snapshot pollHost writes (specifically snapshot.reachable, set only
+  // after checkHost resolves) - firing both in parallel here meant this first call almost always
+  // found no snapshot yet and early-returned, leaving diskUsage empty until the next
+  // DISK_POLL_MS tick (60s later). pollHost never rejects (it catches its own errors), so this
+  // chain needs no .catch of its own.
+  pollHost(host).then(() => pollDiskUsage(host));
   scheduleHostPolling(host, pollState);
 }
 
