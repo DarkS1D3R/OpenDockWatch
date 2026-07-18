@@ -337,11 +337,17 @@ async function getContainerInspect(host, id) {
   };
 }
 
+// docker stop/restart send SIGTERM and wait out a 10s grace period before SIGKILL-ing a
+// container that ignores it - the same length as CMD_TIMEOUT_MS, so execFile could kill the
+// CLI and report failure a moment before the stop actually completes daemon-side. Give action
+// commands longer than the grace period so a slow-to-stop container doesn't false-report.
+const CONTAINER_ACTION_TIMEOUT_MS = 30_000;
+
 async function containerAction(host, id, action) {
   if (!ALLOWED_ACTIONS.has(action)) {
     throw new Error(`Unsupported action: ${action}`);
   }
-  await run([...hostArgs(host), action, id]);
+  await run([...hostArgs(host), action, id], CONTAINER_ACTION_TIMEOUT_MS);
 }
 
 function streamLogs(host, id, { tail = 200 } = {}) {

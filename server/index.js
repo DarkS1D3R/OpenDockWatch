@@ -454,31 +454,32 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
   const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
+
+  // Written before containerAction runs, not after it resolves - the daemon emits the
+  // die/start event the container action causes as soon as it happens, which can reach
+  // eventWatcher before this CLI call returns (particularly a slow-to-stop container - see
+  // docker.js's CONTAINER_ACTION_TIMEOUT_MS comment). alerts.js's manual-stop/crash-loop
+  // suppression looks this row up by ts, so it needs to already exist at that moment rather
+  // than only appearing afterward, or a fast event races it and a manual stop/restart
+  // falsely reports as a crash.
+  const auditId = db.insertAuditLog({
+    ts: Date.now(),
+    username: req.session.username || null,
+    hostId: req.params.hostId,
+    containerId: req.params.id,
+    containerName: container ? container.name : null,
+    action: req.params.action,
+    result: 'pending',
+    error: null,
+  });
+
   try {
     await containerAction(host, req.params.id, req.params.action);
-    db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
-      containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'ok',
-      error: null,
-    });
+    db.updateAuditLogResult(auditId, 'ok', null);
     logger.info(`container.${req.params.action}`, logFields);
     res.json({ ok: true });
   } catch (err) {
-    db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
-      containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'error',
-      error: err.stderr || err.message,
-    });
+    db.updateAuditLogResult(auditId, 'error', err.stderr || err.message);
     logger.error(`container.${req.params.action}`, { ...logFields, error: err.stderr || err.message });
     res.status(502).json({ error: err.stderr || err.message });
   }

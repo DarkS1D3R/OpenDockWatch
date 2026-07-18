@@ -111,6 +111,7 @@ const stmts = {
     INSERT INTO audit_log (ts, username, host_id, container_id, container_name, action, result, error)
     VALUES (@ts, @username, @hostId, @containerId, @containerName, @action, @result, @error)
   `),
+  updateAuditLogResult: db.prepare(`UPDATE audit_log SET result = ?, error = ? WHERE id = ?`),
   insertAlert: db.prepare(`
     INSERT INTO alerts (ts, host_id, container_id, container_name, rule, severity, message, acknowledged)
     VALUES (@ts, @hostId, @containerId, @containerName, @rule, @severity, @message, 0)
@@ -136,13 +137,18 @@ const stmts = {
     WHERE host_id = ? AND acknowledged = 0
     GROUP BY container_id
   `),
+  // No `result = 'ok'` filter: index.js writes this row's ts at the moment the action is
+  // requested, before the docker CLI call runs - not after it resolves - specifically so it's
+  // already present (still 'pending') when a fast die/start event races the CLI call. Excluding
+  // 'pending'/'error' rows would reopen that race for exactly the slow-to-stop containers this
+  // suppression exists for.
   countManualStopsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
-    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart') AND result = 'ok'
+    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart')
   `),
   countManualStartsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
-    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart') AND result = 'ok'
+    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
   `),
   pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
   pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
@@ -171,7 +177,11 @@ function insertEvent(event) {
 }
 
 function insertAuditLog(entry) {
-  stmts.insertAuditLog.run(entry);
+  return stmts.insertAuditLog.run(entry).lastInsertRowid;
+}
+
+function updateAuditLogResult(id, result, error) {
+  stmts.updateAuditLogResult.run(result, error, id);
 }
 
 function insertAlert(alert) {
@@ -319,6 +329,7 @@ module.exports = {
   insertHostMetric,
   insertEvent,
   insertAuditLog,
+  updateAuditLogResult,
   insertAlert,
   ackAlert,
   ackAllAlerts,

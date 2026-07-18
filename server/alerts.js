@@ -5,7 +5,12 @@ const { parseByteString } = require('./docker');
 const COOLDOWN_MS = 10 * 60 * 1000;
 const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000;
 const CRASH_LOOP_THRESHOLD = 3;
-const MANUAL_STOP_GRACE_MS = 5000;
+// docker stop/restart's own SIGTERM grace period is 10s (see docker.js's
+// CONTAINER_ACTION_TIMEOUT_MS comment) before it SIGKILLs and the die event fires - this has to
+// comfortably exceed that, or a container that takes the full grace period to die falls outside
+// the lookback window from the die event's ts back to the audit row written when the stop/restart
+// was requested, even though the row is now written before the action runs (see index.js).
+const MANUAL_STOP_GRACE_MS = 15000;
 
 function shouldFire(hostId, containerId, rule) {
   const last = db.getLastAlertFireTs(hostId, containerId, rule);
