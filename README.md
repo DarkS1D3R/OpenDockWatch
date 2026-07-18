@@ -120,11 +120,22 @@ Leave `TRUST_PROXY` unset (the default) if OpenDockWatch is reachable directly, 
 
 ## Remote hosts
 
-Any host you can `ssh user@host` into (with a key, no password prompt) and that has a reachable Docker socket for that user can be added to `config/hosts.json`:
+Any host you can `ssh user@host` into (with a key, no password prompt) and that has a reachable Docker socket for that user can be added from the Settings panel or directly to `config/hosts.json`:
 
 ```json
 { "id": "prod", "name": "Production", "dockerHost": "ssh://deploy@prod.example.com" }
 ```
+
+Recommended setup for a remote host:
+
+- Create a **dedicated SSH key with no passphrase** for OpenDockWatch (`ssh-keygen -t ed25519 -f ~/.ssh/opendockwatch -N ""`) rather than reusing your personal key — a passphrase can't be entered by a non-interactive `docker` CLI call, so a passphrased key just hangs until it times out.
+- Add the host's key to the known-hosts file before adding it here — `ssh-keyscan prod.example.com >> ~/.ssh/known_hosts` — so the first real connection doesn't hang on an interactive host-key prompt (`StrictHostKeyChecking ask` is `ssh`'s default, and there's nothing here to answer it).
+- Use a **dedicated remote user in the `docker` group**, not `root` and not your own login, so it's obvious in the remote's own logs/audit trail which access is OpenDockWatch's.
+- After adding a host, use its **Test connection** button in Settings — it runs the same reachability probe as the background poller but shows the actual `ssh`/`docker` error (`Host key verification failed`, `Permission denied (publickey)`, etc.) instead of just "unreachable".
+
+**Connection reuse:** the container ships an `ssh_config.d` entry (`ControlMaster auto`, `ControlPersist 10m`) so the first `docker` call to a remote host opens one SSH connection and every call for the next 10 minutes — there are several per 5s poll — rides that same connection instead of opening its own. No configuration needed; this is why polling several remote hosts doesn't multiply into dozens of new SSH sessions a minute.
+
+**Trust model:** SSH access to a host's Docker socket is root-equivalent on that host — anyone who can run arbitrary containers there can mount the host filesystem. Treat the dedicated key/user above with the same care as root SSH access, not as a limited-scope credential. For a genuinely least-privilege setup, look at [rootless Docker](https://docs.docker.com/engine/security/rootless/) on the remote host instead.
 
 ## Alerts
 

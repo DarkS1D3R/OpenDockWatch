@@ -12,6 +12,7 @@ const { requireAuth, requireAdmin, verifyLogin } = require('./auth');
 const { loadHosts, getHost, saveHosts, isValidHostId, isValidDockerHostUrl, hasLocalHost } = require('./hosts');
 const {
   checkHost,
+  testHostConnection,
   listContainers,
   containerAction,
   streamLogs,
@@ -449,6 +450,20 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(req.params.id);
   logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
   res.json(updated);
+});
+
+// Runs the same probe as the reachability poll, but surfaces the real docker/ssh stderr instead
+// of collapsing it to a boolean - "Host key verification failed" or "Permission denied
+// (publickey)" tells the user exactly what to fix, "unreachable" in the host card doesn't.
+api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
+  const host = getHost(req.params.id);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    await testHostConnection(host);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
 });
 
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
