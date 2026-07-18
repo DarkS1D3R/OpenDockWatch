@@ -112,6 +112,12 @@ docker compose up -d --build
 
 Either way, this mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH the same way your host user would. If Docker runs inside WSL (rather than Docker Desktop), run this from within your WSL distro so the socket path lines up.
 
+### Reverse proxy
+
+If you're putting OpenDockWatch behind a reverse proxy (nginx, Caddy, Traefik, etc.) that terminates TLS, set `TRUST_PROXY=true` in `.env` so Express trusts the proxy's `X-Forwarded-For`/`X-Forwarded-Proto` headers — this is needed for the session cookie's `Secure` flag and for the login rate limiter to see the real client IP rather than the proxy's.
+
+Leave `TRUST_PROXY` unset (the default) if OpenDockWatch is reachable directly, without a proxy in front. Trusting `X-Forwarded-For` from an untrusted client lets them spoof `req.ip` on every request, which defeats the login rate limiter (each spoofed IP gets its own fresh attempt budget) and lets an attacker forge the IP recorded in `auth.failure` log lines.
+
 ## Remote hosts
 
 Any host you can `ssh user@host` into (with a key, no password prompt) and that has a reachable Docker socket for that user can be added to `config/hosts.json`:

@@ -47,8 +47,14 @@ if (!process.env.SESSION_SECRET) {
 }
 
 // Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
-// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure.
-app.set('trust proxy', 1);
+// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure, and for
+// req.ip/the login rate limiter to see the real client IP instead of the proxy's.
+// Left off by default: if OpenDockWatch is reachable directly (no proxy in front), trusting
+// X-Forwarded-For lets a client spoof req.ip on every request, which defeats the login rate
+// limiter (a fresh "IP" per attempt) and forges the IP in auth.failure log lines.
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
 
 app.use(express.json());
 app.use(
