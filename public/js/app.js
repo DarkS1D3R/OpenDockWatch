@@ -172,33 +172,43 @@ createApp({
     },
     async fetchHostInfo() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        this.hostInfo = await apiGetHostInfo(this.selectedHostId);
+        const info = await apiGetHostInfo(hostId);
+        // The user may have switched hosts while this was in flight - a slow/unreachable host
+        // can leave this pending well past a subsequent host switch, so only apply it if it's
+        // still the host being looked at.
+        if (this.selectedHostId === hostId) this.hostInfo = info;
       } catch {
         /* host info is best-effort */
       }
     },
     async fetchDiskUsage() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        this.diskUsage = await apiGetDiskUsage(this.selectedHostId);
+        const usage = await apiGetDiskUsage(hostId);
+        if (this.selectedHostId === hostId) this.diskUsage = usage;
       } catch {
         /* disk usage is best-effort */
       }
     },
     async fetchHostMetricsHistory() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        const rows = await apiGetMetricsHistory(this.selectedHostId, { range: '1h' });
-        this.hostMetricsHistory = rows.slice(-HOST_METRICS_HISTORY_LEN);
+        const rows = await apiGetMetricsHistory(hostId, { range: '1h' });
+        if (this.selectedHostId === hostId) this.hostMetricsHistory = rows.slice(-HOST_METRICS_HISTORY_LEN);
       } catch {
         /* history is best-effort */
       }
     },
     async fetchAlerts() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        this.alerts = await apiGetAlerts(this.selectedHostId, 100);
+        const alerts = await apiGetAlerts(hostId, 100);
+        if (this.selectedHostId === hostId) this.alerts = alerts;
       } catch {
         /* alerts are best-effort */
       }
@@ -245,28 +255,41 @@ createApp({
     },
     async fetchContainers() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       this.loadingContainers = true;
       try {
-        this.containers = await apiGetContainers(this.selectedHostId);
+        const containers = await apiGetContainers(hostId);
+        if (this.selectedHostId !== hostId) return;
+        this.containers = containers;
         this.containersError = null;
       } catch (err) {
+        if (this.selectedHostId !== hostId) return;
         this.containersError = err.message;
       } finally {
-        this.loadingContainers = false;
+        // Only this call's own loading flag - don't clear it out from under a newer, still
+        // in-flight fetchContainers for the host the user has since switched to.
+        if (this.selectedHostId === hostId) this.loadingContainers = false;
       }
     },
     async fetchStats() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        this.stats = await apiGetStats(this.selectedHostId);
+        const stats = await apiGetStats(hostId);
+        if (this.selectedHostId === hostId) this.stats = stats;
       } catch {
         /* stats are best-effort */
       }
     },
     async fetchTopology() {
       if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
       try {
-        this.topology = await apiGetTopology(this.selectedHostId);
+        const topology = await apiGetTopology(hostId);
+        // A slow/unreachable host's stale topology must never land after a host switch - it
+        // would render under the wrong host's identity in Flow view and its dragged-position
+        // save would go to the wrong host's localStorage key.
+        if (this.selectedHostId === hostId) this.topology = topology;
       } catch {
         /* topology is best-effort */
       }

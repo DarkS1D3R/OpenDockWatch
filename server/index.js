@@ -194,9 +194,12 @@ api.get('/hosts/:hostId/stats', async (req, res) => {
   if (!host) return res.status(404).json({ error: 'unknown host' });
   // Prefer metricsCollector's snapshot over a fresh `docker stats` call: it's the only place the
   // NET/DISK rx/tx and read/write rates (computed from consecutive polls) are available, and it's
-  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet.
+  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated
+  // on statsTs, not just reachable, since a freshly-added host (or one right after boot) has a
+  // reachable snapshot with empty stats until its first poll's docker calls finish (same reason
+  // getTopology below guards on snapshot.containers.length rather than just snapshot.reachable).
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.reachable) return res.json(snapshot.stats);
+  if (snapshot && snapshot.reachable && snapshot.statsTs) return res.json(snapshot.stats);
   try {
     res.json(await getStats(host));
   } catch (err) {
