@@ -12,6 +12,7 @@ const { requireAuth, requireAdmin, verifyLogin } = require('./auth');
 const { loadHosts, getHost, saveHosts, isValidHostId, isValidDockerHostUrl, hasLocalHost } = require('./hosts');
 const {
   checkHost,
+  testHostConnection,
   listContainers,
   containerAction,
   streamLogs,
@@ -47,8 +48,14 @@ if (!process.env.SESSION_SECRET) {
 }
 
 // Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
-// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure.
-app.set('trust proxy', 1);
+// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure, and for
+// req.ip/the login rate limiter to see the real client IP instead of the proxy's.
+// Left off by default: if OpenDockWatch is reachable directly (no proxy in front), trusting
+// X-Forwarded-For lets a client spoof req.ip on every request, which defeats the login rate
+// limiter (a fresh "IP" per attempt) and forges the IP in auth.failure log lines.
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
 
 app.use(express.json());
 app.use(
@@ -188,9 +195,12 @@ api.get('/hosts/:hostId/stats', async (req, res) => {
   if (!host) return res.status(404).json({ error: 'unknown host' });
   // Prefer metricsCollector's snapshot over a fresh `docker stats` call: it's the only place the
   // NET/DISK rx/tx and read/write rates (computed from consecutive polls) are available, and it's
-  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet.
+  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated
+  // on statsTs, not just reachable, since a freshly-added host (or one right after boot) has a
+  // reachable snapshot with empty stats until its first poll's docker calls finish (same reason
+  // getTopology below guards on snapshot.containers.length rather than just snapshot.reachable).
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.reachable) return res.json(snapshot.stats);
+  if (snapshot && snapshot.reachable && snapshot.statsTs) return res.json(snapshot.stats);
   try {
     res.json(await getStats(host));
   } catch (err) {
@@ -442,37 +452,52 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   res.json(updated);
 });
 
+// Runs the same probe as the reachability poll, but surfaces the real docker/ssh stderr instead
+// of collapsing it to a boolean - "Host key verification failed" or "Permission denied
+// (publickey)" tells the user exactly what to fix, "unreachable" in the host card doesn't.
+api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
+  const host = getHost(req.params.id);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  try {
+    await testHostConnection(host);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.stderr || err.message });
+  }
+});
+
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
   const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
+
+  // Written before containerAction runs, not after it resolves - the daemon emits the
+  // die/start event the container action causes as soon as it happens, which can reach
+  // eventWatcher before this CLI call returns (particularly a slow-to-stop container - see
+  // docker.js's CONTAINER_ACTION_TIMEOUT_MS comment). alerts.js's manual-stop/crash-loop
+  // suppression looks this row up by ts, so it needs to already exist at that moment rather
+  // than only appearing afterward, or a fast event races it and a manual stop/restart
+  // falsely reports as a crash.
+  const auditId = db.insertAuditLog({
+    ts: Date.now(),
+    username: req.session.username || null,
+    hostId: req.params.hostId,
+    containerId: req.params.id,
+    containerName: container ? container.name : null,
+    action: req.params.action,
+    result: 'pending',
+    error: null,
+  });
+
   try {
     await containerAction(host, req.params.id, req.params.action);
-    db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
-      containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'ok',
-      error: null,
-    });
+    db.updateAuditLogResult(auditId, 'ok', null);
     logger.info(`container.${req.params.action}`, logFields);
     res.json({ ok: true });
   } catch (err) {
-    db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
-      containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'error',
-      error: err.stderr || err.message,
-    });
+    db.updateAuditLogResult(auditId, 'error', err.stderr || err.message);
     logger.error(`container.${req.params.action}`, { ...logFields, error: err.stderr || err.message });
     res.status(502).json({ error: err.stderr || err.message });
   }
@@ -508,18 +533,32 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
 
   child.stdout.on('data', makeSender());
   child.stderr.on('data', makeSender());
-  child.on('error', (err) => {
-    res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
-  });
 
   // Behind nginx or any proxy with an idle timeout, a quiet log stream gets cut -
   // a periodic comment line keeps the connection alive.
   const heartbeat = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
 
-  req.on('close', () => {
+  // Either side can end this first: the client disconnecting (req 'close'), or `docker logs -f`
+  // itself exiting - a removed container or a restarted daemon ends the process without the
+  // client doing anything. Without ending the response on the latter, the heartbeat kept the
+  // connection looking alive forever and the viewer just silently stopped receiving lines.
+  // Ending it here lets EventSource's own reconnect-on-close behavior take over instead.
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     child.kill();
+    res.end();
+  };
+
+  child.on('error', (err) => {
+    res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
+    cleanup();
   });
+  child.on('close', cleanup);
+
+  req.on('close', cleanup);
 });
 
 api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {

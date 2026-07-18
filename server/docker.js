@@ -3,8 +3,21 @@ const { execFile, spawn } = require('child_process');
 const CMD_TIMEOUT_MS = 10_000;
 const ALLOWED_ACTIONS = new Set(['start', 'stop', 'restart']);
 
+// The one-time cost of opening an SSH connection (TCP handshake, host key check, key/agent auth)
+// can eat well into CMD_TIMEOUT_MS on a slow or distant link - the image's ssh_config.d entry
+// keeps that connection alive for 10 minutes (ControlPersist) so it's only paid occasionally, but
+// the call that pays it needs real headroom or it reads as the host being down. checkHost is
+// metricsCollector's every-5s reachability probe, so it's the one that matters most: without
+// this, a host that's merely slow to (re)connect flaps "unreachable" instead of just being slow
+// once. Local (socket) hosts have no connection to open, so they keep the tighter default.
+const SSH_CHECK_TIMEOUT_MS = 20_000;
+
 function hostArgs(host) {
   return host && host.dockerHost ? ['-H', host.dockerHost] : [];
+}
+
+function checkTimeoutMs(host) {
+  return host && host.dockerHost ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
 }
 
 function run(args, timeoutMs = CMD_TIMEOUT_MS) {
@@ -34,11 +47,19 @@ async function getHostInfo(host) {
 
 async function checkHost(host) {
   try {
-    await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}']);
+    await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
     return true;
   } catch {
     return false;
   }
+}
+
+// Same probe as checkHost, but lets the real error (stderr) through instead of swallowing it -
+// checkHost's plain true/false is enough for the reachability poll, but a human clicking "Test
+// connection" in Settings needs "Host key verification failed" or "Permission denied
+// (publickey)", not just "unreachable".
+async function testHostConnection(host) {
+  await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
 }
 
 const IGNORED_NETWORKS = new Set(['bridge', 'host', 'none']);
@@ -337,11 +358,17 @@ async function getContainerInspect(host, id) {
   };
 }
 
+// docker stop/restart send SIGTERM and wait out a 10s grace period before SIGKILL-ing a
+// container that ignores it - the same length as CMD_TIMEOUT_MS, so execFile could kill the
+// CLI and report failure a moment before the stop actually completes daemon-side. Give action
+// commands longer than the grace period so a slow-to-stop container doesn't false-report.
+const CONTAINER_ACTION_TIMEOUT_MS = 30_000;
+
 async function containerAction(host, id, action) {
   if (!ALLOWED_ACTIONS.has(action)) {
     throw new Error(`Unsupported action: ${action}`);
   }
-  await run([...hostArgs(host), action, id]);
+  await run([...hostArgs(host), action, id], CONTAINER_ACTION_TIMEOUT_MS);
 }
 
 function streamLogs(host, id, { tail = 200 } = {}) {
@@ -412,6 +439,7 @@ async function getDiskUsageImages(host) {
 
 module.exports = {
   checkHost,
+  testHostConnection,
   listContainers,
   containerAction,
   streamLogs,

@@ -195,6 +195,25 @@ test('buildTreeElements', async (t) => {
     assert.equal(mountNode.data.label, 'pgdata');
   });
 
+  await t.test('a container mounting the same volume at two destinations gets one edge, not two', () => {
+    const nodes = [
+      {
+        id: 'a',
+        group: 'shop',
+        state: 'running',
+        networks: [],
+        mounts: [
+          { source: 'pgdata', kind: 'volume-named', destination: '/var/lib/pg1' },
+          { source: 'pgdata', kind: 'volume-named', destination: '/var/lib/pg2' },
+        ],
+      },
+    ];
+    const els = graph.buildTreeElements(nodes, null);
+    const mountEdges = els.filter((el) => el.classes === 'edge-tree-mount');
+    assert.equal(mountEdges.length, 1);
+    assert.equal(els.filter((el) => el.classes && el.classes.startsWith('mount')).length, 1);
+  });
+
   await t.test('a container with no compose project gets no project node or edge', () => {
     const nodes = [{ id: 'a', group: 'ungrouped', state: 'running', networks: [], mounts: [] }];
     const els = graph.buildTreeElements(nodes, null);
@@ -365,6 +384,36 @@ test('renderSvg', async (t) => {
       assert.match(svg, new RegExp(`stroke="${color}"`));
     });
   }
+
+  await t.test('a tree-mount edge to a volume pill renders in the volume color, not the flat bind default', () => {
+    const edge = {
+      id: 'e-vol',
+      kind: 'tree-mount',
+      source: { x: 0, y: 0 },
+      target: { x: 100, y: 50 },
+      label: '',
+      faded: false,
+      mountShared: false,
+      mountVolume: true,
+    };
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    assert.match(svg, /stroke="#e8c766"/);
+  });
+
+  await t.test('a tree-mount edge to a shared mount/volume renders in the shared color, overriding kind', () => {
+    const edge = {
+      id: 'e-shared',
+      kind: 'tree-mount',
+      source: { x: 0, y: 0 },
+      target: { x: 100, y: 50 },
+      label: '',
+      faded: false,
+      mountShared: true,
+      mountVolume: true,
+    };
+    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    assert.match(svg, /stroke="#f0883e"/);
+  });
 
   await t.test('depends_on and manual edges render their label text', () => {
     const edge = { id: 'e1', kind: 'depends_on', source: { x: 0, y: 0 }, target: { x: 100, y: 0 }, label: 'service_healthy', faded: false };

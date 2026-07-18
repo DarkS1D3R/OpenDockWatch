@@ -619,7 +619,15 @@ export function buildTreeElements(nodes, selectedId, { showNetworks = true, show
       }
     }
     if (showMounts) {
+      // Same de-dupe-per-container the pill-building pass above already does (a container
+      // mounting the same volume at two destinations only needs one edge to that one pill) -
+      // without it, this pass emits two edge elements sharing the same id. cytoscape's own
+      // `cy.add()` silently drops the second one today, but that's incidental, not a contract -
+      // deduping here makes it correct by construction instead of relying on that.
+      const seenMounts = new Set();
       for (const m of n.mounts || []) {
+        if (seenMounts.has(m.source)) continue;
+        seenMounts.add(m.source);
         els.push({
           data: { id: `edge:tree:${n.id}->mount:${m.source}`, source: n.id, target: `mount:${m.source}`, kind: 'mount', label: '' },
           classes: 'edge-tree-mount',
@@ -1163,6 +1171,11 @@ export function extractSvgGeometry(cy) {
   cy.edges().forEach((e) => {
     const kind = svgEdgeKind(e);
     if (!kind) return;
+    // Same signal CY_STYLE's edge-tree-mount line-color function reads off the live target node
+    // (see above) - carried into the plain geometry here since svgEdge has no cytoscape node to
+    // query later, only the extracted target point.
+    const mountShared = kind === 'tree-mount' ? Boolean(e.target().data('shared')) : false;
+    const mountVolume = kind === 'tree-mount' ? e.target().hasClass('mount-volume') : false;
     edges.push({
       id: e.id(),
       kind,
@@ -1172,6 +1185,8 @@ export function extractSvgGeometry(cy) {
       faded: e.hasClass('faded'),
       blastUpstream: e.hasClass('blast-upstream'),
       blastDownstream: e.hasClass('blast-downstream'),
+      mountShared,
+      mountVolume,
     });
   });
 
@@ -1365,13 +1380,23 @@ function svgArrowHead(from, to, color) {
   return `<polygon points="${to.x},${to.y} ${p1.x},${p1.y} ${p2.x},${p2.y}" fill="${color}"/>`;
 }
 
+// Mirrors CY_STYLE's edge-tree-mount line-color function: the flat EDGE_SVG_STYLE color is only
+// the mount-bind default. A shared mount/volume (converged on by 2+ containers) wins over kind,
+// same as the live view - losing that distinction here would lose the whole point of the shared-
+// mount signal the legend advertises.
+function treeMountColor(e, fallback) {
+  if (e.mountShared) return SHARED_MOUNT_COLOR;
+  if (e.mountVolume) return '#e8c766';
+  return fallback;
+}
+
 // Graph-mode edges (network/depends-on/manual) are bezier-curved in the live view - drawn here
 // as straight lines rather than reverse-engineering cytoscape's bezier control-point math, which
 // isn't worth the complexity for a visual difference this minor.
 function svgEdge(e) {
   const style = EDGE_SVG_STYLE[e.kind];
   if (!style) return '';
-  let color = style.color;
+  let color = e.kind === 'tree-mount' ? treeMountColor(e, style.color) : style.color;
   let width = 1.5;
   if (e.blastUpstream) {
     color = BLAST_UPSTREAM_COLOR;

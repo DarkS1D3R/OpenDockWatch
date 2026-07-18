@@ -5,7 +5,12 @@ const { parseByteString } = require('./docker');
 const COOLDOWN_MS = 10 * 60 * 1000;
 const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000;
 const CRASH_LOOP_THRESHOLD = 3;
-const MANUAL_STOP_GRACE_MS = 5000;
+// docker stop/restart's own SIGTERM grace period is 10s (see docker.js's
+// CONTAINER_ACTION_TIMEOUT_MS comment) before it SIGKILLs and the die event fires - this has to
+// comfortably exceed that, or a container that takes the full grace period to die falls outside
+// the lookback window from the die event's ts back to the audit row written when the stop/restart
+// was requested, even though the row is now written before the action runs (see index.js).
+const MANUAL_STOP_GRACE_MS = 15000;
 
 function shouldFire(hostId, containerId, rule) {
   const last = db.getLastAlertFireTs(hostId, containerId, rule);
@@ -230,7 +235,12 @@ function handleEvent(event) {
 
   if (action === 'die') {
     const exitCode = raw && raw.Actor && raw.Actor.Attributes ? raw.Actor.Attributes.exitCode : undefined;
-    const code = exitCode !== undefined ? parseInt(exitCode, 10) : 0;
+    // parseInt of a present-but-garbled attribute (rather than a genuinely missing one, already
+    // handled by the `: 0` default) is NaN, and NaN !== 0 is true - without this, an unparsable
+    // exit code would still fire but read as "exited with code NaN" instead of a message that
+    // actually describes what happened.
+    const parsed = exitCode !== undefined ? parseInt(exitCode, 10) : 0;
+    const code = Number.isNaN(parsed) ? null : parsed;
     if (code !== 0) {
       const recentManualStop = db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0;
       if (!recentManualStop) {
@@ -240,7 +250,7 @@ function handleEvent(event) {
           containerName,
           rule: 'container_crashed',
           severity: 'critical',
-          message: `Container ${containerName || containerId} exited with code ${code}`,
+          message: `Container ${containerName || containerId} exited with ${code === null ? 'an unrecognized exit code' : `code ${code}`}`,
         });
       }
     }
@@ -252,14 +262,18 @@ function handleEvent(event) {
     // Exclude restarts the user triggered themselves (e.g. clicking Restart a few
     // times) so a burst of manual actions doesn't read as a crash loop.
     const manualCount = db.countManualStartsSince(hostId, containerId, sinceTs);
-    if (count - manualCount >= CRASH_LOOP_THRESHOLD) {
+    const autoCount = count - manualCount;
+    if (autoCount >= CRASH_LOOP_THRESHOLD) {
       fire({
         hostId,
         containerId,
         containerName,
         rule: 'crash_loop',
         severity: 'critical',
-        message: `Container ${containerName || containerId} restarted ${count} times in the last 5 minutes`,
+        // autoCount, not the raw count - the threshold this rule fires on already excludes
+        // manual restarts, so reporting the raw count would overstate how many of them actually
+        // looked like crashes.
+        message: `Container ${containerName || containerId} restarted ${autoCount} times in the last 5 minutes`,
       });
     }
   }

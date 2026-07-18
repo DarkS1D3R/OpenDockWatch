@@ -10,6 +10,7 @@ import {
   apiAddHost,
   apiUpdateHost,
   apiDeleteHost,
+  apiTestHost,
 } from '../api.js';
 
 // The Settings panel: webhook config, alert thresholds, and host management. Mounted fresh
@@ -48,6 +49,8 @@ export default {
       hostsStatus: null,
       editingHostId: null,
       editHostDraft: { name: '', dockerHost: '' },
+      testingHostId: null,
+      hostTestResults: {}, // hostId -> { ok, message }
     };
   },
   async mounted() {
@@ -155,6 +158,20 @@ export default {
         this.$emit('hosts-changed');
       });
     },
+    async testHostConnection(id) {
+      this.testingHostId = id;
+      this.hostTestResults = { ...this.hostTestResults, [id]: null };
+      try {
+        await apiTestHost(id);
+        this.hostTestResults = { ...this.hostTestResults, [id]: { ok: true, message: 'Connected.' } };
+      } catch (err) {
+        // The real docker/ssh stderr, not a generic "unreachable" - e.g. "Host key verification
+        // failed" or "Permission denied (publickey)" tells the user exactly what to fix.
+        this.hostTestResults = { ...this.hostTestResults, [id]: { ok: false, message: err.message } };
+      } finally {
+        this.testingHostId = null;
+      }
+    },
   },
   template: `
     <aside class="detail-panel">
@@ -256,7 +273,13 @@ export default {
                 <strong>{{ h.name || h.id }}</strong>
                 <span class="muted small">{{ h.dockerHost || 'local socket' }}</span>
               </div>
+              <p v-if="hostTestResults[h.id]" :class="hostTestResults[h.id].ok ? 'muted small' : 'error'">
+                {{ hostTestResults[h.id].ok ? '✓' : '✕' }} {{ hostTestResults[h.id].message }}
+              </p>
               <div class="modal-actions">
+                <button class="small-btn" :disabled="testingHostId === h.id" @click="testHostConnection(h.id)">
+                  {{ testingHostId === h.id ? 'Testing…' : 'Test connection' }}
+                </button>
                 <button class="small-btn" :disabled="hostsSaving" @click="startEditHost(h)">Edit</button>
                 <button class="small-btn" :disabled="hostsSaving" @click="removeHost(h.id)">Remove</button>
               </div>

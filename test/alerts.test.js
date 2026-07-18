@@ -84,6 +84,21 @@ test('handleEvent: container_crashed', async (t) => {
     });
     assert.equal(fired.length, 0);
   });
+
+  await t.test('an unparsable exit code still fires, with a readable message instead of "code NaN"', () => {
+    const fired = captureFired(t);
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c',
+      containerName: 'web',
+      action: 'die',
+      ts: Date.now(),
+      raw: { Actor: { Attributes: { exitCode: 'not-a-number' } } },
+    });
+    assert.equal(fired.length, 1);
+    assert.doesNotMatch(fired[0].message, /NaN/);
+    assert.match(fired[0].message, /unrecognized exit code/);
+  });
 });
 
 test('handleEvent: crash_loop', async (t) => {
@@ -104,6 +119,13 @@ test('handleEvent: crash_loop', async (t) => {
     const fired = captureFired(t, { countRestartsSince: () => 2, countManualStartsSince: () => 0 });
     alerts.handleEvent({ hostId: 'h', containerId: 'c', containerName: 'web', action: 'start', ts: Date.now(), raw: {} });
     assert.equal(fired.length, 0);
+  });
+
+  await t.test('the message reports the auto-restart count that met the threshold, not the raw total', () => {
+    const fired = captureFired(t, { countRestartsSince: () => 5, countManualStartsSince: () => 2 });
+    alerts.handleEvent({ hostId: 'h', containerId: 'c', containerName: 'web', action: 'start', ts: Date.now(), raw: {} });
+    assert.equal(fired.length, 1);
+    assert.match(fired[0].message, /restarted 3 times/);
   });
 });
 

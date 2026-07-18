@@ -167,3 +167,7 @@ export async function apiUpdateHost(id, host) {
 export async function apiDeleteHost(id) {
   return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}`, { method: 'DELETE' }));
 }
+
+export async function apiTestHost(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}/test`, { method: 'POST' }));
+}
