@@ -3,6 +3,7 @@ const { listContainers, getStats, getHostInfo, getDiskUsage, checkHost, parseMem
 const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
+const logger = require('./logger');
 
 const POLL_MS = 5000;
 const DISK_POLL_MS = 60_000;
@@ -124,7 +125,7 @@ async function pollHost(host) {
       });
     }
   } catch (err) {
-    console.error(`[opendockwatch] metrics poll failed for host ${host.id}: ${err.message}`);
+    logger.error('metrics.poll.failed', { host: host.id, error: err.stderr || err.message });
   }
 }
 
@@ -135,7 +136,7 @@ async function pollDiskUsage(host) {
     snapshot.diskUsage = await getDiskUsage(host);
     alerts.handleDiskUsage({ hostId: host.id, hostName: host.name || host.id, rows: snapshot.diskUsage });
   } catch (err) {
-    console.error(`[opendockwatch] disk usage poll failed for host ${host.id}: ${err.message}`);
+    logger.error('disk_usage.poll.failed', { host: host.id, error: err.stderr || err.message });
   }
 }
 
