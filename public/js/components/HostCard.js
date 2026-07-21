@@ -1,5 +1,6 @@
 import { formatGB } from '../format.js';
 import { apiGetDiskUsageImages } from '../api.js';
+import { resolveHostMemoryDisplay } from '../lib/hostMemory.js';
 import SparkTile from './SparkTile.js';
 
 // The host header (name + container count + Docker version) plus the CPU/RAM SparkTiles and the
@@ -70,6 +71,18 @@ export default {
     },
     hostMemSamples() {
       return this.metricsHistory.map((s) => s.systemMemUsedBytes);
+    },
+    // What the mem tile's corner box shows - defers to hostMemory.js to detect and correct for
+    // Docker running inside something (most commonly a Proxmox LXC) that caps memory below what
+    // hostSystemUsage's os.totalmem()-based figure sees. Null (same as hostSystemUsage) on a
+    // remote host.
+    memHostDisplay() {
+      return resolveHostMemoryDisplay({
+        osUsedBytes: this.hostSystemUsage ? this.hostSystemUsage.memUsedBytes : null,
+        osTotalBytes: this.hostSystemUsage ? this.hostSystemUsage.memTotalBytes : null,
+        dockerTotalBytes: this.hostInfo.memTotalBytes,
+        dockerUsedBytes: this.memSamples[this.memSamples.length - 1],
+      });
     },
   },
   methods: {
@@ -146,7 +159,10 @@ export default {
           :label="fmtGB(hostInfo.memTotalBytes)"
           :samples="memSamples"
           :host-samples="hostSystemUsage ? hostMemSamples : null"
-          :host-total-label="hostSystemUsage ? fmtGB(hostSystemUsage.memUsedBytes) + ' / ' + fmtGB(hostSystemUsage.memTotalBytes) : null"
+          :host-total-label="memHostDisplay ? memHostDisplay.label : null"
+          :host-total-heading="memHostDisplay ? memHostDisplay.heading : 'host total'"
+          :host-series-label="memHostDisplay ? memHostDisplay.seriesLabel : 'host total'"
+          :extra-host-label="memHostDisplay ? memHostDisplay.extraLabel : null"
           :format-value="fmtGB"
           :sample-times="sampleTimes"
           :hover-index="hoverIndex"
