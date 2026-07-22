@@ -29,6 +29,9 @@ export default {
     samples: { type: Array, required: true }, // raw Docker samples, unpadded
     hostSamples: { type: Array, default: null }, // raw host-total samples, unpadded; null/omitted hides the host layer entirely
     hostTotalLabel: { type: String, default: null }, // precomputed "host total" box text; null hides the box
+    hostTotalHeading: { type: String, default: 'host total' }, // corner-box heading - see hostMemory.js for the LXC-divergence case
+    hostSeriesLabel: { type: String, default: 'host total' }, // hover-dot title + legend text for the host-total series
+    extraHostLabel: { type: String, default: null }, // optional small line under the corner box (e.g. a demoted physical-host total)
     formatValue: { type: Function, required: true }, // raw sample -> display string, used for now/avg/peak and dot titles
     sampleTimes: { type: Array, default: () => [] }, // bucket timestamps (ms), unpadded, aligned 1:1 with `samples`
     hoverIndex: { type: Number, default: null }, // shared hover position, owned by the parent - see HostCard
@@ -128,7 +131,10 @@ export default {
             <span class="host-tile-sub">avg {{ formatValue(avg) }} &bull; pk {{ formatValue(peak) }}</span>
           </div>
         </div>
-        <div v-if="hostTotalLabel" class="host-tile-system">host total<br />{{ hostTotalLabel }}</div>
+        <div v-if="hostTotalLabel" class="host-tile-system">
+          {{ hostTotalHeading }}<br />{{ hostTotalLabel }}
+          <div v-if="extraHostLabel" class="muted small">{{ extraHostLabel }}</div>
+        </div>
       </div>
       <div class="sparkline" @mousemove="onHover" @mouseleave="onLeave">
         <svg class="spark-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
@@ -182,7 +188,7 @@ export default {
           v-if="hoverPts && hoverPts.host"
           :class="'spark-dot spark-dot-' + variant + '-host'"
           :style="{ left: hoverPts.host.x + '%', top: (hoverPts.host.y / 30 * 100) + '%' }"
-          :title="'host total: ' + formatValue(hoverPts.host.v)"
+          :title="hostSeriesLabel + ': ' + formatValue(hoverPts.host.v)"
         ></span>
         <span v-if="hoverPts && hoverTimeLabel" class="spark-hover-time" :style="{ left: hoverPts.x + '%' }">{{ hoverTimeLabel }}</span>
       </div>
@@ -198,7 +204,7 @@ export default {
       </div>
       <p v-if="hostAvailable" class="muted legend host-usage-legend">
         <span class="legend-item"><span :class="'bar-swatch bar-swatch-' + variant"></span> Docker</span>
-        <span class="legend-item"><span :class="'bar-swatch bar-swatch-' + variant + '-host'"></span> host total</span>
+        <span class="legend-item"><span :class="'bar-swatch bar-swatch-' + variant + '-host'"></span> {{ hostSeriesLabel }}</span>
       </p>
     </div>
   `,

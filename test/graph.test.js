@@ -142,6 +142,76 @@ test('buildElements', async (t) => {
     assert.equal(edgeEls[3].data.label, '');
     assert.equal(edgeEls[1].data.id, 'edge:depends_on:a->b');
   });
+
+  await t.test('a network edge between containers in different compose projects collapses to one project-to-project edge', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running' },
+      { id: 'b', group: 'esb', state: 'running' },
+    ];
+    const edges = [{ source: 'a', target: 'b', kind: 'network', label: 'proxy' }];
+    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    assert.equal(edgeEls.length, 1);
+    // aggregation dedupes on a sorted pair key - which end lands in source vs target isn't
+    // meaningful for an undirected "shares a network" relationship, only that it's this pair.
+    assert.deepEqual(new Set([edgeEls[0].data.source, edgeEls[0].data.target]), new Set(['grp:shop', 'grp:esb']));
+    assert.equal(edgeEls[0].data.label, 'proxy');
+  });
+
+  await t.test('many cross-project container pairs sharing a network collapse to a single edge, not one per pair', () => {
+    const nodes = [
+      { id: 'a1', group: 'shop', state: 'running' },
+      { id: 'a2', group: 'shop', state: 'running' },
+      { id: 'b1', group: 'esb', state: 'running' },
+      { id: 'b2', group: 'esb', state: 'running' },
+    ];
+    const edges = [
+      { source: 'a1', target: 'b1', kind: 'network', label: 'proxy' },
+      { source: 'a1', target: 'b2', kind: 'network', label: 'proxy' },
+      { source: 'a2', target: 'b1', kind: 'network', label: 'proxy' },
+      { source: 'a2', target: 'b2', kind: 'network', label: 'proxy' },
+    ];
+    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    assert.equal(edgeEls.length, 1);
+    assert.deepEqual(new Set([edgeEls[0].data.source, edgeEls[0].data.target]), new Set(['grp:shop', 'grp:esb']));
+  });
+
+  await t.test('distinct networks shared between the same two projects merge onto one edge label', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running' },
+      { id: 'b', group: 'esb', state: 'running' },
+    ];
+    const edges = [
+      { source: 'a', target: 'b', kind: 'network', label: 'proxy' },
+      { source: 'a', target: 'b', kind: 'network', label: 'cache' },
+    ];
+    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    assert.equal(edgeEls.length, 1);
+    assert.equal(edgeEls[0].data.label, 'proxy, cache');
+  });
+
+  await t.test('containers with no compose project keep per-container network edges (no shared box to collapse into)', () => {
+    const nodes = [
+      { id: 'a', group: 'ungrouped', state: 'running' },
+      { id: 'b', group: 'ungrouped', state: 'running' },
+    ];
+    const edges = [{ source: 'a', target: 'b', kind: 'network', label: 'bridge' }];
+    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    assert.equal(edgeEls.length, 1);
+    assert.equal(edgeEls[0].data.source, 'a');
+    assert.equal(edgeEls[0].data.target, 'b');
+  });
+
+  await t.test('depends_on/manual edges are never aggregated by project, even across projects', () => {
+    const nodes = [
+      { id: 'a', group: 'shop', state: 'running' },
+      { id: 'b', group: 'esb', state: 'running' },
+    ];
+    const edges = [{ source: 'a', target: 'b', kind: 'depends_on', label: 'service_healthy' }];
+    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    assert.equal(edgeEls.length, 1);
+    assert.equal(edgeEls[0].data.source, 'a');
+    assert.equal(edgeEls[0].data.target, 'b');
+  });
 });
 
 test('buildTreeElements', async (t) => {

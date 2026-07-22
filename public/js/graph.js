@@ -482,6 +482,53 @@ function containerNodeEl(n, selectedId, parent) {
   };
 }
 
+// containers with this group are treated as having no compose project at all (same sentinel
+// docker.js's getTopology already uses for `group` - see there) - a fake "(ungrouped)" project
+// node would just be noise, so those containers become their own roots instead.
+const NO_PROJECT = 'ungrouped';
+
+// Server's networkEdges already drops same-project pairs (the group box conveys that), but a
+// network shared across projects - a reverse proxy net, a shared cache - still comes back as one
+// edge per cross-project container pair, so two 10-container stacks on the same network draw up
+// to 100 crossing lines that say nothing individual container-to-container edges wouldn't. Graph
+// mode already has a box per compose project, so collapse those down to one edge per project
+// pair, merging the network names onto its label. Containers with no compose project have no box
+// to collapse into (NO_PROJECT is many unrelated standalones, not one thing) so they keep their
+// own per-container edges same as before.
+function aggregateNetworkEdges(edges, nodes) {
+  const groupOf = new Map(nodes.map((n) => [n.id, n.group]));
+  const keyOf = (id) => {
+    const g = groupOf.get(id);
+    return g && g !== NO_PROJECT ? `grp:${g}` : id;
+  };
+  const passthrough = [];
+  const byPair = new Map(); // "a|b" (sorted) -> { source, target, labels: Set<string> }
+  for (const e of edges) {
+    if ((e.kind || 'network') !== 'network') {
+      passthrough.push(e);
+      continue;
+    }
+    const a = keyOf(e.source);
+    const b = keyOf(e.target);
+    if (a === b) {
+      passthrough.push(e);
+      continue;
+    }
+    const [source, target] = [a, b].sort();
+    const pairKey = `${source}|${target}`;
+    let agg = byPair.get(pairKey);
+    if (!agg) {
+      agg = { source, target, labels: new Set() };
+      byPair.set(pairKey, agg);
+    }
+    if (e.label) agg.labels.add(e.label);
+  }
+  for (const agg of byPair.values()) {
+    passthrough.push({ source: agg.source, target: agg.target, kind: 'network', label: [...agg.labels].join(', ') });
+  }
+  return passthrough;
+}
+
 export function buildElements(nodes, edges, selectedId) {
   const groupIds = new Set(nodes.map((n) => n.group));
   const groupAggregates = aggregateGroups(nodes);
@@ -502,7 +549,7 @@ export function buildElements(nodes, edges, selectedId) {
       };
     }),
     ...nodes.map((n) => containerNodeEl(n, selectedId, `grp:${n.group}`)),
-    ...edges.map((e) => ({
+    ...aggregateNetworkEdges(edges, nodes).map((e) => ({
       data: {
         id: `edge:${e.kind || 'network'}:${e.source}->${e.target}`,
         source: e.source,
@@ -514,11 +561,6 @@ export function buildElements(nodes, edges, selectedId) {
     })),
   ];
 }
-
-// containers with this group are treated as having no compose project at all (same sentinel
-// docker.js's getTopology already uses for `group` - see there) - a fake "(ungrouped)" project
-// node would just be noise, so those containers become their own roots instead.
-const NO_PROJECT = 'ungrouped';
 
 const MOUNT_LABEL_LINE_CHARS = 22;
 // Network pills are a narrower box than mount pills (120px vs 170px) - a shorter line length

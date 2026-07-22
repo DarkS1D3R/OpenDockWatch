@@ -192,7 +192,11 @@ export default {
         }
         return;
       }
-      const nameOf = (id) => this.topology.nodes.find((n) => n.id === id)?.name || id;
+      // A cross-project network edge (see aggregateNetworkEdges in graph.js) points at a
+      // "grp:<project>" id instead of a container id - resolve that back to a plain project name
+      // rather than falling through to the raw id, same as showPillInfo does for tree mode's own
+      // project pills.
+      const nameOf = (id) => (id.startsWith('grp:') ? id.slice('grp:'.length) : this.topology.nodes.find((n) => n.id === id)?.name || id);
       const from = nameOf(edgeData.source);
       const to = nameOf(edgeData.target);
       if (edgeData.kind === 'depends_on') {
