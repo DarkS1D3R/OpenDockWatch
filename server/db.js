@@ -155,6 +155,42 @@ const stmts = {
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
+  getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`),
+  getAuditLogByHost: db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
+  getAuditLogAll: db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`),
+  getAlertsByHost: db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
+  getAlertsAll: db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`),
+  countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`),
+  // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps chart
+  // payloads small over long ranges without a separate downsampling job.
+  containerMetricsHistory: db.prepare(`
+    SELECT
+      (ts / @bucketMs) * @bucketMs AS bucket,
+      AVG(cpu_perc) AS cpuPerc,
+      AVG(mem_used_bytes) AS memUsedBytes,
+      AVG(mem_perc) AS memPerc,
+      AVG(net_rx_bytes) AS netRxBytes,
+      AVG(net_tx_bytes) AS netTxBytes,
+      AVG(block_read_bytes) AS blockReadBytes,
+      AVG(block_write_bytes) AS blockWriteBytes
+    FROM container_metrics
+    WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `),
+  hostMetricsHistory: db.prepare(`
+    SELECT
+      (ts / @bucketMs) * @bucketMs AS bucket,
+      AVG(cpu_percent) AS cpuPercent,
+      AVG(mem_used_bytes) AS memUsedBytes,
+      AVG(system_cpu_percent) AS systemCpuPercent,
+      AVG(system_mem_used_bytes) AS systemMemUsedBytes,
+      AVG(system_mem_total_bytes) AS systemMemTotalBytes
+    FROM host_metrics
+    WHERE host_id = @hostId AND ts >= @sinceTs
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `),
   getSetting: db.prepare(`SELECT value FROM settings WHERE key = ?`),
   setSetting: db.prepare(`
     INSERT INTO settings (key, value) VALUES (?, ?)
@@ -223,25 +259,19 @@ function countManualStartsSince(hostId, containerId, sinceTs) {
 }
 
 function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
-  return db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(hostId, sinceTs, limit);
+  return stmts.getEvents.all(hostId, sinceTs, limit);
 }
 
 function getAuditLog(hostId, { limit = 200 } = {}) {
-  if (hostId) {
-    return db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
-  }
-  return db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`).all(limit);
+  return hostId ? stmts.getAuditLogByHost.all(hostId, limit) : stmts.getAuditLogAll.all(limit);
 }
 
 function getAlerts(hostId, { limit = 200 } = {}) {
-  if (hostId) {
-    return db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`).all(hostId, limit);
-  }
-  return db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`).all(limit);
+  return hostId ? stmts.getAlertsByHost.all(hostId, limit) : stmts.getAlertsAll.all(limit);
 }
 
 function countOpenAlerts(hostId) {
-  return db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`).get(hostId).n;
+  return stmts.countOpenAlerts.get(hostId).n;
 }
 
 // Batched form of countOpenAlerts, per-container - for the topology route, which needs an open
@@ -266,48 +296,12 @@ function deleteSetting(key) {
   stmts.deleteSetting.run(key);
 }
 
-// Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps
-// chart payloads small over long ranges without a separate downsampling job.
 function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
-  return db
-    .prepare(
-      `
-      SELECT
-        (ts / @bucketMs) * @bucketMs AS bucket,
-        AVG(cpu_perc) AS cpuPerc,
-        AVG(mem_used_bytes) AS memUsedBytes,
-        AVG(mem_perc) AS memPerc,
-        AVG(net_rx_bytes) AS netRxBytes,
-        AVG(net_tx_bytes) AS netTxBytes,
-        AVG(block_read_bytes) AS blockReadBytes,
-        AVG(block_write_bytes) AS blockWriteBytes
-      FROM container_metrics
-      WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs
-      GROUP BY bucket
-      ORDER BY bucket ASC
-    `
-    )
-    .all({ hostId, containerId, sinceTs, bucketMs });
+  return stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs });
 }
 
 function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
-  return db
-    .prepare(
-      `
-      SELECT
-        (ts / @bucketMs) * @bucketMs AS bucket,
-        AVG(cpu_percent) AS cpuPercent,
-        AVG(mem_used_bytes) AS memUsedBytes,
-        AVG(system_cpu_percent) AS systemCpuPercent,
-        AVG(system_mem_used_bytes) AS systemMemUsedBytes,
-        AVG(system_mem_total_bytes) AS systemMemTotalBytes
-      FROM host_metrics
-      WHERE host_id = @hostId AND ts >= @sinceTs
-      GROUP BY bucket
-      ORDER BY bucket ASC
-    `
-    )
-    .all({ hostId, sinceTs, bucketMs });
+  return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs });
 }
 
 function close() {
