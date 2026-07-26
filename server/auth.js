@@ -34,13 +34,22 @@ async function verifyLogin(username, password) {
   if (typeof username !== 'string' || typeof password !== 'string') {
     return null;
   }
-  if (username === expectedUser && (await bcrypt.compare(password, expectedHash))) {
-    return { username, role: 'admin' };
-  }
 
   const viewerUser = process.env.VIEWER_USER;
   const viewerHash = process.env.VIEWER_PASS_HASH;
-  if (viewerUser && viewerHash && username === viewerUser && (await bcrypt.compare(password, viewerHash))) {
+
+  // Both bcrypt.compare calls always run, rather than short-circuiting on the username match
+  // first (`username === expectedUser && await bcrypt.compare(...)`) - that would make a
+  // wrong-username request return near-instantly while a right-username/wrong-password one pays
+  // bcrypt's ~100ms, an observable timing side-channel that leaks whether a submitted username
+  // is valid before the rate limiter even gets a chance to matter.
+  const adminMatch = await bcrypt.compare(password, expectedHash);
+  const viewerMatch = viewerUser && viewerHash ? await bcrypt.compare(password, viewerHash) : false;
+
+  if (username === expectedUser && adminMatch) {
+    return { username, role: 'admin' };
+  }
+  if (viewerUser && username === viewerUser && viewerMatch) {
     return { username, role: 'viewer' };
   }
 

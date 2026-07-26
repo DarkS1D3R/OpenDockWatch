@@ -59,6 +59,20 @@ test('verifyLogin', async (t) => {
     assert.equal(await verifyLogin('viewer', 'viewerpass'), null);
   });
 
+  // Both bcrypt.compare calls run regardless of username, closing a timing side-channel that
+  // would otherwise let a wrong-username request return near-instantly - these confirm that
+  // change didn't loosen the actual username check itself.
+  await t.test('rejects an unknown username even when the password matches the admin hash', async () => {
+    withEnv(t, { AUTH_USER: 'admin', AUTH_PASS_HASH: adminHash, VIEWER_USER: 'viewer', VIEWER_PASS_HASH: viewerHash });
+    assert.equal(await verifyLogin('nobody', 'adminpass'), null);
+  });
+
+  await t.test('rejects the admin username with the viewer password, and vice versa', async () => {
+    withEnv(t, { AUTH_USER: 'admin', AUTH_PASS_HASH: adminHash, VIEWER_USER: 'viewer', VIEWER_PASS_HASH: viewerHash });
+    assert.equal(await verifyLogin('admin', 'viewerpass'), null);
+    assert.equal(await verifyLogin('viewer', 'adminpass'), null);
+  });
+
   await t.test('rejects a request with a missing username or password rather than throwing', async () => {
     withEnv(t, { AUTH_USER: 'admin', AUTH_PASS_HASH: adminHash });
     assert.equal(await verifyLogin('admin', undefined), null);
