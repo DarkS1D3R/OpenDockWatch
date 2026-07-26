@@ -37,6 +37,9 @@ COPY package.json ./
 COPY . .
 
 ENV PORT=3000
+# express changes behaviour on this (view caching, and notably its default error handler stops
+# putting stack traces in response bodies) - the app should never run as anything else in an image.
+ENV NODE_ENV=production
 EXPOSE 3000
 
 CMD ["node", "server/index.js"]

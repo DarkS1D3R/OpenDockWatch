@@ -619,6 +619,18 @@ api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
 
 app.use('/api', api);
 
+// Anything a route throws that it doesn't handle itself lands here. Without it, express's
+// default handler answers - and that one puts the whole stack trace in the response body
+// unless NODE_ENV=production, which is not something to rely on being set. Four arguments is
+// what marks this as an error handler rather than ordinary middleware; `next` is genuinely
+// used, for the already-streaming case (SSE) where the only correct move is to let express
+// destroy the connection.
+app.use((err, req, res, next) => {
+  logger.error('request.failed', { method: req.method, path: req.originalUrl, error: err.message });
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message });
+});
+
 const server = app.listen(PORT, () => {
   console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
   eventWatcher.start();
