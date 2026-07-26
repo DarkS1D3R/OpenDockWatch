@@ -193,9 +193,12 @@ function start() {
 
   const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
-  globalTimers.push(
-    setInterval(() => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs }), 60 * 60 * 1000)
-  );
+  const prune = () => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs });
+  // Once up front, not just on the hour: the interval's first tick is an hour away, so an
+  // instance that gets restarted more often than that (or one whose retention window was just
+  // shortened) would otherwise never prune anything at all.
+  prune();
+  globalTimers.push(setInterval(prune, 60 * 60 * 1000));
 }
 
 function stop() {
