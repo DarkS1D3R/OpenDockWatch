@@ -76,6 +76,15 @@ function requireContainerId(req, res, next) {
   next();
 }
 
+// Resolves :hostId to a configured host, attaching it as req.host so route handlers don't each
+// repeat the getHost()/404 pair - it was copy-pasted verbatim across every /hosts/:hostId route.
+function requireHost(req, res, next) {
+  const host = getHost(req.params.hostId);
+  if (!host) return res.status(404).json({ error: 'unknown host' });
+  req.host = host;
+  next();
+}
+
 if (!process.env.SESSION_SECRET) {
   logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
@@ -187,9 +196,8 @@ api.get('/hosts', async (req, res) => {
   res.json(results);
 });
 
-api.get('/hosts/:hostId/containers', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
+  const host = req.host;
   try {
     const containers = await listContainers(host);
     const sinceTs = Date.now() - 3_600_000;
@@ -203,9 +211,8 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/inspect', requireContainerId, async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId, async (req, res) => {
+  const host = req.host;
   try {
     res.json(await getContainerInspect(host, req.params.id));
   } catch (err) {
@@ -213,9 +220,8 @@ api.get('/hosts/:hostId/containers/:id/inspect', requireContainerId, async (req,
   }
 });
 
-api.get('/hosts/:hostId/info', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
+  const host = req.host;
   try {
     res.json(await getHostInfo(host));
   } catch (err) {
@@ -223,9 +229,8 @@ api.get('/hosts/:hostId/info', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/stats', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
+  const host = req.host;
   // Prefer metricsCollector's snapshot over a fresh `docker stats` call: it's the only place the
   // NET/DISK rx/tx and read/write rates (computed from consecutive polls) are available, and it's
   // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated
@@ -241,9 +246,8 @@ api.get('/hosts/:hostId/stats', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/topology', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
+  const host = req.host;
   try {
     const snapshot = metricsCollector.getSnapshot(host.id);
     const topology = await getTopology(host, snapshot);
@@ -255,9 +259,8 @@ api.get('/hosts/:hostId/topology', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/disk-usage', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
+  const host = req.host;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   if (snapshot && snapshot.diskUsage) return res.json(snapshot.diskUsage);
   try {
@@ -270,9 +273,8 @@ api.get('/hosts/:hostId/disk-usage', async (req, res) => {
 // Separate from the route above (and not part of the regular disk-usage poll/snapshot) since -v
 // is extra work to walk every image's shared/unique layer sizes - only fetched on demand, when
 // the Images disclosure in the Disk tile is actually opened.
-api.get('/hosts/:hostId/disk-usage/images', async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => {
+  const host = req.host;
   try {
     res.json(await getDiskUsageImages(host));
   } catch (err) {
@@ -280,9 +282,7 @@ api.get('/hosts/:hostId/disk-usage/images', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/metrics/history', (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
   const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
   const sinceTs = Date.now() - range.sinceMs;
   const { containerId } = req.query;
@@ -292,9 +292,7 @@ api.get('/hosts/:hostId/metrics/history', (req, res) => {
   res.json(rows);
 });
 
-api.get('/hosts/:hostId/events', (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   const sinceTs = intParam(req.query.since, 0);
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   const rows = db.getEvents(req.params.hostId, { sinceTs, limit });
@@ -309,9 +307,7 @@ api.get('/hosts/:hostId/events', (req, res) => {
   );
 });
 
-api.get('/hosts/:hostId/events/stream', (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   const unsubscribe = eventWatcher.broadcaster.subscribe(res, req.params.hostId);
   req.on('close', unsubscribe);
 });
@@ -490,9 +486,8 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
 // Runs the same probe as the reachability poll, but surfaces the real docker/ssh stderr instead
 // of collapsing it to a boolean - "Host key verification failed" or "Permission denied
 // (publickey)" tells the user exactly what to fix, "unreachable" in the host card doesn't.
-api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
-  const host = getHost(req.params.id);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (req, res) => {
+  const host = req.host;
   try {
     await testHostConnection(host);
     res.json({ ok: true });
@@ -501,9 +496,8 @@ api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
   }
 });
 
-api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireContainerId, async (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, requireContainerId, async (req, res) => {
+  const host = req.host;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
   const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
@@ -538,9 +532,8 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireContainer
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/logs', requireContainerId, (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {
+  const host = req.host;
 
   res.set({
     'Content-Type': 'text/event-stream',
@@ -596,9 +589,8 @@ api.get('/hosts/:hostId/containers/:id/logs', requireContainerId, (req, res) => 
   req.on('close', cleanup);
 });
 
-api.get('/hosts/:hostId/containers/:id/logs/download', requireContainerId, (req, res) => {
-  const host = getHost(req.params.hostId);
-  if (!host) return res.status(404).json({ error: 'unknown host' });
+api.get('/hosts/:hostId/containers/:id/logs/download', requireHost, requireContainerId, (req, res) => {
+  const host = req.host;
 
   const child = downloadLogs(host, req.params.id, { tail: tailParam(req.query.tail, 5000) });
 
