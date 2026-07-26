@@ -397,6 +397,10 @@ body {
   background: none;
   cursor: pointer;
   line-height: 0;
+  /* .cell-metric-row is a flex row, and a flex item shrinks below its content width by default -
+     without this the chart collapses to a few pixels in a narrow column, which is what the bar
+     chart this replaced avoided only because its bars were individually flex: none. */
+  flex: none;
 }
 .mini-spark-btn:hover,
 .mini-spark-btn:focus-visible {
@@ -1484,6 +1488,54 @@ table.containers td:nth-child(7) {
 
 .settings-btn {
   margin-left: 12px;
+}
+
+/* The container metrics modal. Above the sticky topbar (z-index 21) and the detail panel (20),
+   since it's the one thing on screen while it's open. */
+.metrics-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.metrics-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(1000px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.metrics-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+/* Pushes the range toggle and close button to the right, leaving the container name on the left. */
+.metrics-modal-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+/* Four full-width charts stacked - taller than they'd be sharing a row, which is the whole reason
+   this view exists over the cell-sized sparkline that opened it. The body scrolls rather than the
+   page, so the header and its range toggle stay put. */
+.metrics-modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.metrics-modal-body .sparkline {
+  height: 150px;
 }
 
 .modal-body {

@@ -6,6 +6,7 @@ import ContainerDetail from './components/ContainerDetail.js';
 import ActivityView from './components/ActivityView.js';
 import SettingsPanel from './components/SettingsPanel.js';
 import ContainerList from './components/ContainerList.js';
+import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import { parseMemUsedBytes } from './format.js';
 import {
@@ -35,6 +36,7 @@ createApp({
     ActivityView,
     SettingsPanel,
     ContainerList,
+    ContainerMetricsModal,
     FlowView,
   },
   data() {
@@ -64,6 +66,10 @@ createApp({
       alerts: [],
 
       selectedContainerId: null,
+      // Independent of selectedContainerId: opening a row's metrics shouldn't also open the
+      // detail panel and its log stream, and the modal stays on the container it was opened for
+      // even if the selection moves underneath it.
+      metricsContainerId: null,
 
       logViewerOpen: false,
       logViewerFullscreen: false,
@@ -90,6 +96,9 @@ createApp({
     },
     selectedContainer() {
       return this.containers.find((c) => c.id === this.selectedContainerId) || null;
+    },
+    metricsContainer() {
+      return this.containers.find((c) => c.id === this.metricsContainerId) || null;
     },
     currentHostName() {
       const h = this.hosts.find((h) => h.id === this.selectedHostId);
@@ -147,6 +156,9 @@ createApp({
     selectHost(id) {
       this.selectedHostId = id;
       this.selectedContainerId = null;
+      // A container id means nothing on the host being switched to - leaving the modal open would
+      // have it fetching history for an id that host has never seen.
+      this.metricsContainerId = null;
       this.hostInfo = null;
       this.diskUsage = [];
       this.hostMetricsHistory = [];
@@ -323,6 +335,12 @@ createApp({
     closeDetail() {
       this.selectedContainerId = null;
     },
+    openMetrics(id) {
+      this.metricsContainerId = id;
+    },
+    closeMetrics() {
+      this.metricsContainerId = null;
+    },
     openLogViewer() {
       if (!this.selectedContainerId) return;
       this.logViewerOpen = true;
@@ -396,6 +414,7 @@ createApp({
               @select="selectContainerById"
               @action="doAction"
               @open-logs="openLogsFor"
+              @open-metrics="openMetrics"
             ></container-list>
             <p v-if="!loadingContainers && !containers.length" class="muted">No containers found.</p>
           </div>
@@ -443,6 +462,15 @@ createApp({
       ></log-viewer>
 
       <settings-panel v-if="settingsOpen" @close="closeSettings" @hosts-changed="loadHosts"></settings-panel>
+
+      <container-metrics-modal
+        v-if="metricsContainerId && selectedHostId"
+        :key="metricsContainerId"
+        :host-id="selectedHostId"
+        :container-id="metricsContainerId"
+        :container-name="metricsContainer ? metricsContainer.name : metricsContainerId"
+        @close="closeMetrics"
+      ></container-metrics-modal>
     </div>
   `,
 }).mount('#app');
