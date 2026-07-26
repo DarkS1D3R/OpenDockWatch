@@ -79,23 +79,28 @@ function startWatcher(host) {
   watchers.set(host.id, state);
 
   child.on('spawn', () => {
-    const s = watchers.get(host.id);
-    if (!s) return;
-    s.healthyTimer = setTimeout(() => {
-      s.restartDelay = RESTART_BASE_DELAY_MS;
+    if (watchers.get(host.id) !== state) return;
+    state.healthyTimer = setTimeout(() => {
+      state.restartDelay = RESTART_BASE_DELAY_MS;
     }, HEALTHY_AFTER_MS);
   });
 
   child.on('exit', () => {
-    const s = watchers.get(host.id);
-    if (!s || s.stopped) return;
-    if (s.healthyTimer) clearTimeout(s.healthyTimer);
-    const delay = Math.min(s.restartDelay, RESTART_MAX_DELAY_MS);
-    setTimeout(() => {
-      const current = watchers.get(host.id);
-      if (current && !current.stopped) startWatcher(host);
+    // Identity check, not just a lookup by id: an edit through Settings is a removeHost +
+    // addHost pair, so by the time a dead stream's backoff elapses the map may hold a *new*
+    // state object (new child, new config) under the same id. Reviving this watcher against
+    // that entry would leave two `docker events` streams running for one host - every event
+    // inserted, published and alerted on twice - with the newer child orphaned where no
+    // removeHost/stop can ever kill it. The pending timer is tracked on the state for the
+    // same reason, so removeHost can cancel a restart that hasn't fired yet.
+    if (watchers.get(host.id) !== state || state.stopped) return;
+    if (state.healthyTimer) clearTimeout(state.healthyTimer);
+    const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);
+    state.restartTimer = setTimeout(() => {
+      if (watchers.get(host.id) !== state || state.stopped) return;
+      startWatcher(host);
     }, delay);
-    s.restartDelay = Math.min(delay * 2, RESTART_MAX_DELAY_MS);
+    state.restartDelay = Math.min(delay * 2, RESTART_MAX_DELAY_MS);
   });
 }
 
@@ -112,21 +117,23 @@ function addHost(host) {
   startWatcher(host);
 }
 
+function teardown(state) {
+  state.stopped = true;
+  if (state.healthyTimer) clearTimeout(state.healthyTimer);
+  if (state.restartTimer) clearTimeout(state.restartTimer);
+  if (state.child) state.child.kill();
+}
+
 function removeHost(hostId) {
   const state = watchers.get(hostId);
   if (!state) return;
-  state.stopped = true;
-  if (state.healthyTimer) clearTimeout(state.healthyTimer);
-  if (state.child) state.child.kill();
+  teardown(state);
   watchers.delete(hostId);
 }
 
 function stop() {
-  for (const state of watchers.values()) {
-    state.stopped = true;
-    if (state.healthyTimer) clearTimeout(state.healthyTimer);
-    if (state.child) state.child.kill();
-  }
+  for (const state of watchers.values()) teardown(state);
+  watchers.clear();
 }
 
 module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine };
