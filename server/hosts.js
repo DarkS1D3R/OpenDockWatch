@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const logger = require('./logger');
 
 const CONFIG_DIR = path.join(__dirname, '../config');
 const HOSTS_FILE = path.join(CONFIG_DIR, 'hosts.json');
@@ -10,9 +11,7 @@ let cache = null;
 function readHostsFile() {
   const file = fs.existsSync(HOSTS_FILE) ? HOSTS_FILE : EXAMPLE_FILE;
   if (file === EXAMPLE_FILE) {
-    console.warn(
-      `[opendockwatch] config/hosts.json not found, using config/hosts.example.json - copy it to hosts.json and edit for real use.`
-    );
+    logger.warn('hosts.config.missing', { using: 'config/hosts.example.json', hint: 'copy it to config/hosts.json and edit for real use' });
   }
   const raw = fs.readFileSync(file, 'utf8');
   return JSON.parse(raw);
@@ -69,7 +68,7 @@ try {
     cache = null;
   }).unref();
 } catch (err) {
-  console.warn(`[opendockwatch] could not watch ${CONFIG_DIR} for changes: ${err.message}`);
+  logger.warn('hosts.config.watch_failed', { dir: CONFIG_DIR, error: err.message });
 }
 
 module.exports = { loadHosts, getHost, saveHosts, isValidHostId, isValidDockerHostUrl, hasLocalHost };

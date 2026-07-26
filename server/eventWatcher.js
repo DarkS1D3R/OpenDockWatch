@@ -2,6 +2,7 @@ const { loadHosts } = require('./hosts');
 const { streamEvents } = require('./docker');
 const db = require('./db');
 const alerts = require('./alerts');
+const logger = require('./logger');
 const { Broadcaster } = require('./sse');
 
 const broadcaster = new Broadcaster();
@@ -71,7 +72,7 @@ function startWatcher(host) {
   // Without this handler, a spawn failure (docker not on PATH, bad SSH host, etc.) emits an
   // unhandled 'error' that crashes the whole process - taking down monitoring for every host.
   child.on('error', (err) => {
-    console.error(`[opendockwatch] events stream error for host ${host.id}: ${err.message}`);
+    logger.error('events.stream.failed', { host: host.id, error: err.message });
   });
 
   const state = watchers.get(host.id) || { restartDelay: RESTART_BASE_DELAY_MS };

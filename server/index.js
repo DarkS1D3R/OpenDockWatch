@@ -66,7 +66,7 @@ function tailParam(raw, fallback) {
 }
 
 if (!process.env.SESSION_SECRET) {
-  console.warn('[opendockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
+  logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
 
 // Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
