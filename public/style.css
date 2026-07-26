@@ -365,6 +365,19 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+/* The value beside the chart never shrinks: the chart absorbs the entire shortfall instead. Flex
+   otherwise distributes shrinkage in proportion to each item's basis, and CSS ellipsis triggers on
+   a sub-pixel shortfall - at 1280 that turned "0.02%" into "0.02…", dropping the unit for the sake
+   of 0.4px, while the chart still had 90px it could have given up. The number is the primary
+   reading here and the chart is context for it, so the chart is what gets narrower. Overflow and
+   ellipsis stay as a backstop for a column too narrow for even the value on its own. */
+.cell-metric-row > span {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mini-spark {
   display: block;
@@ -404,7 +417,7 @@ body {
      content width by default), which is how this started out. The floor keeps it a chart rather
      than a smudge. */
   flex: 0 1 137px;
-  min-width: 64px;
+  min-width: 0;
 }
 .mini-spark-btn:hover,
 .mini-spark-btn:focus-visible {
@@ -571,38 +584,51 @@ table.containers th {
   color: var(--muted);
   font-weight: 600;
 }
+/* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
+   buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,
+   so together with the fixed column the table is always over-subscribed: the fixed width is
+   honoured exactly and the percentage columns absorb the shortfall proportionally - "everything
+   else gets narrower, the buttons never wrap". Letting them sum to less hands the leftover to
+   Actions on a wide screen (296px at 2560, measured) where it strands beside the buttons instead
+   of going to the data.
+
+   272px is the four buttons' natural single-line width (248px measured, in this font) plus real
+   headroom - at 260px they already encroached on the cell's right padding, which a platform
+   rendering the labels a few percent wider would turn into a clipped Restart. Re-measure if a
+   button is ever added or renamed: the cell is nowrap with overflow hidden, so too small a width
+   cuts the last button off rather than wrapping it.
+
+   Among the percentage columns, CPU and Memory each carry a value plus a sparkline, so they're the
+   two with a real minimum; Image and Ports are single truncating strings that lose nothing but
+   ellipsis length. Memory is widest because its value is a pair ("634.5MiB / 1GiB"). */
 table.containers th:nth-child(1),
 table.containers td:nth-child(1) {
-  width: 13%;
+  width: 15%;
 } /* Name */
-/* CPU and Memory carry a value plus a 137px sparkline, so they're the two columns whose content
-   has a real minimum width; Image and Ports are single truncating strings that lose nothing but
-   ellipsis length by giving some of theirs up. Memory is the widest of the two because its value
-   is a pair ("634.5MiB / 1GiB") rather than a single percentage. */
 table.containers th:nth-child(2),
 table.containers td:nth-child(2) {
-  width: 11%;
+  width: 12%;
 } /* Image */
 table.containers th:nth-child(3),
 table.containers td:nth-child(3) {
-  width: 11%;
+  width: 12%;
 } /* Status */
 table.containers th:nth-child(4),
 table.containers td:nth-child(4) {
-  width: 19%;
+  width: 21%;
 } /* CPU */
 table.containers th:nth-child(5),
 table.containers td:nth-child(5) {
-  width: 24%;
+  width: 27%;
 } /* Memory */
 table.containers th:nth-child(6),
 table.containers td:nth-child(6) {
-  width: 10%;
+  width: 13%;
 } /* Ports */
 table.containers th:nth-child(7),
 table.containers td:nth-child(7) {
-  width: 12%;
-  white-space: normal;
+  width: 272px;
+  white-space: nowrap;
 } /* Actions */
 .muted {
   color: var(--muted);
@@ -620,6 +646,10 @@ table.containers td:nth-child(7) {
 
 .actions button {
   margin-right: 6px;
+}
+/* No dangling margin past the last button - it counts against the fixed column width above. */
+.actions button:last-child {
+  margin-right: 0;
 }
 
 .row-clickable {
