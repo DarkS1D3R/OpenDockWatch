@@ -9,6 +9,16 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --seq-mem: #199e70;
+  /* The four metric-series hues (CPU --accent, RAM --seq-mem, and these two) were validated as a
+     categorical set against the tile surface #171a20: every one inside the L 0.48-0.67 band, above
+     the chroma floor, over 3:1 contrast, and clear of each other for normal vision on every pair.
+     The closest CVD pair is --seq-net against --seq-mem at deutan dE 7.0, which sits in the band
+     that's only allowed alongside a second, non-color encoding - satisfied here because each
+     metric is its own titled chart with its own legend, so no reader ever has to separate the two
+     by hue alone. A more obvious purple for net fails outright: it collides with --accent at
+     deutan dE 2.5. Re-validate rather than eyeball if these ever change. */
+  --seq-net: #d160a8;
+  --seq-block: #b07d2e;
 }
 
 * {
@@ -152,6 +162,14 @@ body {
   color: var(--seq-mem);
   background: color-mix(in srgb, var(--seq-mem) 15%, transparent);
 }
+.tile-icon-net {
+  color: var(--seq-net);
+  background: color-mix(in srgb, var(--seq-net) 15%, transparent);
+}
+.tile-icon-block {
+  color: var(--seq-block);
+  background: color-mix(in srgb, var(--seq-block) 15%, transparent);
+}
 .tile-icon svg {
   width: 15px;
   height: 15px;
@@ -210,27 +228,55 @@ body {
 .spark-line-mem {
   stroke: var(--seq-mem);
 }
+.spark-line-net {
+  stroke: var(--seq-net);
+}
+.spark-line-block {
+  stroke: var(--seq-block);
+}
 .spark-area-cpu {
   fill: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .spark-area-mem {
   fill: color-mix(in srgb, var(--seq-mem) 22%, transparent);
 }
-/* Host-total layer, drawn behind the Docker line/area above - same color, lower opacity, so it
-   reads as "the same thing, more of it" rather than a second unrelated series. */
-.spark-line-cpu-host {
+.spark-area-net {
+  fill: color-mix(in srgb, var(--seq-net) 22%, transparent);
+}
+.spark-area-block {
+  fill: color-mix(in srgb, var(--seq-block) 22%, transparent);
+}
+/* The tile's second series, drawn behind the primary line/area above - same color, lower opacity.
+   On the host card that's the host total behind Docker's own usage, where it reads as "the same
+   thing, more of it" rather than an unrelated series; in the container metrics modal it's the tx
+   half of an rx/tx pair, where the legend does the naming. */
+.spark-line-cpu-alt {
   stroke: var(--accent);
   opacity: 0.35;
 }
-.spark-line-mem-host {
+.spark-line-mem-alt {
   stroke: var(--seq-mem);
   opacity: 0.35;
 }
-.spark-area-cpu-host {
+.spark-line-net-alt {
+  stroke: var(--seq-net);
+  opacity: 0.35;
+}
+.spark-line-block-alt {
+  stroke: var(--seq-block);
+  opacity: 0.35;
+}
+.spark-area-cpu-alt {
   fill: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.spark-area-mem-host {
+.spark-area-mem-alt {
   fill: color-mix(in srgb, var(--seq-mem) 10%, transparent);
+}
+.spark-area-net-alt {
+  fill: color-mix(in srgb, var(--seq-net) 10%, transparent);
+}
+.spark-area-block-alt {
+  fill: color-mix(in srgb, var(--seq-block) 10%, transparent);
 }
 .spark-dot {
   position: absolute;
@@ -246,14 +292,28 @@ body {
 .spark-dot-mem {
   background: var(--seq-mem);
 }
-/* More opaque than the host-total line/area (0.35/0.1) - a marker dot at that same faintness
+.spark-dot-net {
+  background: var(--seq-net);
+}
+.spark-dot-block {
+  background: var(--seq-block);
+}
+/* More opaque than the second series' line/area (0.35/0.1) - a marker dot at that same faintness
    would be hard to actually see, and the whole point of a hover dot is to be spotted. */
-.spark-dot-cpu-host {
+.spark-dot-cpu-alt {
   background: var(--accent);
   opacity: 0.7;
 }
-.spark-dot-mem-host {
+.spark-dot-mem-alt {
   background: var(--seq-mem);
+  opacity: 0.7;
+}
+.spark-dot-net-alt {
+  background: var(--seq-net);
+  opacity: 0.7;
+}
+.spark-dot-block-alt {
+  background: var(--seq-block);
   opacity: 0.7;
 }
 .spark-grid-line {
@@ -880,15 +940,29 @@ table.containers td:nth-child(7) {
 .bar-swatch-mem {
   background: var(--seq-mem);
 }
-/* Same color, lower opacity - matches the host-total sparkline layer's own treatment
-   (.spark-line-cpu-host/.spark-line-mem-host) so the legend swatch actually looks like the
-   line it's identifying. */
-.bar-swatch-cpu-host {
+.bar-swatch-net {
+  background: var(--seq-net);
+}
+.bar-swatch-block {
+  background: var(--seq-block);
+}
+/* Same color, lower opacity - matches the second series' sparkline layer's own treatment
+   (.spark-line-cpu-alt and friends) so the legend swatch actually looks like the line it's
+   identifying. */
+.bar-swatch-cpu-alt {
   background: var(--accent);
   opacity: 0.35;
 }
-.bar-swatch-mem-host {
+.bar-swatch-mem-alt {
   background: var(--seq-mem);
+  opacity: 0.35;
+}
+.bar-swatch-net-alt {
+  background: var(--seq-net);
+  opacity: 0.35;
+}
+.bar-swatch-block-alt {
+  background: var(--seq-block);
   opacity: 0.35;
 }
 /* Sits inside a single host-tile below its sparkline, rather than the wider Flow-view legend

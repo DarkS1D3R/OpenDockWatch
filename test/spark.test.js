@@ -90,18 +90,18 @@ test('hoverPoints', async (t) => {
     assert.equal(spark.hoverPoints(0, [null], [null], 10), null);
   });
 
-  await t.test('includes both docker and host points when both have data', () => {
+  await t.test('includes both the primary and secondary points when both have data', () => {
     const p = spark.hoverPoints(0, [5], [8], 10);
-    assert.ok(p.docker);
-    assert.ok(p.host);
-    assert.equal(p.x, p.docker.x);
+    assert.ok(p.primary);
+    assert.ok(p.secondary);
+    assert.equal(p.x, p.primary.x);
   });
 
-  await t.test('falls back to the host point for x when only the host series has data', () => {
+  await t.test('falls back to the secondary point for x when only that series has data', () => {
     const p = spark.hoverPoints(0, [null], [8], 10);
-    assert.equal(p.docker, null);
-    assert.ok(p.host);
-    assert.equal(p.x, p.host.x);
+    assert.equal(p.primary, null);
+    assert.ok(p.secondary);
+    assert.equal(p.x, p.secondary.x);
   });
 });
 
