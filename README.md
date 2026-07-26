@@ -4,7 +4,8 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ## Features
 
-- **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart actions. Filter by All / Running / Stopped.
+- **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns each carrying its own sparkline of the last couple of minutes, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart actions. Filter by All / Running / Stopped.
+- **Container metrics** — clicking a row's CPU or memory sparkline opens that container's full recorded history: CPU, memory, network I/O and block I/O over a selectable 1h / 24h / 7d window, stacked and sharing one hover crosshair, so a CPU spike can be read against what memory and the network were doing at that same moment. The I/O charts are rates derived from Docker's cumulative counters rather than the counters themselves, so a container restart reads as a gap instead of a cliff.
 - **Flow view** — a graph of containers, grouped visually by compose project, with zoom/fit controls, a name filter, per-edge-kind toggles, PNG/SVG export, and a Fullscreen toggle that hides the host stats card so the graph gets the room. Nodes show a state indicator, an uptime/status string, live CPU/RAM bars, network/disk I/O as current rates (not lifetime totals), published ports, and a badge for open alerts.
   - **PNG export** — captures exactly what's currently framed on screen (zoom/pan in first to crop to a specific area), at 2x pixel density for crisp text and lines.
   - **SVG export** — a vector alternative with no fixed size/resolution ceiling, drawn directly from the graph's own layout data rather than screenshotting the page, and always covers the whole graph regardless of current zoom/pan. Better for a host running a lot of compose projects: scales losslessly to any zoom level and stays a small file regardless of how big the graph gets.
@@ -24,6 +25,10 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 **List view** — containers grouped by Compose project, live CPU/memory columns
 
 ![List view, containers grouped by Compose project](screenshots/list-view.png)
+
+**Container metrics** — clicking a row's CPU or memory sparkline opens its recorded history over 1h / 24h / 7d, with one hover crosshair shared across all four charts
+
+![Container metrics modal showing CPU, memory, network I/O and block I/O charts for a single container over a one-hour window](screenshots/container-metrics.png)
 
 **Flow view** — a topology graph of containers, with live CPU/RAM/network/disk stats and open-alert badges on each node
 

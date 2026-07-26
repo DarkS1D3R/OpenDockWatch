@@ -40,15 +40,17 @@ export function sparkPaths(slots, peak) {
   return { line, area, dot: { x: last.x, y: last.y } };
 }
 
-// One point on the Docker line and one on the host-total line at the same hovered index - null
-// fields (rather than a null point) when a series has no value there, e.g. hovering an index
-// from before host-total sampling started, or on a remote host with no host data at all.
-export function hoverPoints(idx, dockerSlots, hostSlots, peak) {
+// One point on each of a tile's two lines at the same hovered index - null fields (rather than a
+// null point) when a series has no value there, e.g. hovering an index from before the secondary
+// series started being sampled, or on a remote host with no host-total data at all. The two are
+// named by position rather than by meaning because the caller decides what they are: host total
+// behind Docker usage on the host card, tx behind rx on the modal's Net I/O chart.
+export function hoverPoints(idx, primarySlots, secondarySlots, peak) {
   if (idx == null) return null;
-  const docker = sparkPoint(dockerSlots, peak, idx);
-  const host = sparkPoint(hostSlots, peak, idx);
-  if (!docker && !host) return null;
-  return { x: (docker || host).x, docker, host };
+  const primary = sparkPoint(primarySlots, peak, idx);
+  const secondary = sparkPoint(secondarySlots, peak, idx);
+  if (!primary && !secondary) return null;
+  return { x: (primary || secondary).x, primary, secondary };
 }
 
 // Picks up to `count` evenly-spaced indices into a padded slots array for x-axis tick labels,

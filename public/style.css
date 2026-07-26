@@ -9,6 +9,16 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --seq-mem: #199e70;
+  /* The four metric-series hues (CPU --accent, RAM --seq-mem, and these two) were validated as a
+     categorical set against the tile surface #171a20: every one inside the L 0.48-0.67 band, above
+     the chroma floor, over 3:1 contrast, and clear of each other for normal vision on every pair.
+     The closest CVD pair is --seq-net against --seq-mem at deutan dE 7.0, which sits in the band
+     that's only allowed alongside a second, non-color encoding - satisfied here because each
+     metric is its own titled chart with its own legend, so no reader ever has to separate the two
+     by hue alone. A more obvious purple for net fails outright: it collides with --accent at
+     deutan dE 2.5. Re-validate rather than eyeball if these ever change. */
+  --seq-net: #d160a8;
+  --seq-block: #b07d2e;
 }
 
 * {
@@ -152,6 +162,14 @@ body {
   color: var(--seq-mem);
   background: color-mix(in srgb, var(--seq-mem) 15%, transparent);
 }
+.tile-icon-net {
+  color: var(--seq-net);
+  background: color-mix(in srgb, var(--seq-net) 15%, transparent);
+}
+.tile-icon-block {
+  color: var(--seq-block);
+  background: color-mix(in srgb, var(--seq-block) 15%, transparent);
+}
 .tile-icon svg {
   width: 15px;
   height: 15px;
@@ -210,27 +228,55 @@ body {
 .spark-line-mem {
   stroke: var(--seq-mem);
 }
+.spark-line-net {
+  stroke: var(--seq-net);
+}
+.spark-line-block {
+  stroke: var(--seq-block);
+}
 .spark-area-cpu {
   fill: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .spark-area-mem {
   fill: color-mix(in srgb, var(--seq-mem) 22%, transparent);
 }
-/* Host-total layer, drawn behind the Docker line/area above - same color, lower opacity, so it
-   reads as "the same thing, more of it" rather than a second unrelated series. */
-.spark-line-cpu-host {
+.spark-area-net {
+  fill: color-mix(in srgb, var(--seq-net) 22%, transparent);
+}
+.spark-area-block {
+  fill: color-mix(in srgb, var(--seq-block) 22%, transparent);
+}
+/* The tile's second series, drawn behind the primary line/area above - same color, lower opacity.
+   On the host card that's the host total behind Docker's own usage, where it reads as "the same
+   thing, more of it" rather than an unrelated series; in the container metrics modal it's the tx
+   half of an rx/tx pair, where the legend does the naming. */
+.spark-line-cpu-alt {
   stroke: var(--accent);
   opacity: 0.35;
 }
-.spark-line-mem-host {
+.spark-line-mem-alt {
   stroke: var(--seq-mem);
   opacity: 0.35;
 }
-.spark-area-cpu-host {
+.spark-line-net-alt {
+  stroke: var(--seq-net);
+  opacity: 0.35;
+}
+.spark-line-block-alt {
+  stroke: var(--seq-block);
+  opacity: 0.35;
+}
+.spark-area-cpu-alt {
   fill: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.spark-area-mem-host {
+.spark-area-mem-alt {
   fill: color-mix(in srgb, var(--seq-mem) 10%, transparent);
+}
+.spark-area-net-alt {
+  fill: color-mix(in srgb, var(--seq-net) 10%, transparent);
+}
+.spark-area-block-alt {
+  fill: color-mix(in srgb, var(--seq-block) 10%, transparent);
 }
 .spark-dot {
   position: absolute;
@@ -246,14 +292,28 @@ body {
 .spark-dot-mem {
   background: var(--seq-mem);
 }
-/* More opaque than the host-total line/area (0.35/0.1) - a marker dot at that same faintness
+.spark-dot-net {
+  background: var(--seq-net);
+}
+.spark-dot-block {
+  background: var(--seq-block);
+}
+/* More opaque than the second series' line/area (0.35/0.1) - a marker dot at that same faintness
    would be hard to actually see, and the whole point of a hover dot is to be spotted. */
-.spark-dot-cpu-host {
+.spark-dot-cpu-alt {
   background: var(--accent);
   opacity: 0.7;
 }
-.spark-dot-mem-host {
+.spark-dot-mem-alt {
   background: var(--seq-mem);
+  opacity: 0.7;
+}
+.spark-dot-net-alt {
+  background: var(--seq-net);
+  opacity: 0.7;
+}
+.spark-dot-block-alt {
+  background: var(--seq-block);
   opacity: 0.7;
 }
 .spark-grid-line {
@@ -301,32 +361,93 @@ body {
   transform: translateX(-100%);
 }
 
+/* The status string is the only part of this cell allowed to lose characters. Left as plain
+   inline content, the cell's own ellipsis cuts from the end of the *whole* cell, which silently
+   took the health dot and the restart badge with it once the column got narrower - dropping the
+   two bits of state that a truncated "Up 5 minutes…" can't convey on its own. The full string is
+   on the title attribute, since it's the part that truncates. */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* The flex gap above already spaces these; their own margin-left is for the inline contexts they
+   also appear in (the details panel), so it's dropped here rather than removed outright. */
+.status-cell .health-dot,
+.status-cell .restart-badge {
+  flex: none;
+  margin-left: 0;
+}
+
 .cell-metric-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+/* The value beside the chart never shrinks: the chart absorbs the entire shortfall instead. Flex
+   otherwise distributes shrinkage in proportion to each item's basis, and CSS ellipsis triggers on
+   a sub-pixel shortfall - at 1280 that turned "0.02%" into "0.02…", dropping the unit for the sake
+   of 0.4px, while the chart still had 90px it could have given up. The number is the primary
+   reading here and the chart is context for it, so the chart is what gets narrower. Overflow and
+   ellipsis stay as a backstop for a column too narrow for even the value on its own. */
+.cell-metric-row > span {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mini-spark {
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
+  display: block;
+  width: 100%;
   height: 20px;
 }
-.mini-bar {
-  width: 3px;
-  flex: none;
-  border-radius: 1px 1px 0 0;
-  opacity: 0.55;
-  min-height: 2px;
+.mini-spark-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* The chart is drawn in a 100x30 viewBox (lib/spark.js's fixed bounds) and squashed to whatever
+     the cell gives it, same as the host tiles - non-uniform scaling is the point, so the line
+     always spans the full width regardless of how many samples have accumulated. */
 }
-.mini-bar.current {
-  opacity: 1;
+/* Holds the row's height steady before the first sample arrives, so a freshly loaded list doesn't
+   visibly reflow as each container's buffer starts filling. */
+.mini-spark-empty {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.mini-cpu {
-  background: var(--accent);
+/* A button rather than a div: this is the click target that opens the metrics modal, so it should
+   be reachable and operable from the keyboard like every other action in the row. Stripped back to
+   look like the plain chart it wraps. */
+.mini-spark-btn {
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  /* 270px when the column has room for it, shrinking rather than overflowing the cell when it
+     doesn't - the table is table-layout: fixed with percentage columns, so at a narrow viewport
+     there is a width the chart simply cannot have. A plain `flex: none` overflows into the next
+     column there, and no basis at all collapses it to a few pixels (a flex item shrinks below its
+     content width by default), which is how this started out. It's a cap rather than a `flex: 1`
+     fill so the chart doesn't balloon past 400px on an ultrawide screen; the CPU and Memory column
+     percentages above are sized so both charts reach the full 270px at 1920 and stay there. */
+  flex: 0 1 270px;
+  min-width: 0;
 }
-.mini-mem {
-  background: var(--seq-mem);
+.mini-spark-btn:hover,
+.mini-spark-btn:focus-visible {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .topbar {
@@ -488,34 +609,51 @@ table.containers th {
   color: var(--muted);
   font-weight: 600;
 }
+/* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
+   buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,
+   so together with the fixed column the table is always over-subscribed: the fixed width is
+   honoured exactly and the percentage columns absorb the shortfall proportionally - "everything
+   else gets narrower, the buttons never wrap". Letting them sum to less hands the leftover to
+   Actions on a wide screen (296px at 2560, measured) where it strands beside the buttons instead
+   of going to the data.
+
+   272px is the four buttons' natural single-line width (248px measured, in this font) plus real
+   headroom - at 260px they already encroached on the cell's right padding, which a platform
+   rendering the labels a few percent wider would turn into a clipped Restart. Re-measure if a
+   button is ever added or renamed: the cell is nowrap with overflow hidden, so too small a width
+   cuts the last button off rather than wrapping it.
+
+   Among the percentage columns, CPU and Memory each carry a value plus a sparkline, so they're the
+   two with a real minimum; Image and Ports are single truncating strings that lose nothing but
+   ellipsis length. Memory is widest because its value is a pair ("634.5MiB / 1GiB"). */
 table.containers th:nth-child(1),
 table.containers td:nth-child(1) {
-  width: 13%;
+  width: 14%;
 } /* Name */
 table.containers th:nth-child(2),
 table.containers td:nth-child(2) {
-  width: 15%;
+  width: 11%;
 } /* Image */
 table.containers th:nth-child(3),
 table.containers td:nth-child(3) {
-  width: 12%;
+  width: 11%;
 } /* Status */
 table.containers th:nth-child(4),
 table.containers td:nth-child(4) {
-  width: 17%;
+  width: 24%;
 } /* CPU */
 table.containers th:nth-child(5),
 table.containers td:nth-child(5) {
-  width: 17%;
+  width: 29%;
 } /* Memory */
 table.containers th:nth-child(6),
 table.containers td:nth-child(6) {
-  width: 14%;
+  width: 11%;
 } /* Ports */
 table.containers th:nth-child(7),
 table.containers td:nth-child(7) {
-  width: 12%;
-  white-space: normal;
+  width: 272px;
+  white-space: nowrap;
 } /* Actions */
 .muted {
   color: var(--muted);
@@ -533,6 +671,10 @@ table.containers td:nth-child(7) {
 
 .actions button {
   margin-right: 6px;
+}
+/* No dangling margin past the last button - it counts against the fixed column width above. */
+.actions button:last-child {
+  margin-right: 0;
 }
 
 .row-clickable {
@@ -880,15 +1022,29 @@ table.containers td:nth-child(7) {
 .bar-swatch-mem {
   background: var(--seq-mem);
 }
-/* Same color, lower opacity - matches the host-total sparkline layer's own treatment
-   (.spark-line-cpu-host/.spark-line-mem-host) so the legend swatch actually looks like the
-   line it's identifying. */
-.bar-swatch-cpu-host {
+.bar-swatch-net {
+  background: var(--seq-net);
+}
+.bar-swatch-block {
+  background: var(--seq-block);
+}
+/* Same color, lower opacity - matches the second series' sparkline layer's own treatment
+   (.spark-line-cpu-alt and friends) so the legend swatch actually looks like the line it's
+   identifying. */
+.bar-swatch-cpu-alt {
   background: var(--accent);
   opacity: 0.35;
 }
-.bar-swatch-mem-host {
+.bar-swatch-mem-alt {
   background: var(--seq-mem);
+  opacity: 0.35;
+}
+.bar-swatch-net-alt {
+  background: var(--seq-net);
+  opacity: 0.35;
+}
+.bar-swatch-block-alt {
+  background: var(--seq-block);
   opacity: 0.35;
 }
 /* Sits inside a single host-tile below its sparkline, rather than the wider Flow-view legend
@@ -1395,6 +1551,54 @@ table.containers td:nth-child(7) {
 
 .settings-btn {
   margin-left: 12px;
+}
+
+/* The container metrics modal. Above the sticky topbar (z-index 21) and the detail panel (20),
+   since it's the one thing on screen while it's open. */
+.metrics-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.metrics-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(1000px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.metrics-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+/* Pushes the range toggle and close button to the right, leaving the container name on the left. */
+.metrics-modal-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+/* Four full-width charts stacked - taller than they'd be sharing a row, which is the whole reason
+   this view exists over the cell-sized sparkline that opened it. The body scrolls rather than the
+   page, so the header and its range toggle stay put. */
+.metrics-modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.metrics-modal-body .sparkline {
+  height: 150px;
 }
 
 .modal-body {

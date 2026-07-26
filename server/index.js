@@ -43,8 +43,41 @@ const HISTORY_RANGES = {
   '7d': { sinceMs: 7 * 86_400_000, bucketMs: 30 * 60_000 },
 };
 
+const MAX_ROW_LIMIT = 1000;
+
+// Number('abc') is NaN, and better-sqlite3 rejects NaN outright ("datatype mismatch") rather
+// than treating it as absent - so a garbled ?limit=/?since= would 500 the request instead of
+// falling back to the default. Clamping the upper bound too keeps a hand-written ?limit=10000000
+// from pulling the whole table into memory.
+function intParam(raw, fallback, max = Number.MAX_SAFE_INTEGER) {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Math.trunc(n), max);
+}
+
+// `docker logs --tail` takes a line count or the literal "all" (the log viewer's "All lines"
+// option), so this can't just be intParam - but everything else has to be a plain positive
+// integer before it's handed to the CLI.
+function tailParam(raw, fallback) {
+  if (raw === 'all') return 'all';
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+// Container ids/names go into the docker CLI's argv. Nothing is ever run through a shell
+// (execFile/spawn with an args array), so this isn't about injection - it's that an id starting
+// with "-" would be read by docker as a flag rather than as a container, and is better refused
+// here than handed over to be misparsed.
+const CONTAINER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+function requireContainerId(req, res, next) {
+  if (!CONTAINER_ID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid container id' });
+  next();
+}
+
 if (!process.env.SESSION_SECRET) {
-  console.warn('[opendockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
+  logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
 
 // Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
@@ -170,7 +203,7 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/inspect', async (req, res) => {
+api.get('/hosts/:hostId/containers/:id/inspect', requireContainerId, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   try {
@@ -262,9 +295,9 @@ api.get('/hosts/:hostId/metrics/history', (req, res) => {
 api.get('/hosts/:hostId/events', (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
-  const since = req.query.since ? Number(req.query.since) : 0;
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
-  const rows = db.getEvents(req.params.hostId, { sinceTs: since, limit });
+  const sinceTs = intParam(req.query.since, 0);
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
+  const rows = db.getEvents(req.params.hostId, { sinceTs, limit });
   res.json(
     rows.map((r) => ({
       hostId: r.host_id,
@@ -284,17 +317,19 @@ api.get('/hosts/:hostId/events/stream', (req, res) => {
 });
 
 api.get('/audit', (req, res) => {
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
 });
 
 api.get('/alerts', (req, res) => {
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
 api.post('/alerts/:id/ack', (req, res) => {
-  db.ackAlert(Number(req.params.id));
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
+  db.ackAlert(id);
   res.json({ ok: true });
 });
 
@@ -466,7 +501,7 @@ api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
   }
 });
 
-api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
+api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireContainerId, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
@@ -503,7 +538,7 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
+api.get('/hosts/:hostId/containers/:id/logs', requireContainerId, (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
 
@@ -514,7 +549,7 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
   });
   res.flushHeaders();
 
-  const child = streamLogs(host, req.params.id, { tail: req.query.tail || 200 });
+  const child = streamLogs(host, req.params.id, { tail: tailParam(req.query.tail, 200) });
 
   // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
   // streams) so a line split across chunk boundaries isn't emitted as two SSE
@@ -561,12 +596,11 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
   req.on('close', cleanup);
 });
 
-api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
+api.get('/hosts/:hostId/containers/:id/logs/download', requireContainerId, (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
 
-  const tail = req.query.tail || 5000;
-  const child = downloadLogs(host, req.params.id, { tail });
+  const child = downloadLogs(host, req.params.id, { tail: tailParam(req.query.tail, 5000) });
 
   const safeName = (s) => s.replace(/[^a-zA-Z0-9_.-]/g, '_');
   res.set({
@@ -595,6 +629,18 @@ api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
 });
 
 app.use('/api', api);
+
+// Anything a route throws that it doesn't handle itself lands here. Without it, express's
+// default handler answers - and that one puts the whole stack trace in the response body
+// unless NODE_ENV=production, which is not something to rely on being set. Four arguments is
+// what marks this as an error handler rather than ordinary middleware; `next` is genuinely
+// used, for the already-streaming case (SSE) where the only correct move is to let express
+// destroy the connection.
+app.use((err, req, res, next) => {
+  logger.error('request.failed', { method: req.method, path: req.originalUrl, error: err.message });
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message });
+});
 
 const server = app.listen(PORT, () => {
   console.log(`[opendockwatch] listening on http://localhost:${PORT}`);

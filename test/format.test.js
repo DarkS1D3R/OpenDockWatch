@@ -71,6 +71,26 @@ test('formatGB', () => {
   assert.equal(format.formatGB(2.5e9), '2.5 GB');
 });
 
+test('formatBytes', async (t) => {
+  await t.test('picks the largest unit the value clears', () => {
+    assert.equal(format.formatBytes(0), '0 B');
+    assert.equal(format.formatBytes(512), '512 B');
+    assert.equal(format.formatBytes(1500), '1.5 kB');
+    assert.equal(format.formatBytes(412_000_000), '412.0 MB');
+    assert.equal(format.formatBytes(2.5e9), '2.5 GB');
+  });
+
+  await t.test('keeps the digits a container-sized figure needs, unlike formatGB', () => {
+    assert.equal(format.formatGB(412_000_000), '0.4 GB');
+    assert.equal(format.formatBytes(412_000_000), '412.0 MB');
+  });
+
+  await t.test('renders a missing value as a placeholder rather than NaN', () => {
+    assert.equal(format.formatBytes(null), '—');
+    assert.equal(format.formatBytes(undefined), '—');
+  });
+});
+
 test('formatRate', async (t) => {
   await t.test('null renders as a flat 0 B/s, not a placeholder', () => {
     assert.equal(format.formatRate(null), '0 B/s');

@@ -29,6 +29,11 @@ async function verifyLogin(username, password) {
   if (!expectedUser || !expectedHash) {
     throw new Error('AUTH_USER / AUTH_PASS_HASH not configured in .env');
   }
+  // A login POST missing either field is just a failed login, not a server fault - without this
+  // bcrypt.compare(undefined, hash) throws and the route answers 500 instead of 401.
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return null;
+  }
   if (username === expectedUser && (await bcrypt.compare(password, expectedHash))) {
     return { username, role: 'admin' };
   }
