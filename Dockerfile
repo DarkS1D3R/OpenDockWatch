@@ -11,9 +11,24 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
+# The Docker CLI comes from Docker's own image rather than Alpine's docker-cli package. The CLI is
+# a Go binary, so image scanners attribute every Go standard-library CVE to it, and Alpine's build
+# lags Docker's: alpine/v3.24/community was still shipping 29.5.3 built with go1.26.3 while this
+# image had 29.6.2 built with go1.26.5 - the difference between carrying CVE-2026-42504,
+# CVE-2026-27145 and CVE-2026-42507 (all Go stdlib, all fixed in go1.26.4) and not. Rebuilding
+# against Alpine could not fix that; only Alpine rebuilding the package could.
+#
+# The tag floats within the 29.x line on purpose: a rebuild should pick up the CLI's own patches,
+# which is the whole point. Bump the major deliberately, and check `docker --version` still
+# reports what you expect afterwards. The binary is self-contained and runs as-is on this musl
+# base - it needs nothing else copied alongside it.
+FROM docker:29-cli AS dockercli
+
 FROM node:24-alpine
 
-RUN apk add --no-cache docker-cli openssh-client
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+RUN apk add --no-cache openssh-client
 
 # `docker -H ssh://...` just shells out to the system `ssh` binary, so it inherits this
 # unmodified. Without it, every one of metricsCollector's ~4 docker calls per host per 5s poll
