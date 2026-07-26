@@ -21,6 +21,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "hash-password": "node scripts/hash-password.js",
+    "screenshots": "node scripts/screenshots.js",
     "test": "node scripts/check-syntax.js && node --test",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -40,6 +41,7 @@
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
+    "playwright": "^1.62.0",
     "prettier": "^3.9.4"
   }
 }

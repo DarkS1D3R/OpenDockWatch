@@ -12,6 +12,15 @@ module.exports = [
     },
   },
   {
+    // Runs in Node like the rest of scripts/, but hands callbacks to playwright's page.evaluate(),
+    // whose bodies are serialised and executed inside the browser - so it legitimately references
+    // document/window alongside require and process. Both sets of globals apply here.
+    files: ['scripts/screenshots.js'],
+    languageOptions: {
+      globals: { ...globals.browser },
+    },
+  },
+  {
     files: ['public/js/**/*.js'],
     languageOptions: {
       sourceType: 'module',

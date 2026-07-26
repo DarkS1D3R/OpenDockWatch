@@ -35,9 +35,29 @@ stack on the current daemon instead, which is the more useful form for just deve
 something that has more than one container in it.
 
 The stack deliberately contains an unhealthy container, a crash-looping one, and one that has
-exited, so the health dots, restart badges and alert rules all have something to show. Leave it
-running a while before shooting — the host card's chart covers 30 minutes, and the row sparklines
-fill from an in-memory buffer over the first couple of minutes after a page load.
+exited, so the health dots, restart badges and alert rules all have something to show.
+
+Taking the shots themselves is `npm run screenshots`, which drives a real browser through all nine:
+
+```
+npx playwright install chromium          # once - CI skips the browser download, see ci.yml
+SCREENSHOT_PASS=<the plaintext behind AUTH_PASS_HASH> npm run screenshots
+```
+
+It refuses to run against a host whose containers aren't the demo ones, so a stray run can't put
+private container names in the README. `SCREENSHOT_URL` (default `http://localhost:3100`),
+`SCREENSHOT_USER` (default `demo`), `SCREENSHOT_OUT` and `SCREENSHOT_SCALE` are the other knobs.
+
+It waits a couple of minutes before the first shot on purpose: the row sparklines fill from an
+in-memory buffer that starts empty on page load, and the host card's chart covers 30 minutes, so
+leave the stack running a while before shooting or those charts render as slivers. `SCREENSHOT_SCALE=2`
+renders at 2x for a hidpi-crisp result, at approximately four times the file size — the committed
+set is 1x, which keeps all nine under 2MB.
+
+Review every shot before committing. Several of the views need coaxing to photograph well (the
+graph views use the Fullscreen toggle so nodes don't fall back to their compact rendering, and the
+details panel has to be told to expand its collapsed sections), and a UI change can quietly undo
+that.
 
 ## Reporting bugs
 
