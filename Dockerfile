@@ -5,8 +5,11 @@ FROM node:24-alpine AS deps
 RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
+# The lockfile comes along so this is `npm ci` rather than `npm install` - the image then gets
+# exactly the dependency tree CI linted and tested against, instead of whatever transitive
+# versions happen to resolve on the day the image is built.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 FROM node:24-alpine
 

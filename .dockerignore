@@ -2,3 +2,14 @@ node_modules
 .env
 .git
 config/hosts.json
+
+# Runtime state, not source. Without this, `docker compose up --build` on a machine that has
+# already run OpenDockWatch bakes the developer's own sqlite database into the image - metrics
+# and event history, the session store, and the settings table holding the alert webhook URL
+# (which embeds a Discord/Gotify/ntfy token). A published image would carry all of it.
+data
+
+# Dev-only, never read at runtime.
+.github
+screenshots
+test
