@@ -43,6 +43,28 @@ const HISTORY_RANGES = {
   '7d': { sinceMs: 7 * 86_400_000, bucketMs: 30 * 60_000 },
 };
 
+const MAX_ROW_LIMIT = 1000;
+
+// Number('abc') is NaN, and better-sqlite3 rejects NaN outright ("datatype mismatch") rather
+// than treating it as absent - so a garbled ?limit=/?since= would 500 the request instead of
+// falling back to the default. Clamping the upper bound too keeps a hand-written ?limit=10000000
+// from pulling the whole table into memory.
+function intParam(raw, fallback, max = Number.MAX_SAFE_INTEGER) {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Math.trunc(n), max);
+}
+
+// `docker logs --tail` takes a line count or the literal "all" (the log viewer's "All lines"
+// option), so this can't just be intParam - but everything else has to be a plain positive
+// integer before it's handed to the CLI.
+function tailParam(raw, fallback) {
+  if (raw === 'all') return 'all';
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
 if (!process.env.SESSION_SECRET) {
   console.warn('[opendockwatch] SESSION_SECRET not set - using an insecure default. Set it in .env.');
 }
@@ -262,9 +284,9 @@ api.get('/hosts/:hostId/metrics/history', (req, res) => {
 api.get('/hosts/:hostId/events', (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
-  const since = req.query.since ? Number(req.query.since) : 0;
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
-  const rows = db.getEvents(req.params.hostId, { sinceTs: since, limit });
+  const sinceTs = intParam(req.query.since, 0);
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
+  const rows = db.getEvents(req.params.hostId, { sinceTs, limit });
   res.json(
     rows.map((r) => ({
       hostId: r.host_id,
@@ -284,17 +306,19 @@ api.get('/hosts/:hostId/events/stream', (req, res) => {
 });
 
 api.get('/audit', (req, res) => {
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
 });
 
 api.get('/alerts', (req, res) => {
-  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
 api.post('/alerts/:id/ack', (req, res) => {
-  db.ackAlert(Number(req.params.id));
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
+  db.ackAlert(id);
   res.json({ ok: true });
 });
 
@@ -514,7 +538,7 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
   });
   res.flushHeaders();
 
-  const child = streamLogs(host, req.params.id, { tail: req.query.tail || 200 });
+  const child = streamLogs(host, req.params.id, { tail: tailParam(req.query.tail, 200) });
 
   // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
   // streams) so a line split across chunk boundaries isn't emitted as two SSE
@@ -565,8 +589,7 @@ api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
 
-  const tail = req.query.tail || 5000;
-  const child = downloadLogs(host, req.params.id, { tail });
+  const child = downloadLogs(host, req.params.id, { tail: tailParam(req.query.tail, 5000) });
 
   const safeName = (s) => s.replace(/[^a-zA-Z0-9_.-]/g, '_');
   res.set({
