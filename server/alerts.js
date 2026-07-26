@@ -195,7 +195,7 @@ async function deliverWebhook(rawUrl, alert, format) {
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
   } catch (err) {
-    if (err.name === 'TimeoutError') throw new Error(`webhook did not respond within ${WEBHOOK_TIMEOUT_MS / 1000}s`);
+    if (err.name === 'TimeoutError') throw new Error(`webhook did not respond within ${WEBHOOK_TIMEOUT_MS / 1000}s`, { cause: err });
     throw err;
   }
   if (!res.ok) {
@@ -210,7 +210,8 @@ async function notify(alert) {
   try {
     await deliverWebhook(rawUrl, alert, format);
   } catch (err) {
-    console.error(`[opendockwatch] alert webhook delivery failed: ${err.message}`);
+    // The URL stays out of this deliberately - it embeds the Discord/Gotify/ntfy token.
+    logger.error('alert.webhook.failed', { host: alert.hostId, rule: alert.rule, error: err.message });
   }
 }
 
