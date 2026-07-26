@@ -1,12 +1,15 @@
-import { healthColor, healthLabel } from '../format.js';
+import { healthColor, healthLabel, formatBytes } from '../format.js';
+import MiniSpark from './MiniSpark.js';
 
 // The List view: containers grouped by compose project, each with a collapsible table, mini
-// CPU/RAM spark bars, and start/stop/restart/Logs actions. Selection, actions, and opening the
-// log viewer are all owned by the root (they interact with state well beyond this view - the
-// Flow view's cy selection, the log viewer panel, the settings panel) so this component only
-// emits what happened; collapsedGroups is the one bit of UI state that's genuinely local.
+// CPU/RAM sparklines, and start/stop/restart/Logs actions. Selection, actions, opening the log
+// viewer and opening the metrics modal are all owned by the root (they interact with state well
+// beyond this view - the Flow view's cy selection, the log viewer panel, the settings panel) so
+// this component only emits what happened; collapsedGroups is the one bit of UI state that's
+// genuinely local.
 export default {
   name: 'ContainerList',
+  components: { MiniSpark },
   props: {
     groupedContainers: { type: Array, required: true },
     stats: { type: Object, default: () => ({}) },
@@ -15,7 +18,7 @@ export default {
     selectedContainerId: { type: String, default: null },
     isAdmin: { type: Boolean, default: false },
   },
-  emits: ['select', 'action', 'open-logs'],
+  emits: ['select', 'action', 'open-logs', 'open-metrics'],
   data() {
     return {
       collapsedGroups: {},
@@ -30,6 +33,15 @@ export default {
     },
     metricsFor(id) {
       return this.metricsView[id] || { cpu: [], mem: [], cpuPeak: 0, memPeak: 0 };
+    },
+    // The peak the row's sparkline is scaled against - a cell has no room to label its own y-axis,
+    // so this goes in the title attribute to make the scale discoverable on hover.
+    sparkTitle(id, metric) {
+      const m = this.metricsFor(id);
+      const peak = metric === 'cpu' ? m.cpuPeak : m.memPeak;
+      if (!peak) return 'No samples yet - click for full history';
+      const formatted = metric === 'cpu' ? peak.toFixed(1) + '%' : formatBytes(peak);
+      return `Peak ${formatted} over the last couple of minutes - click for full history`;
     },
     stateClass(container) {
       return container.state === 'running' ? 'state-running' : 'state-stopped';
@@ -83,29 +95,25 @@ export default {
               <td class="muted">
                 <div class="cell-metric-row">
                   <span>{{ statFor(c.id).cpuPerc || '—' }}</span>
-                  <div class="mini-spark">
-                    <div
-                      v-for="(v, i) in metricsFor(c.id).cpu"
-                      :key="i"
-                      class="mini-bar mini-cpu"
-                      :class="{ current: i === metricsFor(c.id).cpu.length - 1 }"
-                      :style="{ height: (metricsFor(c.id).cpuPeak ? (v / metricsFor(c.id).cpuPeak * 100) : 0) + '%' }"
-                    ></div>
-                  </div>
+                  <button
+                    class="mini-spark-btn"
+                    :title="sparkTitle(c.id, 'cpu')"
+                    @click.stop="$emit('open-metrics', c.id)"
+                  >
+                    <mini-spark :samples="metricsFor(c.id).cpu" variant="cpu"></mini-spark>
+                  </button>
                 </div>
               </td>
               <td class="muted">
                 <div class="cell-metric-row">
                   <span>{{ statFor(c.id).memUsage || '—' }}</span>
-                  <div class="mini-spark">
-                    <div
-                      v-for="(v, i) in metricsFor(c.id).mem"
-                      :key="i"
-                      class="mini-bar mini-mem"
-                      :class="{ current: i === metricsFor(c.id).mem.length - 1 }"
-                      :style="{ height: (metricsFor(c.id).memPeak ? (v / metricsFor(c.id).memPeak * 100) : 0) + '%' }"
-                    ></div>
-                  </div>
+                  <button
+                    class="mini-spark-btn"
+                    :title="sparkTitle(c.id, 'mem')"
+                    @click.stop="$emit('open-metrics', c.id)"
+                  >
+                    <mini-spark :samples="metricsFor(c.id).mem" variant="mem"></mini-spark>
+                  </button>
                 </div>
               </td>
               <td class="muted" :title="c.ports">{{ c.ports }}</td>

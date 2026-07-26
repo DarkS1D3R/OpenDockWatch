@@ -59,6 +59,24 @@ export function formatGB(bytes) {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
+const BYTE_UNITS = [
+  [1e9, 'GB'],
+  [1e6, 'MB'],
+  [1e3, 'kB'],
+];
+
+// Auto-scaling counterpart to formatGB, for figures that aren't reliably host-sized. A container
+// using 412 MB reads as "0.4 GB" through formatGB, which throws away the digits that matter; host
+// totals are always GB-scale so that function stays as it is rather than changing what the host
+// card shows. Same unit table shape as formatRate below.
+export function formatBytes(bytes) {
+  if (bytes == null) return '—';
+  for (const [threshold, unit] of BYTE_UNITS) {
+    if (bytes >= threshold) return `${(bytes / threshold).toFixed(1)} ${unit}`;
+  }
+  return `${Math.round(bytes)} B`;
+}
+
 const RATE_UNITS = [
   [1e9, 'GB/s'],
   [1e6, 'MB/s'],

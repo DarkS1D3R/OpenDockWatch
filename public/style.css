@@ -367,26 +367,41 @@ body {
   gap: 8px;
 }
 .mini-spark {
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
+  display: block;
+  width: 76px;
   height: 20px;
 }
-.mini-bar {
-  width: 3px;
-  flex: none;
-  border-radius: 1px 1px 0 0;
-  opacity: 0.55;
-  min-height: 2px;
+.mini-spark-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* The chart is drawn in a 100x30 viewBox (lib/spark.js's fixed bounds) and squashed to whatever
+     the cell gives it, same as the host tiles - non-uniform scaling is the point, so the line
+     always spans the full width regardless of how many samples have accumulated. */
 }
-.mini-bar.current {
-  opacity: 1;
+/* Holds the row's height steady before the first sample arrives, so a freshly loaded list doesn't
+   visibly reflow as each container's buffer starts filling. */
+.mini-spark-empty {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.mini-cpu {
-  background: var(--accent);
+/* A button rather than a div: this is the click target that opens the metrics modal, so it should
+   be reachable and operable from the keyboard like every other action in the row. Stripped back to
+   look like the plain chart it wraps. */
+.mini-spark-btn {
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
 }
-.mini-mem {
-  background: var(--seq-mem);
+.mini-spark-btn:hover,
+.mini-spark-btn:focus-visible {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .topbar {
