@@ -59,7 +59,8 @@ services:
 
 ## Features
 
-- **List view** — containers grouped by Compose project, live CPU/memory columns, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart.
+- **List view** — containers grouped by Compose project, live CPU/memory columns each with their own sparkline, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart.
+- **Container metrics** — click a row's sparkline for that container's recorded CPU, memory, network I/O and block I/O over 1h / 24h / 7d, stacked under one shared hover crosshair.
 - **Flow view** — a topology graph with automatic edges for shared Docker networks (only across different Compose projects, to avoid clutter) and real Compose `depends_on` relationships, plus manually declared edges for anything Docker can't see itself. Live CPU/mem bars, network/disk rates, port badges, open-alert badges, a name filter, PNG/SVG export, and a Fullscreen toggle. Select a node to tint what it needs and what breaks if it dies, walking the real `depends_on` chain both directions. Collapse a Compose group to one aggregate box for large hosts, and zoom out to a compact view instead of shrinking metrics unreadable. A Graph/Tree toggle switches to an ArgoCD-style `project → container → network/volume` DAG, with shared networks/volumes deduped to one node with multiple incoming edges.
 - **Details panel** — status, stats, ports, and `docker inspect` details (env vars, mounts, labels, restart policy) a click away — plus a full-width **Log Viewer** with level filters, live tailing over Server-Sent Events, and download.
 - **Alerts** — container crashed / crash-looping / unhealthy / host unreachable out of the box, plus opt-in CPU / memory / disk-usage threshold rules. Optional push notification via webhook (Discord, ntfy, Gotify, Slack, or generic JSON).
@@ -68,6 +69,8 @@ services:
 ## Screenshots
 
 ![List view, containers grouped by Compose project](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/list-view.png)
+
+![Container metrics modal showing CPU, memory, network I/O and block I/O charts for a single container over a one-hour window](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/container-metrics.png)
 
 ![Flow view, a topology graph of containers](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-view.png)
 
