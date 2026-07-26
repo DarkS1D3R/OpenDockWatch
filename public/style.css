@@ -410,13 +410,14 @@ body {
   background: none;
   cursor: pointer;
   line-height: 0;
-  /* 137px when the column has room for it, shrinking rather than overflowing the cell when it
+  /* 270px when the column has room for it, shrinking rather than overflowing the cell when it
      doesn't - the table is table-layout: fixed with percentage columns, so at a narrow viewport
      there is a width the chart simply cannot have. A plain `flex: none` overflows into the next
      column there, and no basis at all collapses it to a few pixels (a flex item shrinks below its
-     content width by default), which is how this started out. The floor keeps it a chart rather
-     than a smudge. */
-  flex: 0 1 137px;
+     content width by default), which is how this started out. It's a cap rather than a `flex: 1`
+     fill so the chart doesn't balloon past 400px on an ultrawide screen; the CPU and Memory column
+     percentages above are sized so both charts reach the full 270px at 1920 and stay there. */
+  flex: 0 1 270px;
   min-width: 0;
 }
 .mini-spark-btn:hover,
@@ -603,27 +604,27 @@ table.containers th {
    ellipsis length. Memory is widest because its value is a pair ("634.5MiB / 1GiB"). */
 table.containers th:nth-child(1),
 table.containers td:nth-child(1) {
-  width: 15%;
+  width: 14%;
 } /* Name */
 table.containers th:nth-child(2),
 table.containers td:nth-child(2) {
-  width: 12%;
+  width: 11%;
 } /* Image */
 table.containers th:nth-child(3),
 table.containers td:nth-child(3) {
-  width: 12%;
+  width: 11%;
 } /* Status */
 table.containers th:nth-child(4),
 table.containers td:nth-child(4) {
-  width: 21%;
+  width: 24%;
 } /* CPU */
 table.containers th:nth-child(5),
 table.containers td:nth-child(5) {
-  width: 27%;
+  width: 29%;
 } /* Memory */
 table.containers th:nth-child(6),
 table.containers td:nth-child(6) {
-  width: 13%;
+  width: 11%;
 } /* Ports */
 table.containers th:nth-child(7),
 table.containers td:nth-child(7) {
