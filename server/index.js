@@ -65,6 +65,17 @@ function tailParam(raw, fallback) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+// Container ids/names go into the docker CLI's argv. Nothing is ever run through a shell
+// (execFile/spawn with an args array), so this isn't about injection - it's that an id starting
+// with "-" would be read by docker as a flag rather than as a container, and is better refused
+// here than handed over to be misparsed.
+const CONTAINER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+function requireContainerId(req, res, next) {
+  if (!CONTAINER_ID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid container id' });
+  next();
+}
+
 if (!process.env.SESSION_SECRET) {
   logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
@@ -192,7 +203,7 @@ api.get('/hosts/:hostId/containers', async (req, res) => {
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/inspect', async (req, res) => {
+api.get('/hosts/:hostId/containers/:id/inspect', requireContainerId, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   try {
@@ -490,7 +501,7 @@ api.post('/settings/hosts/:id/test', requireAdmin, async (req, res) => {
   }
 });
 
-api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res) => {
+api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireContainerId, async (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
@@ -527,7 +538,7 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, async (req, res)
   }
 });
 
-api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
+api.get('/hosts/:hostId/containers/:id/logs', requireContainerId, (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
 
@@ -585,7 +596,7 @@ api.get('/hosts/:hostId/containers/:id/logs', (req, res) => {
   req.on('close', cleanup);
 });
 
-api.get('/hosts/:hostId/containers/:id/logs/download', (req, res) => {
+api.get('/hosts/:hostId/containers/:id/logs/download', requireContainerId, (req, res) => {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
 
