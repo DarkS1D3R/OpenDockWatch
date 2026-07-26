@@ -83,14 +83,16 @@ export default {
               <td>{{ c.name }}</td>
               <td class="muted">{{ c.image }}</td>
               <td>
-                <span :class="stateClass(c)">{{ c.status }}</span>
-                <span
-                  v-if="c.health"
-                  class="health-dot"
-                  :style="{ background: healthDotColor(c.health) }"
-                  :title="healthTitle(c.health)"
-                ></span>
-                <span v-if="c.restartCount1h" class="restart-badge" title="Restarts in the last hour">⟳ {{ c.restartCount1h }}</span>
+                <div class="status-cell">
+                  <span class="status-text" :class="stateClass(c)" :title="c.status">{{ c.status }}</span>
+                  <span
+                    v-if="c.health"
+                    class="health-dot"
+                    :style="{ background: healthDotColor(c.health) }"
+                    :title="healthTitle(c.health)"
+                  ></span>
+                  <span v-if="c.restartCount1h" class="restart-badge" title="Restarts in the last hour">⟳ {{ c.restartCount1h }}</span>
+                </div>
               </td>
               <td class="muted">
                 <div class="cell-metric-row">

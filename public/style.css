@@ -361,6 +361,30 @@ body {
   transform: translateX(-100%);
 }
 
+/* The status string is the only part of this cell allowed to lose characters. Left as plain
+   inline content, the cell's own ellipsis cuts from the end of the *whole* cell, which silently
+   took the health dot and the restart badge with it once the column got narrower - dropping the
+   two bits of state that a truncated "Up 5 minutes…" can't convey on its own. The full string is
+   on the title attribute, since it's the part that truncates. */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* The flex gap above already spaces these; their own margin-left is for the inline contexts they
+   also appear in (the details panel), so it's dropped here rather than removed outright. */
+.status-cell .health-dot,
+.status-cell .restart-badge {
+  flex: none;
+  margin-left: 0;
+}
+
 .cell-metric-row {
   display: flex;
   align-items: center;
