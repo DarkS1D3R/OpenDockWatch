@@ -177,13 +177,27 @@ function checkSustained(key, breached, sustainMs, ts) {
   return ts - start >= sustainMs;
 }
 
+// Node's fetch has no default timeout, and notify() below is deliberately fire-and-forget - so a
+// webhook host that accepts the connection and then never answers would leave a request pending
+// for the life of the process, one more for every alert that fires. TimeoutError is translated
+// here because this same path backs Settings' "Test webhook" button, where "The operation was
+// aborted due to timeout" says considerably less than naming the timeout.
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
 async function deliverWebhook(rawUrl, alert, format) {
   const delivery = buildDelivery(rawUrl, alert, format);
-  const res = await fetch(delivery.url, {
-    method: 'POST',
-    headers: delivery.headers,
-    body: delivery.body,
-  });
+  let res;
+  try {
+    res = await fetch(delivery.url, {
+      method: 'POST',
+      headers: delivery.headers,
+      body: delivery.body,
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err.name === 'TimeoutError') throw new Error(`webhook did not respond within ${WEBHOOK_TIMEOUT_MS / 1000}s`);
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`webhook responded with HTTP ${res.status}`);
   }
