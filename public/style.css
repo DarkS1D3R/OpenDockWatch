@@ -368,7 +368,7 @@ body {
 }
 .mini-spark {
   display: block;
-  width: 76px;
+  width: 100%;
   height: 20px;
 }
 .mini-spark-svg {
@@ -397,10 +397,14 @@ body {
   background: none;
   cursor: pointer;
   line-height: 0;
-  /* .cell-metric-row is a flex row, and a flex item shrinks below its content width by default -
-     without this the chart collapses to a few pixels in a narrow column, which is what the bar
-     chart this replaced avoided only because its bars were individually flex: none. */
-  flex: none;
+  /* 137px when the column has room for it, shrinking rather than overflowing the cell when it
+     doesn't - the table is table-layout: fixed with percentage columns, so at a narrow viewport
+     there is a width the chart simply cannot have. A plain `flex: none` overflows into the next
+     column there, and no basis at all collapses it to a few pixels (a flex item shrinks below its
+     content width by default), which is how this started out. The floor keeps it a chart rather
+     than a smudge. */
+  flex: 0 1 137px;
+  min-width: 64px;
 }
 .mini-spark-btn:hover,
 .mini-spark-btn:focus-visible {
@@ -571,25 +575,29 @@ table.containers th:nth-child(1),
 table.containers td:nth-child(1) {
   width: 13%;
 } /* Name */
+/* CPU and Memory carry a value plus a 137px sparkline, so they're the two columns whose content
+   has a real minimum width; Image and Ports are single truncating strings that lose nothing but
+   ellipsis length by giving some of theirs up. Memory is the widest of the two because its value
+   is a pair ("634.5MiB / 1GiB") rather than a single percentage. */
 table.containers th:nth-child(2),
 table.containers td:nth-child(2) {
-  width: 15%;
+  width: 11%;
 } /* Image */
 table.containers th:nth-child(3),
 table.containers td:nth-child(3) {
-  width: 12%;
+  width: 11%;
 } /* Status */
 table.containers th:nth-child(4),
 table.containers td:nth-child(4) {
-  width: 17%;
+  width: 19%;
 } /* CPU */
 table.containers th:nth-child(5),
 table.containers td:nth-child(5) {
-  width: 17%;
+  width: 24%;
 } /* Memory */
 table.containers th:nth-child(6),
 table.containers td:nth-child(6) {
-  width: 14%;
+  width: 10%;
 } /* Ports */
 table.containers th:nth-child(7),
 table.containers td:nth-child(7) {
