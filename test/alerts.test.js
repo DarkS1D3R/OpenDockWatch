@@ -411,6 +411,56 @@ test('handleSample: container_cpu / container_mem', async (t) => {
   });
 });
 
+// The breach counters are module-private, so these assert on the observable consequence of an
+// entry surviving or not: a retained counter means the sustain window kept accumulating from the
+// first breaching sample, a dropped one means the next breach starts its window over.
+test('retainContainers / forgetHost: breach counter cleanup', async (t) => {
+  await t.test('keeps the sustain window for a container that is still listed', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-kept', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.retainContainers('h', ['c-kept', 'c-other']);
+    alerts.handleSample({ hostId: 'h', containerId: 'c-kept', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 5 * 60_000 });
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('drops the counter for a container that is no longer listed', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-gone', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.retainContainers('h', ['c-other']);
+    // Same id reappearing (a recreated container reusing it) starts a fresh window rather than
+    // inheriting the old one, so this second breach is not yet sustained.
+    alerts.handleSample({ hostId: 'h', containerId: 'c-gone', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 5 * 60_000 });
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('leaves host-level counters alone', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleHostSample({ hostId: 'h-retain', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start });
+    alerts.retainContainers('h-retain', []);
+    alerts.handleHostSample({ hostId: 'h-retain', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start + 5 * 60_000 });
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('forgetHost drops container and host counters for that host only', () => {
+    const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }) });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h-forget', containerId: 'c1', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.handleHostSample({ hostId: 'h-forget', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start });
+    alerts.handleSample({ hostId: 'h-stays', containerId: 'c2', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.forgetHost('h-forget');
+
+    alerts.handleSample({ hostId: 'h-forget', containerId: 'c1', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 5 * 60_000 });
+    alerts.handleHostSample({ hostId: 'h-forget', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start + 5 * 60_000 });
+    assert.equal(fired.length, 0);
+
+    alerts.handleSample({ hostId: 'h-stays', containerId: 'c2', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 5 * 60_000 });
+    assert.equal(fired.length, 1);
+  });
+});
+
 test('handleHostSample: host_cpu / host_mem', async (t) => {
   await t.test('fires host_cpu once sustained', () => {
     const fired = captureFired(t, { getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 0 }) });

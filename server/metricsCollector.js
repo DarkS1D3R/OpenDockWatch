@@ -106,6 +106,13 @@ async function pollHost(host) {
       });
     }
 
+    // Containers that have gone away since the last poll can't dip back under threshold to
+    // clear their own breach counters, so they're dropped here instead.
+    alerts.retainContainers(
+      host.id,
+      containers.map((c) => c.id)
+    );
+
     if (hostInfo && hostInfo.ncpu) {
       db.insertHostMetric({
         hostId: host.id,
@@ -177,6 +184,8 @@ function removeHost(hostId) {
   clearInterval(state.diskTimer);
   hostStates.delete(hostId);
   snapshots.delete(hostId);
+  localCpuTimesPrev.delete(hostId);
+  alerts.forgetHost(hostId);
 }
 
 function start() {

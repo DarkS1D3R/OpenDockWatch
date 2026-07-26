@@ -184,6 +184,27 @@ function checkSustained(key, breached, sustainMs, ts) {
 // aborted due to timeout" says considerably less than naming the timeout.
 const WEBHOOK_TIMEOUT_MS = 10_000;
 
+// Nothing in checkSustained ever removes a counter once its subject is gone - a container
+// deleted mid-breach, or a host dropped from Settings - so left alone the map keeps one entry
+// per (container, rule) that ever breached, for the life of the process. Both of these are
+// driven from metricsCollector, the only thing that sees a container stop being listed or a
+// host being removed. Host-level counters (`<hostId>:host:<rule>`) survive retainContainers,
+// which only ever considers per-container keys.
+function retainContainers(hostId, containerIds) {
+  const keep = new Set(containerIds);
+  for (const key of breachStarts.keys()) {
+    const [host, subject] = key.split(':');
+    if (host !== hostId || subject === 'host') continue;
+    if (!keep.has(subject)) breachStarts.delete(key);
+  }
+}
+
+function forgetHost(hostId) {
+  for (const key of breachStarts.keys()) {
+    if (key.startsWith(`${hostId}:`)) breachStarts.delete(key);
+  }
+}
+
 async function deliverWebhook(rawUrl, alert, format) {
   const delivery = buildDelivery(rawUrl, alert, format);
   let res;
@@ -424,6 +445,8 @@ module.exports = {
   handleSample,
   handleHostSample,
   handleDiskUsage,
+  retainContainers,
+  forgetHost,
   buildDelivery,
   getWebhookConfig,
   setWebhookConfig,
