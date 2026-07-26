@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const { withIoRates, BUCKET_EXPR } = require('./metricsHistory');
 
 const DATA_DIR = path.join(__dirname, '../data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -162,17 +163,23 @@ const stmts = {
   getAlertsAll: db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`),
   countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`),
   // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps chart
-  // payloads small over long ranges without a separate downsampling job.
+  // payloads small over long ranges without a separate downsampling job. The four I/O columns are
+  // MAX rather than AVG: they hold cumulative counters, so the value at the *end* of the bucket is
+  // what the next bucket's delta has to be measured against, and the average of a monotonically
+  // rising counter isn't a quantity that means anything. metricsHistory.js turns consecutive
+  // totals into the rates that actually get charted. (A container that restarts mid-bucket makes
+  // MAX that bucket's pre-restart peak - the following delta then goes negative and is reported as
+  // null, which is the intended outcome for a counter reset anyway.)
   containerMetricsHistory: db.prepare(`
     SELECT
-      (ts / @bucketMs) * @bucketMs AS bucket,
+      ${BUCKET_EXPR} AS bucket,
       AVG(cpu_perc) AS cpuPerc,
       AVG(mem_used_bytes) AS memUsedBytes,
       AVG(mem_perc) AS memPerc,
-      AVG(net_rx_bytes) AS netRxBytes,
-      AVG(net_tx_bytes) AS netTxBytes,
-      AVG(block_read_bytes) AS blockReadBytes,
-      AVG(block_write_bytes) AS blockWriteBytes
+      MAX(net_rx_bytes) AS netRxTotal,
+      MAX(net_tx_bytes) AS netTxTotal,
+      MAX(block_read_bytes) AS blockReadTotal,
+      MAX(block_write_bytes) AS blockWriteTotal
     FROM container_metrics
     WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs
     GROUP BY bucket
@@ -180,7 +187,7 @@ const stmts = {
   `),
   hostMetricsHistory: db.prepare(`
     SELECT
-      (ts / @bucketMs) * @bucketMs AS bucket,
+      ${BUCKET_EXPR} AS bucket,
       AVG(cpu_percent) AS cpuPercent,
       AVG(mem_used_bytes) AS memUsedBytes,
       AVG(system_cpu_percent) AS systemCpuPercent,
@@ -297,7 +304,7 @@ function deleteSetting(key) {
 }
 
 function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
-  return stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs });
+  return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs }));
 }
 
 function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
