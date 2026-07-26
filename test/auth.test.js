@@ -59,6 +59,13 @@ test('verifyLogin', async (t) => {
     assert.equal(await verifyLogin('viewer', 'viewerpass'), null);
   });
 
+  await t.test('rejects a request with a missing username or password rather than throwing', async () => {
+    withEnv(t, { AUTH_USER: 'admin', AUTH_PASS_HASH: adminHash });
+    assert.equal(await verifyLogin('admin', undefined), null);
+    assert.equal(await verifyLogin(undefined, 'adminpass'), null);
+    assert.equal(await verifyLogin('admin', { $ne: null }), null);
+  });
+
   await t.test('throws when AUTH_USER / AUTH_PASS_HASH are not configured', async () => {
     withEnv(t, { AUTH_USER: undefined, AUTH_PASS_HASH: undefined });
     await assert.rejects(() => verifyLogin('admin', 'adminpass'));
