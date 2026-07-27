@@ -635,6 +635,7 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(PORT, () => {
+  // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
   console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
   eventWatcher.start();
   metricsCollector.start();
@@ -643,6 +644,7 @@ const server = app.listen(PORT, () => {
 // Without this, `docker stop` sends SIGTERM and the default handler kills the
 // process immediately - potentially mid-write to the sqlite db.
 function shutdown(signal) {
+  // eslint-disable-next-line no-console -- plain shutdown banner, not a structured logger.js event
   console.log(`[opendockwatch] received ${signal}, shutting down`);
   metricsCollector.stop();
   eventWatcher.stop();
