@@ -322,14 +322,14 @@ api.get('/alerts', (req, res) => {
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
-api.post('/alerts/:id/ack', (req, res) => {
+api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
   db.ackAlert(id);
   res.json({ ok: true });
 });
 
-api.post('/alerts/ack-all', (req, res) => {
+api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   const hostId = req.query.hostId;
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.ackAllAlerts(hostId);

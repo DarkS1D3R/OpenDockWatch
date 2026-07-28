@@ -433,6 +433,7 @@ createApp({
             v-if="view === 'activity'"
             :host-id="selectedHostId"
             :alerts="alerts"
+            :is-admin="isAdmin"
             @ack="ackAlertAction"
             @ack-all="ackAllAlertsAction"
           ></activity-view>

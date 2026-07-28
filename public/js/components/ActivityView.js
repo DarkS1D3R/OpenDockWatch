@@ -12,6 +12,7 @@ export default {
   props: {
     hostId: { type: String, required: true },
     alerts: { type: Array, default: () => [] },
+    isAdmin: { type: Boolean, default: false },
   },
   emits: ['ack', 'ack-all'],
   data() {
@@ -117,7 +118,7 @@ export default {
       <div class="activity-column">
         <div class="log-section-header">
           <h3>Alerts</h3>
-          <button v-if="hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
+          <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
         </div>
         <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
@@ -129,8 +130,8 @@ export default {
                 <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
               </div>
               <div class="alert-message">{{ a.message }}</div>
-              <button v-if="!a.acknowledged" class="small-btn" @click="$emit('ack', a)">Acknowledge</button>
-              <span v-else class="ack-tick">✓ Acknowledged</span>
+              <button v-if="isAdmin && !a.acknowledged" class="small-btn" @click="$emit('ack', a)">Acknowledge</button>
+              <span v-else-if="a.acknowledged" class="ack-tick">✓ Acknowledged</span>
             </div>
           </div>
           <button v-show="!alertsAtTop" class="scroll-top-btn" @click="scrollAlertsToTop" title="Scroll to top">&#8593; Top</button>
