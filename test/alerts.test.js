@@ -617,6 +617,55 @@ test('breach persistence: checkSustained mirrors start/clear into db', (t) => {
   assert.equal(fired.length, 0);
 });
 
+// Before breaches were persisted, a rule switched off mid-breach just left its in-memory counter
+// orphaned until the next restart quietly wiped it. Now that the counter survives restarts (see
+// loadBreachState), disabling the rule has to actually clear its own row - not just stop firing -
+// or that row leaks forever instead of self-healing the way it used to.
+test('breach persistence: disabling a rule mid-breach clears its own row rather than leaking it', async (t) => {
+  await t.test('container-level rule', () => {
+    const deleteCalls = [];
+    let cpuThreshold = 90;
+    const fired = captureFired(t, {
+      getSetting: (key) => (key === 'alertCpuThreshold' ? String(cpuThreshold) : null),
+      deleteBreachStart: (key) => deleteCalls.push(key),
+    });
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-disabled-midbreach', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    assert.equal(deleteCalls.length, 0);
+
+    // Disabled from Settings while cpuPerc is still over the old threshold - the row only clears
+    // because "breached" now folds the enabled check in, not because the value dipped.
+    cpuThreshold = 0;
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c-disabled-midbreach',
+      containerName: 'web',
+      cpuPerc: 95,
+      memPerc: 10,
+      ts: start + 60_000,
+    });
+    assert.deepEqual(deleteCalls, ['h:c-disabled-midbreach:container_cpu']);
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('host-level rule', () => {
+    const deleteCalls = [];
+    let cpuThreshold = 90;
+    const fired = captureFired(t, {
+      getSetting: (key) => (key === 'alertCpuThreshold' ? String(cpuThreshold) : null),
+      deleteBreachStart: (key) => deleteCalls.push(key),
+    });
+    const start = Date.now();
+    alerts.handleHostSample({ hostId: 'h-disabled-midbreach', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start });
+    assert.equal(deleteCalls.length, 0);
+
+    cpuThreshold = 0;
+    alerts.handleHostSample({ hostId: 'h-disabled-midbreach', hostName: 'Host', cpuPercent: 95, memPercent: 10, ts: start + 60_000 });
+    assert.deepEqual(deleteCalls, ['h-disabled-midbreach:host:host_cpu']);
+    assert.equal(fired.length, 0);
+  });
+});
+
 test('loadBreachState', async (t) => {
   await t.test('a breach persisted from before a restart resumes counting instead of starting over', () => {
     // Already past the 5-minute sustain window as of "now" - if loadBreachState didn't restore

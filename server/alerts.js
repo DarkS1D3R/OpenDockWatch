@@ -448,32 +448,33 @@ function handleSample({ hostId, containerId, containerName, cpuPerc, memPerc, ts
   const cfg = getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
 
-  if (cfg.cpuThreshold > 0) {
-    const breached = cpuPerc >= cfg.cpuThreshold;
-    if (checkSustained(`${hostId}:${containerId}:container_cpu`, breached, sustainMs, ts)) {
-      fire({
-        hostId,
-        containerId,
-        containerName,
-        rule: 'container_cpu',
-        severity: 'warning',
-        message: `Container ${containerName || containerId} CPU at ${cpuPerc.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
-      });
-    }
+  // cfg.xThreshold > 0 is folded into "breached" itself, rather than skipping checkSustained
+  // entirely while the rule is disabled - a rule switched off mid-breach still has to clear its
+  // own persisted alert_breaches row via checkSustained's normal !breached path, or that row (now
+  // that breaches survive restarts - see loadBreachState) would sit there forever instead of
+  // self-healing on the next restart like it used to when this state was in-memory only.
+  const cpuBreached = cfg.cpuThreshold > 0 && cpuPerc >= cfg.cpuThreshold;
+  if (checkSustained(`${hostId}:${containerId}:container_cpu`, cpuBreached, sustainMs, ts)) {
+    fire({
+      hostId,
+      containerId,
+      containerName,
+      rule: 'container_cpu',
+      severity: 'warning',
+      message: `Container ${containerName || containerId} CPU at ${cpuPerc.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+    });
   }
 
-  if (cfg.memThreshold > 0) {
-    const breached = memPerc >= cfg.memThreshold;
-    if (checkSustained(`${hostId}:${containerId}:container_mem`, breached, sustainMs, ts)) {
-      fire({
-        hostId,
-        containerId,
-        containerName,
-        rule: 'container_mem',
-        severity: 'warning',
-        message: `Container ${containerName || containerId} memory at ${memPerc.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
-      });
-    }
+  const memBreached = cfg.memThreshold > 0 && memPerc >= cfg.memThreshold;
+  if (checkSustained(`${hostId}:${containerId}:container_mem`, memBreached, sustainMs, ts)) {
+    fire({
+      hostId,
+      containerId,
+      containerName,
+      rule: 'container_mem',
+      severity: 'warning',
+      message: `Container ${containerName || containerId} memory at ${memPerc.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+    });
   }
 }
 
@@ -484,32 +485,30 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
   const cfg = getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
 
-  if (cfg.cpuThreshold > 0) {
-    const breached = cpuPercent >= cfg.cpuThreshold;
-    if (checkSustained(`${hostId}:host:host_cpu`, breached, sustainMs, ts)) {
-      fire({
-        hostId,
-        containerId: null,
-        containerName: null,
-        rule: 'host_cpu',
-        severity: 'warning',
-        message: `Host ${hostName || hostId} CPU at ${cpuPercent.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
-      });
-    }
+  // Same reasoning as handleSample above: fold the enabled-check into "breached" itself so a
+  // disabled rule still clears its own persisted breach row via checkSustained's !breached path.
+  const cpuBreached = cfg.cpuThreshold > 0 && cpuPercent >= cfg.cpuThreshold;
+  if (checkSustained(`${hostId}:host:host_cpu`, cpuBreached, sustainMs, ts)) {
+    fire({
+      hostId,
+      containerId: null,
+      containerName: null,
+      rule: 'host_cpu',
+      severity: 'warning',
+      message: `Host ${hostName || hostId} CPU at ${cpuPercent.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+    });
   }
 
-  if (cfg.memThreshold > 0) {
-    const breached = memPercent >= cfg.memThreshold;
-    if (checkSustained(`${hostId}:host:host_mem`, breached, sustainMs, ts)) {
-      fire({
-        hostId,
-        containerId: null,
-        containerName: null,
-        rule: 'host_mem',
-        severity: 'warning',
-        message: `Host ${hostName || hostId} memory at ${memPercent.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
-      });
-    }
+  const memBreached = cfg.memThreshold > 0 && memPercent >= cfg.memThreshold;
+  if (checkSustained(`${hostId}:host:host_mem`, memBreached, sustainMs, ts)) {
+    fire({
+      hostId,
+      containerId: null,
+      containerName: null,
+      rule: 'host_mem',
+      severity: 'warning',
+      message: `Host ${hostName || hostId} memory at ${memPercent.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+    });
   }
 }
 
