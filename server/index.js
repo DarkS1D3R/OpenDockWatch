@@ -156,6 +156,21 @@ app.post('/login', loginLimiter, async (req, res) => {
   }
 });
 
+// Backs the Dockerfile's HEALTHCHECK - reachable with no credentials (a container-internal probe
+// has none to offer) and deliberately narrow: a trivial sqlite round-trip, not a docker CLI call.
+// Only the local sqlite connection has any business gating "is this container healthy" - a
+// slow/unreachable *remote* SSH host failing this would make Docker restart the whole app over
+// something a restart can't fix, taking down monitoring for every other host along with it.
+app.get('/healthz', (req, res) => {
+  try {
+    db.ping();
+    res.type('text/plain').send('ok');
+  } catch (err) {
+    logger.error('healthz.failed', { error: err.message });
+    res.status(503).type('text/plain').send('unhealthy');
+  }
+});
+
 // Prometheus scrapers can't do session-cookie auth, so /metrics lives outside the
 // requireAuth-protected router and is gated by a separate shared-secret token instead.
 app.get('/metrics', (req, res) => {

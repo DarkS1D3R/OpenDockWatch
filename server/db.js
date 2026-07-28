@@ -212,6 +212,7 @@ const stmts = {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `),
   deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
+  ping: db.prepare(`SELECT 1`),
 };
 
 function insertContainerMetric(sample) {
@@ -311,6 +312,14 @@ function deleteSetting(key) {
   stmts.deleteSetting.run(key);
 }
 
+// Used by GET /healthz - a trivial round-trip through the actual sqlite connection, not just "is
+// the process listening". Throws (rather than returning a boolean) on a wedged/erroring
+// connection, e.g. the WAL/shm lock contention that briefly took the real db down this session -
+// that's the failure mode a container healthcheck exists to catch.
+function ping() {
+  stmts.ping.get();
+}
+
 function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
   return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs }));
 }
@@ -357,6 +366,7 @@ module.exports = {
   getSetting,
   setSetting,
   deleteSetting,
+  ping,
   pruneOld,
   close,
 };

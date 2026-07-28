@@ -84,6 +84,12 @@ async function loginAs(username, password) {
   return agent;
 }
 
+test('GET /healthz is reachable with no session and reflects the real sqlite connection', async () => {
+  const res = await request(app).get('/healthz');
+  assert.equal(res.status, 200);
+  assert.equal(res.text, 'ok');
+});
+
 test('role gating over real HTTP requests', async (t) => {
   await t.test('no session: requireAuth blocks both a read and a write route', async () => {
     assert.equal((await request(app).get('/api/session')).status, 401);

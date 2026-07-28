@@ -60,4 +60,11 @@ ENV PORT=3000
 ENV NODE_ENV=production
 EXPOSE 3000
 
+# GET /healthz (server/index.js) does one trivial sqlite query, nothing docker-CLI-related - a
+# slow/unreachable *remote* SSH host has no business flapping this container's own health. node
+# over curl/wget: curl isn't installed and busybox wget's flag/exit-code behaviour differs across
+# Alpine versions, where a two-line http.get is unambiguous and needs nothing extra in the image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
 CMD ["node", "server/index.js"]
