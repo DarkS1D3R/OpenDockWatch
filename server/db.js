@@ -6,7 +6,15 @@ const { withIoRates, BUCKET_EXPR } = require('./metricsHistory');
 const DATA_DIR = path.join(__dirname, '../data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, 'opendockwatch.db'));
+// Overridable so test/index.test.js can point this at an isolated temp file instead of the real
+// data/opendockwatch.db - that file is also the one a running container has open (WAL mode's
+// shared-memory file doesn't survive being touched from both a native-Windows process and a
+// WSL2-mounted container view of the same path), so a test process opening it directly risks
+// wedging a real running instance rather than just its own in-memory state. Unset in normal
+// operation, so this is a no-op for npm start/the Dockerfile.
+const DB_PATH = process.env.OPENDOCKWATCH_DB_PATH || path.join(DATA_DIR, 'opendockwatch.db');
+
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 db.exec(`

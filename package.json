@@ -22,7 +22,7 @@
     "dev": "node --watch server/index.js",
     "hash-password": "node scripts/hash-password.js",
     "screenshots": "node scripts/screenshots.js",
-    "test": "node scripts/check-syntax.js && node --test",
+    "test": "node scripts/check-syntax.js && node --test --test-force-exit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
@@ -42,6 +42,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "playwright": "^1.62.0",
-    "prettier": "^3.9.4"
+    "prettier": "^3.9.4",
+    "supertest": "^7.2.2"
   }
 }
