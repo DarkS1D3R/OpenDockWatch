@@ -1,7 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const db = require('../server/db');
+const hosts = require('../server/hosts');
 const alerts = require('../server/alerts');
+
+// Same reasoning as mockDb below: alerts.js calls hosts.loadHosts() through the module object
+// (not a destructured reference), so mocking it here reaches loadBreachState without touching the
+// real config/hosts.json.
+function mockHosts(t, list) {
+  t.mock.method(hosts, 'loadHosts', () => list);
+}
 
 // alerts.js holds a reference to the real db module, so mocking methods on
 // that same (require-cached) object intercepts every db call it makes,
@@ -14,6 +22,12 @@ function mockDb(t, overrides = {}) {
     countManualStartsSince: () => 0,
     countRestartsSince: () => 0,
     getSetting: () => null,
+    setBreachStart: () => {},
+    deleteBreachStart: () => {},
+    getAllBreaches: () => [],
+    markWebhookDelivered: () => {},
+    markWebhookAttemptFailed: () => {},
+    getPendingWebhookRetries: () => [],
   };
   for (const [name, impl] of Object.entries({ ...defaults, ...overrides })) {
     t.mock.method(db, name, impl);
@@ -297,6 +311,126 @@ test('sendTestAlert', async (t) => {
   });
 });
 
+// fire() calls notify() without awaiting it (deliberately - see alerts.js) so these flush a tick
+// after triggering it through the public handleEvent API, same as a real caller would observe the
+// db write slightly after the synchronous part of firing returns.
+async function flushMicrotasks() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+function fireDeathEvent(hostId = 'h') {
+  alerts.handleEvent({
+    hostId,
+    containerId: 'c',
+    containerName: 'web',
+    action: 'die',
+    ts: Date.now(),
+    raw: { Actor: { Attributes: { exitCode: '1' } } },
+  });
+}
+
+test('notify: records delivery outcome against the alert row', async (t) => {
+  await t.test('marks the row delivered on a successful attempt', async (t) => {
+    const delivered = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      insertAlert: () => 42,
+      markWebhookDelivered: (id) => delivered.push(id),
+    });
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: true });
+    t.after(() => (global.fetch = originalFetch));
+
+    fireDeathEvent('h-notify-ok');
+    await flushMicrotasks();
+    assert.deepEqual(delivered, [42]);
+  });
+
+  await t.test('records a failed attempt (rather than only logging it) so it can be retried later', async (t) => {
+    const failed = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      insertAlert: () => 43,
+      markWebhookAttemptFailed: (id) => failed.push(id),
+    });
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 500 });
+    t.after(() => (global.fetch = originalFetch));
+
+    fireDeathEvent('h-notify-fail');
+    await flushMicrotasks();
+    assert.deepEqual(failed, [43]);
+  });
+});
+
+test('retryFailedWebhooks', async (t) => {
+  await t.test('does nothing when no webhook is currently configured', async (t) => {
+    const calls = [];
+    mockDb(t, { getSetting: () => null, getPendingWebhookRetries: () => (calls.push(1), []) });
+    await alerts.retryFailedWebhooks();
+    assert.equal(calls.length, 0);
+  });
+
+  await t.test('redelivers a pending row and marks it delivered on success', async (t) => {
+    const delivered = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      getPendingWebhookRetries: () => [
+        {
+          id: 7,
+          ts: Date.now(),
+          host_id: 'h',
+          container_id: 'c',
+          container_name: 'web',
+          rule: 'container_cpu',
+          severity: 'warning',
+          message: 'boom',
+          webhook_attempts: 1,
+        },
+      ],
+      markWebhookDelivered: (id) => delivered.push(id),
+    });
+    const originalFetch = global.fetch;
+    let captured = null;
+    global.fetch = async (url, opts) => {
+      captured = { url, opts };
+      return { ok: true };
+    };
+    t.after(() => (global.fetch = originalFetch));
+
+    await alerts.retryFailedWebhooks();
+    assert.deepEqual(delivered, [7]);
+    assert.equal(captured.url, 'https://discord.com/api/webhooks/1/2');
+  });
+
+  await t.test('a still-failing row is recorded as another failed attempt rather than throwing', async (t) => {
+    const failed = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      getPendingWebhookRetries: () => [
+        {
+          id: 8,
+          ts: Date.now(),
+          host_id: 'h',
+          container_id: 'c',
+          container_name: 'web',
+          rule: 'container_cpu',
+          severity: 'warning',
+          message: 'boom',
+          webhook_attempts: 2,
+        },
+      ],
+      markWebhookAttemptFailed: (id) => failed.push(id),
+    });
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 500 });
+    t.after(() => (global.fetch = originalFetch));
+
+    await assert.doesNotReject(() => alerts.retryFailedWebhooks());
+    assert.deepEqual(failed, [8]);
+  });
+});
+
 test('threshold config (DB override vs .env default)', async (t) => {
   await t.test('falls back to env vars / built-in defaults when no DB override exists', (t) => {
     mockDb(t, { getSetting: () => null });
@@ -458,6 +592,55 @@ test('retainContainers / forgetHost: breach counter cleanup', async (t) => {
 
     alerts.handleSample({ hostId: 'h-stays', containerId: 'c2', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 5 * 60_000 });
     assert.equal(fired.length, 1);
+  });
+});
+
+test('breach persistence: checkSustained mirrors start/clear into db', (t) => {
+  const setCalls = [];
+  const deleteCalls = [];
+  const fired = captureFired(t, {
+    getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }),
+    setBreachStart: (key, startTs) => setCalls.push({ key, startTs }),
+    deleteBreachStart: (key) => deleteCalls.push(key),
+  });
+  const start = Date.now();
+  alerts.handleSample({ hostId: 'h', containerId: 'c-persist', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+  assert.deepEqual(setCalls, [{ key: 'h:c-persist:container_cpu', startTs: start }]);
+
+  // Still breaching on the next sample - the start is already recorded, no second db write.
+  alerts.handleSample({ hostId: 'h', containerId: 'c-persist', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start + 60_000 });
+  assert.equal(setCalls.length, 1);
+
+  // Dips below threshold before the sustain window elapses - the persisted start is cleared.
+  alerts.handleSample({ hostId: 'h', containerId: 'c-persist', containerName: 'web', cpuPerc: 10, memPerc: 10, ts: start + 120_000 });
+  assert.deepEqual(deleteCalls, ['h:c-persist:container_cpu']);
+  assert.equal(fired.length, 0);
+});
+
+test('loadBreachState', async (t) => {
+  await t.test('a breach persisted from before a restart resumes counting instead of starting over', () => {
+    // Already past the 5-minute sustain window as of "now" - if loadBreachState didn't restore
+    // this, the very next sample would look like a brand-new breach and not fire.
+    const start = Date.now() - 5 * 60_000;
+    mockHosts(t, [{ id: 'h' }]);
+    const fired = captureFired(t, {
+      getSetting: mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }),
+      getAllBreaches: () => [{ key: 'h:c-resumed:container_cpu', startTs: start }],
+    });
+    alerts.loadBreachState();
+    alerts.handleSample({ hostId: 'h', containerId: 'c-resumed', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: Date.now() });
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('drops a persisted breach for a host no longer in config/hosts.json', () => {
+    const deleteCalls = [];
+    mockHosts(t, []); // 'h-removed' isn't in this list - it was deleted from Settings while the process was down
+    mockDb(t, {
+      getAllBreaches: () => [{ key: 'h-removed:c:container_cpu', startTs: Date.now() - 60_000 }],
+      deleteBreachStart: (key) => deleteCalls.push(key),
+    });
+    alerts.loadBreachState();
+    assert.deepEqual(deleteCalls, ['h-removed:c:container_cpu']);
   });
 });
 

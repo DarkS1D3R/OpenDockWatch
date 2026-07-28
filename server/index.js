@@ -667,6 +667,8 @@ if (require.main === module) {
   const server = app.listen(PORT, () => {
     // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
     console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
+    alerts.loadBreachState();
+    alerts.start();
     eventWatcher.start();
     metricsCollector.start();
   });
@@ -678,6 +680,7 @@ if (require.main === module) {
     console.log(`[opendockwatch] received ${signal}, shutting down`);
     metricsCollector.stop();
     eventWatcher.stop();
+    alerts.stop();
 
     let closed = false;
     const finish = () => {

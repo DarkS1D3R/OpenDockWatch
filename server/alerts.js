@@ -1,6 +1,7 @@
 const db = require('./db');
 const logger = require('./logger');
 const { parseByteString } = require('./docker');
+const hosts = require('./hosts');
 
 const COOLDOWN_MS = 10 * 60 * 1000;
 const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000;
@@ -160,19 +161,41 @@ function clearThresholdConfig() {
 // the timestamp of the *first* breaching sample (rather than a sample count)
 // means this is independent of the poll interval and trivially testable with
 // synthetic timestamps. Resets the moment a sample dips back under threshold,
-// which doubles as hysteresis. In-memory only - counters reset on restart,
-// worst case an alert fires a few minutes later than it would have.
+// which doubles as hysteresis. Mirrored into the alert_breaches table (see db.js) on every
+// start/clear so a restart mid-breach resumes counting from the real first-breach time instead of
+// silently forgetting it - exactly the moment (a deploy or crash) a real incident is most likely
+// to coincide with. The Map stays the source of truth for the hot path (every 5s poll sample reads
+// it synchronously, no I/O); only the infrequent start/clear transitions touch sqlite.
 const breachStarts = new Map();
+
+// Restores breachStarts from the last time the process was up - called once at boot (see
+// index.js), not at require time, so requiring this module (as every test file does) never
+// touches sqlite on its own. Drops rows for a host no longer in config/hosts.json outright (that
+// host's own removeHost/forgetHost can never run for it again, since it was never re-added to
+// begin with) - per-container staleness within a host that's still configured is handled anyway,
+// within one poll interval, by the retainContainers call every pollHost cycle already makes.
+function loadBreachState() {
+  const validHostIds = new Set(hosts.loadHosts().map((h) => h.id));
+  for (const row of db.getAllBreaches()) {
+    const hostId = row.key.split(':')[0];
+    if (!validHostIds.has(hostId)) {
+      db.deleteBreachStart(row.key);
+      continue;
+    }
+    breachStarts.set(row.key, row.startTs);
+  }
+}
 
 function checkSustained(key, breached, sustainMs, ts) {
   if (!breached) {
-    breachStarts.delete(key);
+    if (breachStarts.delete(key)) db.deleteBreachStart(key);
     return false;
   }
   let start = breachStarts.get(key);
   if (start === undefined) {
     start = ts;
     breachStarts.set(key, start);
+    db.setBreachStart(key, start);
   }
   return ts - start >= sustainMs;
 }
@@ -195,13 +218,19 @@ function retainContainers(hostId, containerIds) {
   for (const key of breachStarts.keys()) {
     const [host, subject] = key.split(':');
     if (host !== hostId || subject === 'host') continue;
-    if (!keep.has(subject)) breachStarts.delete(key);
+    if (!keep.has(subject)) {
+      breachStarts.delete(key);
+      db.deleteBreachStart(key);
+    }
   }
 }
 
 function forgetHost(hostId) {
   for (const key of breachStarts.keys()) {
-    if (key.startsWith(`${hostId}:`)) breachStarts.delete(key);
+    if (key.startsWith(`${hostId}:`)) {
+      breachStarts.delete(key);
+      db.deleteBreachStart(key);
+    }
   }
 }
 
@@ -224,16 +253,84 @@ async function deliverWebhook(rawUrl, alert, format) {
   }
 }
 
+// The first delivery attempt, made synchronously when the alert fires - still fire-and-forget for
+// latency's sake (the caller doesn't await this), but no longer forget-forever on failure: a
+// failed attempt is recorded (webhook_attempts) so retryFailedWebhooks can pick it back up, rather
+// than the only trace being a log line. alert.id is 0 for sendTestAlert's synthetic alert, which
+// intentionally bypasses this bookkeeping entirely (nothing to retry - it isn't a real event).
 async function notify(alert) {
   const { url: rawUrl, format } = getWebhookConfig();
   if (!rawUrl) return;
 
   try {
     await deliverWebhook(rawUrl, alert, format);
+    if (alert.id) db.markWebhookDelivered(alert.id);
   } catch (err) {
+    if (alert.id) db.markWebhookAttemptFailed(alert.id);
     // The URL stays out of this deliberately - it embeds the Discord/Gotify/ntfy token.
     logger.error('alert.webhook.failed', { host: alert.hostId, rule: alert.rule, error: err.message });
   }
+}
+
+// A webhook host down for the exact window an alert fires in (a flaky ntfy/Discord/Slack endpoint,
+// often correlated with the same network blip the alert itself is about) used to mean that
+// notification was gone for good - notify() above only ever tried once. This sweep picks up
+// anything notify() (or a previous sweep) recorded as attempted-but-undelivered and tries again.
+const WEBHOOK_MAX_ATTEMPTS = 5;
+// Past this age, retrying is pointless - by the time it'd be delivered the information is stale
+// anyway - and it bounds how big a backlog a webhook that's been down for hours can hand back at
+// once when it recovers.
+const WEBHOOK_RETRY_WINDOW_MS = 60 * 60 * 1000;
+const WEBHOOK_RETRY_INTERVAL_MS = 60 * 1000;
+const WEBHOOK_RETRY_BATCH_LIMIT = 20;
+
+async function retryFailedWebhooks() {
+  const { url: rawUrl, format } = getWebhookConfig();
+  // No URL right now (never configured, or cleared since the failures happened) - nothing to
+  // retry against. Rows just stay pending; if a webhook is configured later, the next sweep picks
+  // them up as long as they're still inside the retry window.
+  if (!rawUrl) return;
+
+  const sinceTs = Date.now() - WEBHOOK_RETRY_WINDOW_MS;
+  const pending = db.getPendingWebhookRetries({ maxAttempts: WEBHOOK_MAX_ATTEMPTS, sinceTs, limit: WEBHOOK_RETRY_BATCH_LIMIT });
+  for (const row of pending) {
+    const alert = {
+      id: row.id,
+      ts: row.ts,
+      hostId: row.host_id,
+      containerId: row.container_id,
+      containerName: row.container_name,
+      rule: row.rule,
+      severity: row.severity,
+      message: row.message,
+    };
+    try {
+      await deliverWebhook(rawUrl, alert, format);
+      db.markWebhookDelivered(alert.id);
+    } catch (err) {
+      db.markWebhookAttemptFailed(alert.id);
+      logger.error('alert.webhook.retry_failed', {
+        host: alert.hostId,
+        rule: alert.rule,
+        attempt: row.webhook_attempts + 1,
+        error: err.message,
+      });
+    }
+  }
+}
+
+let retryTimer = null;
+
+function start() {
+  retryTimer = setInterval(() => {
+    retryFailedWebhooks().catch((err) => logger.error('alert.webhook.retry_sweep_failed', { error: err.message }));
+  }, WEBHOOK_RETRY_INTERVAL_MS);
+  retryTimer.unref();
+}
+
+function stop() {
+  if (retryTimer) clearInterval(retryTimer);
+  retryTimer = null;
 }
 
 // Fires a synthetic alert through the current webhook config, bypassing
@@ -455,4 +552,8 @@ module.exports = {
   setThresholdConfig,
   clearThresholdConfig,
   sendTestAlert,
+  loadBreachState,
+  retryFailedWebhooks,
+  start,
+  stop,
 };
