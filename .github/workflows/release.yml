@@ -24,6 +24,11 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  # See the same note in ci.yml - playwright's browser download is dead weight here, since the
+  # release checks only lint, syntax-check and unit-test.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
 jobs:
   prepare:
     runs-on: ubuntu-latest

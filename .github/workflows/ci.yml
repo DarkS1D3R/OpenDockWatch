@@ -14,6 +14,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # playwright is a devDependency for scripts/screenshots.js only, and its postinstall would pull
+  # ~150MB of browser engines on every run. Nothing in CI drives a browser - the syntax check
+  # parses that script with `node --check` rather than executing it - so the download is skipped.
+  # Anyone actually taking screenshots runs `npx playwright install chromium` once, locally.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
 jobs:
   test:
     runs-on: ubuntu-latest

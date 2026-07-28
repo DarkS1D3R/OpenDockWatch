@@ -1,17 +1,8 @@
-import {
-  buildElements,
-  buildTreeElements,
-  createGraph,
-  updateGraph,
-  applyFading,
-  exportPng,
-  exportSvg,
-  collapseAllGroups,
-  expandAllGroups,
-  loadFlowMode,
-  saveFlowMode,
-  resetView,
-} from '../graph.js';
+import { buildElements, buildTreeElements } from '../graph/elements.js';
+import { loadFlowMode, saveFlowMode } from '../graph/persistence.js';
+import { resetView } from '../graph/layout.js';
+import { exportSvg } from '../graph/svgExport.js';
+import { createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from '../graph.js';
 
 // The Flow view: the cytoscape instance, graph/tree mode switching, edge/state filters,
 // fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show (not

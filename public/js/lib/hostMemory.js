@@ -9,10 +9,12 @@
 // rather than mislabeling the physical machine's total as if it were this deployment's own
 // ceiling. No DOM/Vue - pure, so it's unit-testable the same way spark.js is.
 
+import { formatGB } from '../format.js';
+
 export const HOST_MEM_DIVERGENCE_RATIO = 1.05;
 
 function fmtGB(bytes) {
-  return `${((bytes || 0) / 1e9).toFixed(1)} GB`;
+  return formatGB(bytes || 0);
 }
 
 // osUsedBytes/osTotalBytes: hostUsage.js-derived, local-host-only (osTotalBytes is null/undefined

@@ -3,15 +3,19 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-// graph.js imports format.js (also a plain ES module, no browser dependency) and only touches
-// cytoscape/DOM globals inside functions that need a live `cy` instance - buildElements and
-// aggregateGroups are pure data transforms that never call any of those, so importing the module
-// for just those two is safe without a browser or a mocked cytoscape. pathToFileURL rather than a
-// plain relative string: import()'s relative-specifier resolution expects forward slashes, so a
-// path.join'd path breaks on Windows where it comes out backslash-separated.
-let graph;
+// graph/elements.js and graph/svgExport.js are both plain ES modules with no browser dependency
+// (they only import format.js and each other) - aggregateGroups/buildElements/buildTreeElements
+// and renderSvg are pure data transforms that never touch cytoscape/DOM globals, so importing
+// them directly is safe without a browser or a mocked cytoscape. graph.js itself (the live
+// cytoscape controller the rest of graph/ feeds into) is DOM-coupled and stays syntax-check-only,
+// per CLAUDE.md. pathToFileURL rather than a plain relative string: import()'s relative-specifier
+// resolution expects forward slashes, so a path.join'd path breaks on Windows where it comes out
+// backslash-separated.
+let elements, svgExport;
 before(async () => {
-  graph = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'graph.js')));
+  const graphDir = path.join(__dirname, '..', 'public', 'js', 'graph');
+  elements = await import(pathToFileURL(path.join(graphDir, 'elements.js')));
+  svgExport = await import(pathToFileURL(path.join(graphDir, 'svgExport.js')));
 });
 
 test('aggregateGroups', async (t) => {
@@ -21,7 +25,7 @@ test('aggregateGroups', async (t) => {
       { group: 'shop', cpuPerc: 30, memPerc: 40, openAlerts: 2 },
       { group: 'esb', cpuPerc: 5, memPerc: 5, openAlerts: 0 },
     ];
-    const agg = graph.aggregateGroups(nodes);
+    const agg = elements.aggregateGroups(nodes);
     assert.deepEqual(agg.get('shop'), { count: 2, cpuSum: 40, memSum: 60, openAlerts: 3, health: null });
     assert.deepEqual(agg.get('esb'), { count: 1, cpuSum: 5, memSum: 5, openAlerts: 0, health: null });
   });
@@ -32,7 +36,7 @@ test('aggregateGroups', async (t) => {
       { group: 'shop', health: 'starting' },
       { group: 'shop', health: 'unhealthy' },
     ];
-    assert.equal(graph.aggregateGroups(nodes).get('shop').health, 'unhealthy');
+    assert.equal(elements.aggregateGroups(nodes).get('shop').health, 'unhealthy');
   });
 
   await t.test('a node with no health never overrides an already-set one', () => {
@@ -40,12 +44,12 @@ test('aggregateGroups', async (t) => {
       { group: 'shop', health: 'unhealthy' },
       { group: 'shop', health: null },
     ];
-    assert.equal(graph.aggregateGroups(nodes).get('shop').health, 'unhealthy');
+    assert.equal(elements.aggregateGroups(nodes).get('shop').health, 'unhealthy');
   });
 
   await t.test('missing cpu/mem/openAlerts on a node count as 0, not NaN', () => {
     const nodes = [{ group: 'shop' }];
-    assert.deepEqual(graph.aggregateGroups(nodes).get('shop'), { count: 1, cpuSum: 0, memSum: 0, openAlerts: 0, health: null });
+    assert.deepEqual(elements.aggregateGroups(nodes).get('shop'), { count: 1, cpuSum: 0, memSum: 0, openAlerts: 0, health: null });
   });
 });
 
@@ -57,10 +61,10 @@ test('buildElements', async (t) => {
       { id: 'c', group: 'esb', state: 'running' },
     ];
     const edges = [{ source: 'a', target: 'b', kind: 'network' }];
-    const elements = graph.buildElements(nodes, edges, null);
-    assert.equal(elements.filter((el) => el.classes === 'group').length, 2);
-    assert.equal(elements.filter((el) => el.data.id === 'a' || el.data.id === 'b' || el.data.id === 'c').length, 3);
-    assert.equal(elements.filter((el) => el.data.source).length, 1);
+    const els = elements.buildElements(nodes, edges, null);
+    assert.equal(els.filter((el) => el.classes === 'group').length, 2);
+    assert.equal(els.filter((el) => el.data.id === 'a' || el.data.id === 'b' || el.data.id === 'c').length, 3);
+    assert.equal(els.filter((el) => el.data.source).length, 1);
   });
 
   await t.test('group node data carries the *average* cpu/mem across its members, not the sum', () => {
@@ -68,7 +72,7 @@ test('buildElements', async (t) => {
       { id: 'a', group: 'shop', state: 'running', cpuPerc: 10, memPerc: 20 },
       { id: 'b', group: 'shop', state: 'running', cpuPerc: 30, memPerc: 40 },
     ];
-    const group = graph.buildElements(nodes, [], null).find((el) => el.data.id === 'grp:shop');
+    const group = elements.buildElements(nodes, [], null).find((el) => el.data.id === 'grp:shop');
     assert.equal(group.data.cpuAvg, 20);
     assert.equal(group.data.memAvg, 30);
     assert.equal(group.data.count, 2);
@@ -88,7 +92,7 @@ test('buildElements', async (t) => {
         openAlerts: 2,
       },
     ];
-    const el = graph.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
+    const el = elements.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
     assert.equal(el.data.parent, 'grp:shop');
     assert.equal(el.data.name, 'web');
     assert.equal(el.data.ports, '8080:80');
@@ -100,7 +104,7 @@ test('buildElements', async (t) => {
   await t.test('a container publishing enough ports to overflow one line wraps at mapping boundaries and reports the line count', () => {
     const ports = Array.from({ length: 6 }, (_, i) => `0.0.0.0:800${i}->${i}0/tcp`).join(', ');
     const nodes = [{ id: 'a', group: 'shop', state: 'running', ports }];
-    const el = graph.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
+    const el = elements.buildElements(nodes, [], null).find((e) => e.data.id === 'a');
     const lines = el.data.ports.split('\n');
     assert.ok(lines.length > 1, 'expected the port list to wrap onto more than one line');
     assert.equal(el.data.portLines, lines.length);
@@ -117,7 +121,7 @@ test('buildElements', async (t) => {
       { id: 'b', group: 'g', state: 'exited', health: 'unhealthy' },
       { id: 'c', group: 'g', state: 'running', health: 'healthy' },
     ];
-    const els = graph.buildElements(nodes, [], 'c');
+    const els = elements.buildElements(nodes, [], 'c');
     assert.equal(els.find((e) => e.data.id === 'a').classes, 'running');
     assert.equal(els.find((e) => e.data.id === 'b').classes, 'stopped unhealthy');
     assert.equal(els.find((e) => e.data.id === 'c').classes, 'running selected');
@@ -134,7 +138,7 @@ test('buildElements', async (t) => {
       { source: 'a', target: 'b', kind: 'network' },
       { source: 'a', target: 'b' },
     ];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls[0].classes, 'edge-manual');
     assert.equal(edgeEls[1].classes, 'edge-depends-on');
     assert.equal(edgeEls[2].classes, 'edge-network');
@@ -149,7 +153,7 @@ test('buildElements', async (t) => {
       { id: 'b', group: 'esb', state: 'running' },
     ];
     const edges = [{ source: 'a', target: 'b', kind: 'network', label: 'proxy' }];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls.length, 1);
     // aggregation dedupes on a sorted pair key - which end lands in source vs target isn't
     // meaningful for an undirected "shares a network" relationship, only that it's this pair.
@@ -170,7 +174,7 @@ test('buildElements', async (t) => {
       { source: 'a2', target: 'b1', kind: 'network', label: 'proxy' },
       { source: 'a2', target: 'b2', kind: 'network', label: 'proxy' },
     ];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls.length, 1);
     assert.deepEqual(new Set([edgeEls[0].data.source, edgeEls[0].data.target]), new Set(['grp:shop', 'grp:esb']));
   });
@@ -184,7 +188,7 @@ test('buildElements', async (t) => {
       { source: 'a', target: 'b', kind: 'network', label: 'proxy' },
       { source: 'a', target: 'b', kind: 'network', label: 'cache' },
     ];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls.length, 1);
     assert.equal(edgeEls[0].data.label, 'proxy, cache');
   });
@@ -195,7 +199,7 @@ test('buildElements', async (t) => {
       { id: 'b', group: 'ungrouped', state: 'running' },
     ];
     const edges = [{ source: 'a', target: 'b', kind: 'network', label: 'bridge' }];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls.length, 1);
     assert.equal(edgeEls[0].data.source, 'a');
     assert.equal(edgeEls[0].data.target, 'b');
@@ -207,7 +211,7 @@ test('buildElements', async (t) => {
       { id: 'b', group: 'esb', state: 'running' },
     ];
     const edges = [{ source: 'a', target: 'b', kind: 'depends_on', label: 'service_healthy' }];
-    const edgeEls = graph.buildElements(nodes, edges, null).filter((e) => e.data.source);
+    const edgeEls = elements.buildElements(nodes, edges, null).filter((e) => e.data.source);
     assert.equal(edgeEls.length, 1);
     assert.equal(edgeEls[0].data.source, 'a');
     assert.equal(edgeEls[0].data.target, 'b');
@@ -220,7 +224,7 @@ test('buildTreeElements', async (t) => {
       { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [] },
       { id: 'b', group: 'shop', state: 'running', networks: ['app-net'], mounts: [] },
     ];
-    const els = graph.buildTreeElements(nodes, null);
+    const els = elements.buildTreeElements(nodes, null);
     const netNodes = els.filter((el) => el.classes === 'net');
     assert.equal(netNodes.length, 1);
     assert.equal(netNodes[0].data.id, 'net:app-net');
@@ -232,7 +236,7 @@ test('buildTreeElements', async (t) => {
   await t.test('wraps a long compose network name onto multiple lines rather than overflowing the pill', () => {
     const longName = 'opendockwatch_default_network';
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [longName], mounts: [] }];
-    const netNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'net');
+    const netNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'net');
     assert.ok(netNode.data.label.includes('\n'), 'expected the long network name to be wrapped onto multiple lines');
     assert.equal(netNode.data.label.replace(/\n/g, ''), longName);
     // net:<id> in the id keeps the unwrapped name, same as mount:<source> does for mounts.
@@ -242,7 +246,7 @@ test('buildTreeElements', async (t) => {
   await t.test('shortens an anonymous-volume label but keeps the full source as the stable id', () => {
     const anonId = 'a'.repeat(64);
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: anonId, kind: 'volume-anon' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
+    const mountNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
     assert.equal(mountNode.data.id, `mount:${anonId}`);
     assert.equal(mountNode.data.label, `anon:${anonId.slice(0, 12)}…`);
   });
@@ -250,7 +254,7 @@ test('buildTreeElements', async (t) => {
   await t.test('wraps a long bind-mount path onto multiple lines at path-separator boundaries', () => {
     const longPath = '/mnt/c/Projects/bm-server/application/target/bm-server-files/bm-server-1.0.0-SNAPSHOT.jar';
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: longPath, kind: 'bind' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-bind');
+    const mountNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-bind');
     assert.ok(mountNode.data.label.includes('\n'), 'expected the long path to be wrapped onto multiple lines');
     assert.ok(
       mountNode.data.label.split('\n').every((line) => line.length <= 22),
@@ -261,7 +265,7 @@ test('buildTreeElements', async (t) => {
 
   await t.test('leaves a short mount source on a single line, unwrapped', () => {
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: 'pgdata', kind: 'volume-named' }] }];
-    const mountNode = graph.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
+    const mountNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-volume');
     assert.equal(mountNode.data.label, 'pgdata');
   });
 
@@ -278,7 +282,7 @@ test('buildTreeElements', async (t) => {
         ],
       },
     ];
-    const els = graph.buildTreeElements(nodes, null);
+    const els = elements.buildTreeElements(nodes, null);
     const mountEdges = els.filter((el) => el.classes === 'edge-tree-mount');
     assert.equal(mountEdges.length, 1);
     assert.equal(els.filter((el) => el.classes && el.classes.startsWith('mount')).length, 1);
@@ -286,7 +290,7 @@ test('buildTreeElements', async (t) => {
 
   await t.test('a container with no compose project gets no project node or edge', () => {
     const nodes = [{ id: 'a', group: 'ungrouped', state: 'running', networks: [], mounts: [] }];
-    const els = graph.buildTreeElements(nodes, null);
+    const els = elements.buildTreeElements(nodes, null);
     assert.equal(els.filter((el) => el.classes === 'proj').length, 0);
     assert.equal(els.filter((el) => el.data.target === 'a').length, 0);
   });
@@ -295,11 +299,11 @@ test('buildTreeElements', async (t) => {
     const nodes = [
       { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [{ source: 'pgdata', kind: 'volume-named' }] },
     ];
-    const first = graph
+    const first = elements
       .buildTreeElements(nodes, null)
       .map((el) => el.data.id)
       .sort();
-    const second = graph
+    const second = elements
       .buildTreeElements(nodes, null)
       .map((el) => el.data.id)
       .sort();
@@ -310,7 +314,7 @@ test('buildTreeElements', async (t) => {
     const nodes = [
       { id: 'a', group: 'shop', state: 'running', networks: ['app-net'], mounts: [{ source: 'pgdata', kind: 'volume-named' }] },
     ];
-    const els = graph.buildTreeElements(nodes, null, { showNetworks: false, showMounts: false });
+    const els = elements.buildTreeElements(nodes, null, { showNetworks: false, showMounts: false });
     assert.equal(els.filter((el) => el.classes === 'net').length, 0);
     assert.equal(els.filter((el) => el.classes && el.classes.startsWith('mount')).length, 0);
     assert.equal(els.filter((el) => el.data.id && el.data.id.startsWith('edge:tree:a->')).length, 0);
@@ -332,7 +336,7 @@ test('buildTreeElements', async (t) => {
         mounts: [],
       },
     ];
-    const el = graph.buildTreeElements(nodes, null).find((e) => e.data.id === 'a');
+    const el = elements.buildTreeElements(nodes, null).find((e) => e.data.id === 'a');
     assert.equal(el.data.parent, undefined);
     assert.equal(el.data.name, 'web');
     assert.equal(el.data.ports, '8080:80');
@@ -342,7 +346,7 @@ test('buildTreeElements', async (t) => {
 
   await t.test('selectedId marks the matching container node selected', () => {
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [] }];
-    const els = graph.buildTreeElements(nodes, 'a');
+    const els = elements.buildTreeElements(nodes, 'a');
     assert.equal(els.find((e) => e.data.id === 'a').classes, 'running selected');
   });
 });
@@ -380,18 +384,18 @@ function svgContainerFixture(overrides = {}) {
 
 test('renderSvg', async (t) => {
   await t.test('a running container renders a rect in the running border color and its name as text', () => {
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
     assert.match(svg, /stroke="#3fb950"/);
     assert.match(svg, /web/);
   });
 
   await t.test('an unhealthy container uses the unhealthy border color', () => {
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true })], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true })], edges: [] });
     assert.match(svg, /stroke="#f85149"/);
   });
 
   await t.test('a selected container uses the selected border color', () => {
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ selected: true })], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ selected: true })], edges: [] });
     assert.match(svg, /stroke="#4f8cff"/);
   });
 
@@ -406,7 +410,7 @@ test('renderSvg', async (t) => {
       faded: false,
       data: { label: '/a/very/\nlong/path' },
     };
-    const svg = graph.renderSvg({ nodes: [node], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
     const tspanCount = (svg.match(/<tspan/g) || []).length;
     assert.equal(tspanCount, 2);
     assert.match(svg, /\/a\/very\//);
@@ -414,11 +418,11 @@ test('renderSvg', async (t) => {
   });
 
   await t.test('a volume pill renders in the lighter volume color, distinct from a bind mount', () => {
-    const bindSvg = graph.renderSvg({
+    const bindSvg = svgExport.renderSvg({
       nodes: [{ id: 'm1', kind: 'mount-bind', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x' } }],
       edges: [],
     });
-    const volumeSvg = graph.renderSvg({
+    const volumeSvg = svgExport.renderSvg({
       nodes: [{ id: 'm2', kind: 'mount-volume', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x' } }],
       edges: [],
     });
@@ -427,11 +431,11 @@ test('renderSvg', async (t) => {
   });
 
   await t.test('a shared mount or volume renders in the shared color regardless of kind', () => {
-    const sharedBindSvg = graph.renderSvg({
+    const sharedBindSvg = svgExport.renderSvg({
       nodes: [{ id: 'm1', kind: 'mount-bind', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
       edges: [],
     });
-    const sharedVolumeSvg = graph.renderSvg({
+    const sharedVolumeSvg = svgExport.renderSvg({
       nodes: [{ id: 'm2', kind: 'mount-volume', x: 0, y: 0, width: 170, height: 26, faded: false, data: { label: 'x', shared: true } }],
       edges: [],
     });
@@ -450,7 +454,7 @@ test('renderSvg', async (t) => {
   for (const [kind, color] of edgeKinds) {
     await t.test(`edge kind "${kind}" renders in its expected color`, () => {
       const edge = { id: `e-${kind}`, kind, source: { x: 0, y: 0 }, target: { x: 100, y: 50 }, label: '', faded: false };
-      const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+      const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
       assert.match(svg, new RegExp(`stroke="${color}"`));
     });
   }
@@ -466,7 +470,7 @@ test('renderSvg', async (t) => {
       mountShared: false,
       mountVolume: true,
     };
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
     assert.match(svg, /stroke="#e8c766"/);
   });
 
@@ -481,24 +485,24 @@ test('renderSvg', async (t) => {
       mountShared: true,
       mountVolume: true,
     };
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
     assert.match(svg, /stroke="#f0883e"/);
   });
 
   await t.test('depends_on and manual edges render their label text', () => {
     const edge = { id: 'e1', kind: 'depends_on', source: { x: 0, y: 0 }, target: { x: 100, y: 0 }, label: 'service_healthy', faded: false };
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [edge] });
     assert.match(svg, /service_healthy/);
   });
 
   await t.test('a faded node is wrapped in a reduced-opacity group', () => {
-    const svg = graph.renderSvg({ nodes: [svgContainerFixture({ faded: true })], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ faded: true })], edges: [] });
     assert.match(svg, /opacity="0.15"/);
   });
 
   await t.test('the viewBox grows to cover every node plus padding', () => {
     const nodes = [svgContainerFixture({ id: 'a', x: 0, y: 0 }), svgContainerFixture({ id: 'b', x: 1000, y: 500 })];
-    const svg = graph.renderSvg({ nodes, edges: [] });
+    const svg = svgExport.renderSvg({ nodes, edges: [] });
     const viewBoxMatch = svg.match(/viewBox="([-\d.]+) ([-\d.]+) ([\d.]+) ([\d.]+)"/);
     assert.ok(viewBoxMatch, 'expected a viewBox attribute');
     const [, minX, minY, width, height] = viewBoxMatch.map(Number);
@@ -509,7 +513,7 @@ test('renderSvg', async (t) => {
   });
 
   await t.test('empty geometry still returns a valid svg document', () => {
-    const svg = graph.renderSvg({ nodes: [], edges: [] });
+    const svg = svgExport.renderSvg({ nodes: [], edges: [] });
     assert.match(svg, /^<svg/);
     assert.match(svg, /<\/svg>$/);
   });

@@ -18,6 +18,47 @@ npm run dev
 - Run `npm test` (syntax check + unit tests), `npm run lint`, and `npm run format:check` locally; CI runs the same checks. `npm run format` applies Prettier's fixes for you.
 - Unit tests (`node:test`, in `test/`) cover the pure parsing/graph functions and the alert rules - add to them when you touch that code. There's no end-to-end test suite, so for feature PRs a short note in the description on how you tested it is still appreciated.
 
+## Screenshots
+
+The README/DOCKERHUB screenshots come from a throwaway stack, not from anyone's real containers:
+
+```
+scripts/demo-stack.sh up --isolated     # two compose projects inside a private Docker daemon
+scripts/demo-stack.sh down --isolated   # remove it again
+```
+
+`--isolated` builds the stack inside a docker-in-docker container and prints how to point
+OpenDockWatch at that daemon's socket. It's worth the extra step for screenshots: the List view's
+Running filter hides stopped containers, but the Flow graph and the container count still include
+them, so filtering alone won't keep unrelated containers out of a shot. Drop the flag to build the
+stack on the current daemon instead, which is the more useful form for just developing against
+something that has more than one container in it.
+
+The stack deliberately contains an unhealthy container, a crash-looping one, and one that has
+exited, so the health dots, restart badges and alert rules all have something to show.
+
+Taking the shots themselves is `npm run screenshots`, which drives a real browser through all nine:
+
+```
+npx playwright install chromium          # once - CI skips the browser download, see ci.yml
+SCREENSHOT_PASS=<the plaintext behind AUTH_PASS_HASH> npm run screenshots
+```
+
+It refuses to run against a host whose containers aren't the demo ones, so a stray run can't put
+private container names in the README. `SCREENSHOT_URL` (default `http://localhost:3100`),
+`SCREENSHOT_USER` (default `demo`), `SCREENSHOT_OUT` and `SCREENSHOT_SCALE` are the other knobs.
+
+It waits a couple of minutes before the first shot on purpose: the row sparklines fill from an
+in-memory buffer that starts empty on page load, and the host card's chart covers 30 minutes, so
+leave the stack running a while before shooting or those charts render as slivers. `SCREENSHOT_SCALE=2`
+renders at 2x for a hidpi-crisp result, at approximately four times the file size — the committed
+set is 1x, which keeps all nine under 2MB.
+
+Review every shot before committing. Several of the views need coaxing to photograph well (the
+graph views use the Fullscreen toggle so nodes don't fall back to their compact rendering, and the
+details panel has to be told to expand its collapsed sections), and a UI change can quietly undo
+that.
+
 ## Reporting bugs
 
 Open an issue with what you expected, what happened instead, and your `docker` / OS setup (local socket vs. SSH remote hosts) if relevant.
