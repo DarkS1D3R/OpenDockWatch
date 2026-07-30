@@ -230,6 +230,16 @@ export function splitDockerTimestamp(line) {
   return { ts: `${m[1]}.${m[2]}`, rest: line.slice(m[0].length) };
 }
 
+// Same anchor as splitDockerTimestamp, but keeps the date and returns a real epoch-ms instant
+// instead of an HH:MM:SS.mmm display string - for comparing lines from different containers
+// (the Logs tab's multi-pane scroll sync), a same-day-only string isn't enough to compare by.
+const DOCKER_TS_MS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d*Z /;
+
+export function parseLineTsMs(line) {
+  const m = line.match(DOCKER_TS_MS_RE);
+  return m ? Date.parse(m[1] + 'Z') : null;
+}
+
 // Escapes the line for safe innerHTML use, renders ANSI color codes as <span>s, and
 // wraps case-insensitive matches of `filterText` in <mark> so v-html can render the
 // highlight. When `isRegex` is set, `filterText` is compiled as a regex instead of

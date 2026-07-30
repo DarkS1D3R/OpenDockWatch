@@ -1,13 +1,27 @@
 import { stateEmoji } from '../format.js';
+import { MAX_OPEN_LOG_PANES } from '../constants.js';
 import LogViewer from './LogViewer.js';
 
 // The Logs tab: a compact, always-visible container list on the left (grouped by compose
-// project, search-filterable) and a single embedded LogViewer filling the pane on the right -
-// switching which container's logs you're looking at is a click in the list rather than opening
-// and closing the root's overlay log panel per container. Mounted fresh (v-if, not v-show) like
-// ActivityView/LogViewer - the embedded LogViewer child owns its own stream lifecycle via its own
-// mounted()/beforeUnmount(), keyed on the active container id so switching containers tears down
-// the old stream and starts a fresh one instead of reusing a stale one.
+// project, search-filterable) and up to MAX_OPEN_LOG_PANES embedded LogViewers on the right -
+// clicking a row toggles it open/closed rather than replacing a single selection, so several
+// containers' logs can sit side by side. Mounted fresh (v-if, not v-show) like
+// ActivityView/LogViewer - each embedded LogViewer child owns its own stream lifecycle via its
+// own mounted()/beforeUnmount(), keyed on container id so opening/closing a pane tears down or
+// starts a stream rather than reusing a stale one.
+//
+// Scroll sync: every open pane emits `scroll-sync` (LogViewer.js) with its own container id and
+// the epoch-ms timestamp of whichever line the *user* just scrolled to the top of its viewport.
+// onScrollSync calls scrollToTimestamp on every *other* open pane - never the sender, which is
+// already there and would otherwise fight the scroll gesture that got it there by re-snapping its
+// own scrollTop to the nearest line boundary on every frame - so they all line up on the same
+// point in time regardless of how many lines each container happens to log. Panes are looked
+// up by container id via `_panes` (a plain, non-reactive map populated by a function :ref, since
+// Vue only turns `ref` into an array automatically for elements directly inside a v-for that are
+// *always* rendered that way - this template renders 1 pane the same way it renders 4, so a plain
+// id-keyed map is both correct and simpler than reasoning about array order). lastSyncTsMs is kept
+// so a pane opened *after* the group has already scrolled somewhere joins at that same point
+// instead of jumping in at the live tail while its siblings are looking at history.
 export default {
   name: 'LogsView',
   components: { LogViewer },
@@ -18,7 +32,8 @@ export default {
   data() {
     return {
       search: '',
-      activeContainerId: null,
+      openIds: [],
+      lastSyncTsMs: null,
     };
   },
   computed: {
@@ -32,25 +47,67 @@ export default {
     allContainers() {
       return this.groupedContainers.flatMap(([, items]) => items);
     },
-    activeContainer() {
-      return this.allContainers.find((c) => c.id === this.activeContainerId) || null;
+    // In open order (the order containers were clicked), not list order - so a newly opened pane
+    // lands last in the grid instead of jumping around as other panes open/close around it.
+    openContainers() {
+      return this.openIds.map((id) => this.allContainers.find((c) => c.id === id)).filter(Boolean);
+    },
+    atCap() {
+      return this.openIds.length >= MAX_OPEN_LOG_PANES;
+    },
+    maxPanes() {
+      return MAX_OPEN_LOG_PANES;
     },
   },
   watch: {
     hostId() {
-      this.activeContainerId = null;
+      this.openIds = [];
+      this.lastSyncTsMs = null;
     },
     // A container that disappears from the list (removed, or filtered out by the topbar's state
-    // toggle) shouldn't leave the pane stuck rendering a stream for an id no longer in it.
+    // toggle) shouldn't leave a pane stuck rendering a stream for an id no longer in it.
     allContainers() {
-      if (this.activeContainerId && !this.allContainers.some((c) => c.id === this.activeContainerId)) {
-        this.activeContainerId = null;
+      const stillThere = new Set(this.allContainers.map((c) => c.id));
+      if (this.openIds.some((id) => !stillThere.has(id))) {
+        this.openIds = this.openIds.filter((id) => stillThere.has(id));
       }
     },
   },
+  created() {
+    this._panes = {};
+  },
   methods: {
-    select(id) {
-      this.activeContainerId = id;
+    registerPane(id, el) {
+      if (el) this._panes[id] = el;
+      else delete this._panes[id];
+    },
+    toggleOpen(id) {
+      if (this.openIds.includes(id)) {
+        this.openIds = this.openIds.filter((openId) => openId !== id);
+        return;
+      }
+      if (this.atCap) return;
+      this.openIds = [...this.openIds, id];
+      // Slot the new pane into the group's current timeframe instead of at its own live tail -
+      // wait a tick for it to mount and load its first burst of lines before moving it.
+      if (this.lastSyncTsMs != null) {
+        const tsMs = this.lastSyncTsMs;
+        this.$nextTick(() => {
+          const pane = this._panes[id];
+          if (pane) pane.scrollToTimestamp(tsMs);
+        });
+      }
+    },
+    onScrollSync({ containerId, tsMs }) {
+      this.lastSyncTsMs = tsMs;
+      // Not the sender - it's already there by definition, and re-snapping its own scrollTop to
+      // the nearest line boundary every frame would fight the scroll gesture that got it there,
+      // most noticeably on whichever pane has the most lines to actually scroll through.
+      for (const id of this.openIds) {
+        if (id === containerId) continue;
+        const pane = this._panes[id];
+        if (pane) pane.scrollToTimestamp(tsMs);
+      }
     },
     stateIcon(state) {
       return stateEmoji(state);
@@ -67,8 +124,9 @@ export default {
             v-for="c in items"
             :key="c.id"
             class="logs-tab-row row-clickable"
-            :class="{ 'row-selected': c.id === activeContainerId }"
-            @click="select(c.id)"
+            :class="{ 'row-selected': openIds.includes(c.id) }"
+            :title="atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
+            @click="toggleOpen(c.id)"
           >
             <span class="logs-tab-row-icon" v-html="stateIcon(c.state)"></span>
             <span class="logs-tab-row-name">{{ c.name }}</span>
@@ -76,15 +134,21 @@ export default {
         </div>
       </div>
       <div class="logs-tab-viewer">
-        <log-viewer
-          v-if="activeContainer"
-          :key="activeContainer.id"
-          :host-id="hostId"
-          :container-id="activeContainer.id"
-          :container-name="activeContainer.name"
-          :embedded="true"
-        ></log-viewer>
-        <div v-else class="logs-tab-empty muted">Select a container on the left to view its logs.</div>
+        <div v-if="openContainers.length" class="logs-tab-panes" :class="{ 'panes-grid': openContainers.length > 1 }">
+          <log-viewer
+            v-for="c in openContainers"
+            :key="c.id"
+            :ref="(el) => registerPane(c.id, el)"
+            :host-id="hostId"
+            :container-id="c.id"
+            :container-name="c.name"
+            :embedded="true"
+            :closable="openContainers.length > 1"
+            @scroll-sync="onScrollSync"
+            @close="toggleOpen(c.id)"
+          ></log-viewer>
+        </div>
+        <div v-else class="logs-tab-empty muted">Select up to {{ maxPanes }} containers on the left to view their logs side by side.</div>
       </div>
     </div>
   `,
