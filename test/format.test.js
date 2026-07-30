@@ -220,6 +220,22 @@ test('splitDockerTimestamp', async (t) => {
   });
 });
 
+test('parseLineTsMs', async (t) => {
+  await t.test('parses a docker --timestamps prefix to a real epoch-ms instant', () => {
+    assert.equal(format.parseLineTsMs('2026-07-10T17:03:33.492059335Z hello world'), Date.parse('2026-07-10T17:03:33.492Z'));
+  });
+
+  await t.test('two lines on the same day but different dates are not equal', () => {
+    const day1 = format.parseLineTsMs('2026-07-10T23:59:59.999999999Z x');
+    const day2 = format.parseLineTsMs('2026-07-11T00:00:00.000000000Z x');
+    assert.ok(day2 > day1);
+  });
+
+  await t.test('lines without the prefix return null', () => {
+    assert.equal(format.parseLineTsMs('hello world'), null);
+  });
+});
+
 test('highlightLine', async (t) => {
   await t.test('wraps a literal filter match in <mark>, case-insensitively', () => {
     assert.equal(

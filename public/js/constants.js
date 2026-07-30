@@ -9,6 +9,8 @@ export const MAX_POLL_BACKOFF_MS = 60_000;
 // that was hidden before a host was selected still comes to life on its own.
 export const HIDDEN_POLL_MS = 30_000;
 export const MAX_LOG_LINES = 3000;
+// How many containers' logs the Logs tab can stream side by side, scroll-synced by timestamp.
+export const MAX_OPEN_LOG_PANES = 4;
 export const PREVIEW_TAIL = 100;
 export const METRICS_HISTORY_LEN = 24;
 export const HOST_METRICS_HISTORY_LEN = 120;

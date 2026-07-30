@@ -1,7 +1,8 @@
 import { MAX_LOG_LINES } from '../constants.js';
-import { detectLogLevel, highlightLine, stripAnsi } from '../format.js';
+import { detectLogLevel, highlightLine, stripAnsi, parseLineTsMs } from '../format.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
+import { closestIndexByTs } from '../lib/logSync.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Mounted fresh by the root each time "Logs" is opened for a container (v-if, not
@@ -12,9 +13,19 @@ import { createLogStream } from '../lib/logStream.js';
 //
 // `embedded` is the other mode this renders in: the Logs tab (LogsView) mounts one of these per
 // selected container inside its own right-hand pane instead of the root's overlay slot. There's
-// no "close" in that context (picking a different container in the list is the equivalent) and no
-// "fullscreen" (the pane already fills the tab), so both buttons are hidden and the panel fills
-// its parent's height via CSS instead of the fullscreen vh-calc.
+// no "fullscreen" in that context (the pane already fills the tab), so that button is hidden and
+// the panel fills its parent's height via CSS instead of the fullscreen vh-calc. `closable` is
+// independent of `embedded` - LogsView only sets it once 2+ panes are open side by side, so a
+// single embedded pane still has no close button (picking a different row is the equivalent, same
+// as before multi-pane existed).
+//
+// `scroll-sync` is the other half of LogsView's multi-pane sync: emitted with { containerId,
+// tsMs } - this pane's own id and the epoch-ms timestamp of whichever line is now at the top of
+// the viewport - whenever the *user* scrolls (not when `scrollToTimestamp` moves this pane in
+// response to another one's sync event - `_programmatic` guards that). LogsView listens on every
+// open pane and calls `scrollToTimestamp` on every *other* one - not the sender itself, which
+// would otherwise re-snap its own scrollTop to the nearest line boundary every frame and fight a
+// continuous scroll gesture (most visible on whichever pane has the most lines to scroll through).
 export default {
   name: 'LogViewer',
   props: {
@@ -24,8 +35,9 @@ export default {
     withDetail: { type: Boolean, default: false },
     fullscreen: { type: Boolean, default: false },
     embedded: { type: Boolean, default: false },
+    closable: { type: Boolean, default: false },
   },
-  emits: ['close', 'update:fullscreen'],
+  emits: ['close', 'update:fullscreen', 'scroll-sync'],
   data() {
     return {
       tail: 200,
@@ -66,11 +78,17 @@ export default {
           if (regexMode) return testRegex ? testRegex.test(line.text) : true;
           return line.text.toLowerCase().includes(filterLower);
         })
-        .map((line) => ({ id: line.id, html: highlightLine(line.text, filterText, regexMode && !!testRegex) }));
+        .map((line) => ({
+          id: line.id,
+          html: highlightLine(line.text, filterText, regexMode && !!testRegex),
+          tsMs: parseLineTsMs(line.text),
+        }));
     },
   },
   created() {
     this._stream = null;
+    this._programmatic = false;
+    this._syncRaf = null;
   },
   mounted() {
     this.startStream();
@@ -88,6 +106,7 @@ export default {
       this._stream.stop();
       this._stream = null;
     }
+    if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
   },
   methods: {
     startStream() {
@@ -111,7 +130,15 @@ export default {
       if (this.atBottom) {
         this.$nextTick(() => {
           const el = this.$refs.logView;
-          if (el) el.scrollTop = el.scrollHeight;
+          if (!el) return;
+          // Not a user scroll - tailing live shouldn't broadcast a sync that drags a sibling pane
+          // along too, or a pane the user deliberately scrolled back to read history on would keep
+          // getting yanked back to "now" every time a *different*, still-tailing pane got a new line.
+          this._programmatic = true;
+          el.scrollTop = el.scrollHeight;
+          requestAnimationFrame(() => {
+            this._programmatic = false;
+          });
         });
       }
     },
@@ -125,6 +152,51 @@ export default {
     onScroll() {
       const el = this.$refs.logView;
       if (el) this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      // A sync-driven scroll (scrollToTimestamp, called from LogsView in response to a *different*
+      // pane's user scroll) shouldn't itself broadcast - every pane doing that would ping-pong
+      // forever. rAF-throttled the same way logStream.js throttles its own flush, since a real drag
+      // scroll fires this dozens of times a frame otherwise.
+      if (this._programmatic || this._syncRaf) return;
+      this._syncRaf = requestAnimationFrame(() => {
+        this._syncRaf = null;
+        const tsMs = this.visibleTopTsMs();
+        if (tsMs != null) this.$emit('scroll-sync', { containerId: this.containerId, tsMs });
+      });
+    },
+    // The line currently at the top of the scrolled viewport, found by binary-searching the
+    // rendered line-divs' offsetTop against scrollTop - monotonic per line even with wrapped text,
+    // since <pre>'s children are exactly filteredLines in order with no wrapper in between.
+    visibleTopTsMs() {
+      const el = this.$refs.logView;
+      if (!el || !el.children.length) return null;
+      const children = el.children;
+      let lo = 0;
+      let hi = children.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (children[mid].offsetTop <= el.scrollTop) lo = mid;
+        else hi = mid - 1;
+      }
+      const line = this.filteredLines[lo];
+      return line ? line.tsMs : null;
+    },
+    // Scrolls this pane so the line closest to tsMs sits at the top - the follower half of
+    // LogsView's multi-pane sync. _programmatic suppresses the scroll-sync this would otherwise
+    // trigger right back (cleared next frame, after the resulting native scroll event has fired).
+    scrollToTimestamp(tsMs) {
+      const el = this.$refs.logView;
+      if (!el || tsMs == null) return;
+      const index = closestIndexByTs(
+        this.filteredLines.map((l) => l.tsMs),
+        tsMs
+      );
+      const child = index === -1 ? null : el.children[index];
+      if (!child) return;
+      this._programmatic = true;
+      el.scrollTop = child.offsetTop;
+      requestAnimationFrame(() => {
+        this._programmatic = false;
+      });
     },
     scrollToBottom() {
       this.atBottom = true;
@@ -190,6 +262,9 @@ export default {
             {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
           </button>
           <button v-if="!embedded" @click="$emit('close')">Close</button>
+          <button v-else-if="closable" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
+            ✕
+          </button>
         </div>
       </div>
       <div class="log-view-wrap">
