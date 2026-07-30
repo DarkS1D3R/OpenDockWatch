@@ -37,7 +37,7 @@ something that has more than one container in it.
 The stack deliberately contains an unhealthy container, a crash-looping one, and one that has
 exited, so the health dots, restart badges and alert rules all have something to show.
 
-Taking the shots themselves is `npm run screenshots`, which drives a real browser through all nine:
+Taking the shots themselves is `npm run screenshots`, which drives a real browser through all ten:
 
 ```
 npx playwright install chromium          # once - CI skips the browser download, see ci.yml
