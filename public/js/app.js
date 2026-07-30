@@ -8,6 +8,7 @@ import SettingsPanel from './components/SettingsPanel.js';
 import ContainerList from './components/ContainerList.js';
 import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
+import LogsView from './components/LogsView.js';
 import { parseMemUsedBytes } from './format.js';
 import {
   apiGetHosts,
@@ -38,6 +39,7 @@ createApp({
     ContainerList,
     ContainerMetricsModal,
     FlowView,
+    LogsView,
   },
   data() {
     return {
@@ -52,7 +54,7 @@ createApp({
       pollTimer: null,
       actionInFlight: {},
 
-      view: 'list', // 'list' | 'flow'
+      view: 'list', // 'list' | 'flow' | 'logs' | 'activity'
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -374,6 +376,7 @@ createApp({
         <div class="view-toggle">
           <button :class="{active: view==='list'}" @click="setView('list')">List</button>
           <button :class="{active: view==='flow'}" @click="setView('flow')">Flow</button>
+          <button :class="{active: view==='logs'}" @click="setView('logs')">Logs</button>
           <button :class="{active: view==='activity'}" @click="setView('activity')">
             Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}</span>
           </button>
@@ -391,7 +394,7 @@ createApp({
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
       <host-card
-        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen"
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs'"
         :host-info="hostInfo"
         :host-name="currentHostName"
         :host-id="selectedHostId"
@@ -428,6 +431,12 @@ createApp({
             v-model:fullscreen="flowFullscreen"
             @select="selectContainerById"
           ></flow-view>
+
+          <logs-view
+            v-if="view === 'logs'"
+            :host-id="selectedHostId"
+            :grouped-containers="groupedContainers"
+          ></logs-view>
 
           <activity-view
             v-if="view === 'activity'"
