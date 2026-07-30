@@ -66,6 +66,15 @@ services:
 - **Alerts** — container crashed / crash-looping / unhealthy / host unreachable out of the box, plus opt-in CPU / memory / disk-usage threshold rules. Optional push notification via webhook (Discord, ntfy, Gotify, Slack, or generic JSON).
 - Works against the local socket and any number of remote hosts over SSH — no agents to install anywhere.
 
+Declare a manual Flow-view dependency straight from your compose file with the `opendockwatch.depends_on` label — a comma-separated `target[:label]` list, each target matching a service in the same Compose project first, then falling back to a literal container name for cross-project or non-Compose targets:
+
+```yaml
+services:
+  shop-api:
+    labels:
+      opendockwatch.depends_on: 'db:reads,cache:uses,payments-gateway:http'
+```
+
 ## Screenshots
 
 ![List view, containers grouped by Compose project](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/list-view.png)
