@@ -1,5 +1,14 @@
 const { loadHosts } = require('./hosts');
-const { listContainers, getStats, getHostInfo, getDiskUsage, checkHost, parseMemUsedBytes, computeIoRates } = require('./docker');
+const {
+  listContainers,
+  getStats,
+  getHostInfo,
+  getDiskUsage,
+  checkHost,
+  parseMemUsedBytes,
+  computeIoRates,
+  forgetHost: forgetDockerHost,
+} = require('./docker');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
@@ -9,9 +18,25 @@ const POLL_MS = 5000;
 const DISK_POLL_MS = 60_000;
 
 const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
-const hostStates = new Map(); // hostId -> { pollState, diskTimer } - lets addHost/removeHost target one host
+const hostStates = new Map(); // hostId -> { pollState, diskState } - lets addHost/removeHost target one host
 const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
 const globalTimers = [];
+
+// When the last poll of *any* host finished. This is the liveness signal the watchdog reads, and
+// it's deliberately about the loop rather than about Docker: pollHost completes normally for an
+// unreachable host too (checkHost returns false, it records that and returns), so this only goes
+// stale if the poll loop itself has stopped turning - a wedged event loop, a promise that never
+// settles - never merely because a monitored daemon is down. That distinction is what makes it
+// safe to gate container health on, per the Dockerfile HEALTHCHECK's note about remote hosts.
+let lastPollCompletedTs = Date.now();
+
+function getLastPollCompletedTs() {
+  return lastPollCompletedTs;
+}
+
+function getHostCount() {
+  return hostStates.size;
+}
 
 function getSnapshot(hostId) {
   return snapshots.get(hostId) || null;
@@ -152,11 +177,35 @@ function scheduleHostPolling(host, pollState) {
     if (pollState.stopped) return;
     try {
       await pollHost(host);
+    } catch (err) {
+      // pollHost catches its own docker failures, so reaching here means something outside that
+      // block threw (a db or alerts error). Swallowing it *here* rather than letting it escape a
+      // setTimeout callback matters: an unhandled rejection out of a timer is a process-level
+      // crash, and one bad sample must not take monitoring down for every host.
+      logger.error('metrics.tick.failed', { host: host.id, error: err.message });
     } finally {
+      lastPollCompletedTs = Date.now();
       if (!pollState.stopped) pollState.timer = setTimeout(tick, POLL_MS);
     }
   };
   pollState.timer = setTimeout(tick, POLL_MS);
+}
+
+// `docker system df` gets DISK_USAGE_TIMEOUT_MS (30s) to walk the build cache, on a 60s interval -
+// close enough that a setInterval could fire the next sweep while the previous one is still
+// running on a host with a lot of build history, stacking two of the heaviest calls this makes.
+// Chained the same way as the container poll: the gap is measured from when the last one
+// finished, so they can never overlap however slow the daemon gets.
+function scheduleDiskPolling(host, diskState) {
+  const tick = async () => {
+    if (diskState.stopped) return;
+    try {
+      await pollDiskUsage(host);
+    } finally {
+      if (!diskState.stopped) diskState.timer = setTimeout(tick, DISK_POLL_MS);
+    }
+  };
+  diskState.timer = setTimeout(tick, DISK_POLL_MS);
 }
 
 // Starts polling a single host immediately - used both by start() at boot and by the
@@ -165,27 +214,35 @@ function scheduleHostPolling(host, pollState) {
 function addHost(host) {
   if (hostStates.has(host.id)) return;
   const pollState = { stopped: false, timer: null };
-  const diskTimer = setInterval(() => pollDiskUsage(host), DISK_POLL_MS);
-  hostStates.set(host.id, { pollState, diskTimer });
+  const diskState = { stopped: false, timer: null };
+  hostStates.set(host.id, { pollState, diskState });
   // pollDiskUsage reads the snapshot pollHost writes (specifically snapshot.reachable, set only
   // after checkHost resolves) - firing both in parallel here meant this first call almost always
   // found no snapshot yet and early-returned, leaving diskUsage empty until the next
   // DISK_POLL_MS tick (60s later). pollHost never rejects (it catches its own errors), so this
   // chain needs no .catch of its own.
-  pollHost(host).then(() => pollDiskUsage(host));
+  pollHost(host)
+    .then(() => pollDiskUsage(host))
+    .catch((err) => logger.error('metrics.initial_poll.failed', { host: host.id, error: err.message }))
+    .finally(() => {
+      lastPollCompletedTs = Date.now();
+    });
   scheduleHostPolling(host, pollState);
+  scheduleDiskPolling(host, diskState);
 }
 
 function removeHost(hostId) {
   const state = hostStates.get(hostId);
   if (!state) return;
   state.pollState.stopped = true;
+  state.diskState.stopped = true;
   clearTimeout(state.pollState.timer);
-  clearInterval(state.diskTimer);
+  clearTimeout(state.diskState.timer);
   hostStates.delete(hostId);
   snapshots.delete(hostId);
   localCpuTimesPrev.delete(hostId);
   alerts.forgetHost(hostId);
+  forgetDockerHost(hostId);
 }
 
 function start() {
@@ -207,4 +264,14 @@ function stop() {
   for (const hostId of [...hostStates.keys()]) removeHost(hostId);
 }
 
-module.exports = { start, stop, addHost, removeHost, getSnapshot, getAllSnapshots, POLL_MS };
+module.exports = {
+  start,
+  stop,
+  addHost,
+  removeHost,
+  getSnapshot,
+  getAllSnapshots,
+  getLastPollCompletedTs,
+  getHostCount,
+  POLL_MS,
+};

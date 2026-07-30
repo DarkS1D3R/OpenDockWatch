@@ -1,5 +1,24 @@
-async function apiFetch(url, opts) {
-  const res = await fetch(url, opts);
+// A browser allows roughly six concurrent connections per origin over HTTP/1.1, and this app
+// permanently holds some of them open for the SSE streams (events, log preview, log viewer). So a
+// fetch with no timeout isn't just a slow request - it's a connection slot held hostage, and once
+// enough of them pile up behind an unresponsive server the tab can't issue any request at all,
+// including the ones a reload needs. That's the "site is hung" state, and it survives the server
+// recovering, because nothing ever releases the sockets. A request that gives up releases its
+// slot; the poll loop in app.js then retries on its own schedule.
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+async function apiFetch(url, opts = {}) {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = opts;
+  let res;
+  try {
+    res = await fetch(url, { ...rest, signal: rest.signal || AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    // "signal is aborted without reason" tells the user nothing - name the timeout instead.
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error(`request timed out after ${Math.round(timeoutMs / 1000)}s`, { cause: err });
+    }
+    throw err;
+  }
   if (res.status === 401) {
     window.location.href = '/login';
     throw new Error('unauthenticated');
@@ -25,8 +44,10 @@ export async function apiGetHosts() {
   return jsonOrThrow(await apiFetch('/api/hosts'));
 }
 
-export async function apiGetContainers(hostId) {
-  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers`));
+// fresh bypasses the server's snapshot for the one case where up-to-POLL_MS staleness is visible
+// to the user: the refetch right after a start/stop/restart.
+export async function apiGetContainers(hostId, { fresh = false } = {}) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers${fresh ? '?fresh=1' : ''}`));
 }
 
 export async function apiGetStats(hostId) {
@@ -41,8 +62,11 @@ export async function apiGetHostInfo(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/info`));
 }
 
+// Longer than the default: a stop/restart waits out docker's 10s SIGTERM grace period before
+// SIGKILL, and server-side containerAction allows 30s for it - giving up at 15s here would
+// report failure for an action that was about to succeed.
 export async function apiContainerAction(hostId, id, action) {
-  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/${action}`, { method: 'POST' }));
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/${action}`, { method: 'POST', timeoutMs: 45_000 }));
 }
 
 export async function apiGetContainerInspect(hostId, id) {
@@ -69,8 +93,10 @@ export async function apiGetDiskUsage(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage`));
 }
 
+// `docker system df -v` walks every image's shared/unique layer sizes and gets 30s server-side,
+// so this needs headroom over the default too.
 export async function apiGetDiskUsageImages(hostId) {
-  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`));
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`, { timeoutMs: 40_000 }));
 }
 
 export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
@@ -168,6 +194,8 @@ export async function apiDeleteHost(id) {
   return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}`, { method: 'DELETE' }));
 }
 
+// The SSH reachability probe behind this allows 20s of its own for a first connection on a slow
+// link (see SSH_CHECK_TIMEOUT_MS) - the point of the button is to wait for the real answer.
 export async function apiTestHost(id) {
-  return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}/test`, { method: 'POST' }));
+  return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}/test`, { method: 'POST', timeoutMs: 30_000 }));
 }

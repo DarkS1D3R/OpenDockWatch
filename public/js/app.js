@@ -1,4 +1,4 @@
-import { POLL_MS, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN } from './constants.js';
+import { POLL_MS, MAX_POLL_BACKOFF_MS, HIDDEN_POLL_MS, METRICS_HISTORY_LEN, HOST_METRICS_HISTORY_LEN } from './constants.js';
 import SparkTile from './components/SparkTile.js';
 import HostCard from './components/HostCard.js';
 import LogViewer from './components/LogViewer.js';
@@ -52,6 +52,9 @@ createApp({
       containersError: null,
       loadingContainers: false,
       pollTimer: null,
+      pollStopped: true,
+      pollInFlight: false,
+      pollFailures: 0,
       actionInFlight: {},
 
       view: 'list', // 'list' | 'flow' | 'logs' | 'activity'
@@ -135,6 +138,7 @@ createApp({
     },
   },
   async mounted() {
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
     try {
       const session = await apiGetSession();
       this.role = session.role;
@@ -148,6 +152,7 @@ createApp({
     }
   },
   beforeUnmount() {
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.stopPolling();
     this.closeLogViewer();
   },
@@ -169,12 +174,61 @@ createApp({
       this.stopPolling();
       this.fetchHostInfo();
       this.fetchDiskUsage();
-      this.refresh();
-      this.pollTimer = setInterval(() => this.refresh(), POLL_MS);
+      this.startPolling();
+    },
+    // Chained, never setInterval. refresh() awaits five or six requests in sequence, so on a slow
+    // host one cycle can outlast POLL_MS - and an interval doesn't care, it just starts another.
+    // Cycles then overlap and stack, each holding connections the browser only has about six of,
+    // until the tab has none left and can't issue any request at all. That state doesn't resolve
+    // when the server does, which is why the container ends up being restarted. Measuring the gap
+    // from when the previous cycle *finished* makes overlap structurally impossible.
+    startPolling() {
+      this.stopPolling();
+      this.pollStopped = false;
+      this.pollFailures = 0;
+      this.pollTick();
     },
     stopPolling() {
-      if (this.pollTimer) clearInterval(this.pollTimer);
+      this.pollStopped = true;
+      if (this.pollTimer) clearTimeout(this.pollTimer);
       this.pollTimer = null;
+    },
+    async pollTick() {
+      if (this.pollStopped || !this.selectedHostId) return;
+      // A background tab still polls forever otherwise - and a dashboard is exactly the kind of
+      // page left open in a tab for days. Every one of those tabs was driving docker CLI calls on
+      // the server for a view nobody was looking at.
+      if (document.hidden) return this.schedulePoll(HIDDEN_POLL_MS);
+
+      this.pollInFlight = true;
+      try {
+        await this.refresh();
+        // refresh()'s sub-fetches each swallow their own errors (they're best-effort), but
+        // fetchContainers records its failure - the one that means the host itself is answering.
+        this.pollFailures = this.containersError ? this.pollFailures + 1 : 0;
+      } catch {
+        this.pollFailures++;
+      } finally {
+        this.pollInFlight = false;
+      }
+      this.schedulePoll(this.nextPollDelay());
+    },
+    schedulePoll(delay) {
+      if (this.pollStopped) return;
+      clearTimeout(this.pollTimer);
+      this.pollTimer = setTimeout(() => this.pollTick(), delay);
+    },
+    nextPollDelay() {
+      if (!this.pollFailures) return POLL_MS;
+      return Math.min(POLL_MS * 2 ** Math.min(this.pollFailures, 5), MAX_POLL_BACKOFF_MS);
+    },
+    onVisibilityChange() {
+      // Coming back to a backgrounded tab should show current data immediately, not whatever it
+      // froze on plus up to HIDDEN_POLL_MS. Skipped while a cycle is already running, so this
+      // can't start a second one alongside it.
+      if (document.hidden || this.pollStopped || this.pollInFlight || !this.selectedHostId) return;
+      this.pollFailures = 0;
+      this.schedulePoll(0);
     },
     async refresh() {
       await this.fetchContainers();
@@ -267,12 +321,12 @@ createApp({
       if (v !== 'flow') this.flowFullscreen = false;
       if (v === 'flow') await this.fetchTopology();
     },
-    async fetchContainers() {
+    async fetchContainers({ fresh = false } = {}) {
       if (!this.selectedHostId) return;
       const hostId = this.selectedHostId;
       this.loadingContainers = true;
       try {
-        const containers = await apiGetContainers(hostId);
+        const containers = await apiGetContainers(hostId, { fresh });
         if (this.selectedHostId !== hostId) return;
         this.containers = containers;
         this.containersError = null;
@@ -312,7 +366,9 @@ createApp({
       this.actionInFlight = { ...this.actionInFlight, [container.id]: action };
       try {
         await apiContainerAction(this.selectedHostId, container.id, action);
-        await this.fetchContainers();
+        // Bypass the server's snapshot here specifically - it can be up to POLL_MS old, and the
+        // one moment that staleness is visible is the row the user just clicked Stop on.
+        await this.fetchContainers({ fresh: true });
       } catch (err) {
         this.containersError = `${action} failed: ${err.message}`;
       } finally {

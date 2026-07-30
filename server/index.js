@@ -30,12 +30,23 @@ const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
 const prometheus = require('./prometheus');
+const { createWatchdog } = require('./watchdog');
 const { version: appVersion } = require('../package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const watchdog = createWatchdog({
+  getLastPollCompletedTs: metricsCollector.getLastPollCompletedTs,
+  getHostCount: metricsCollector.getHostCount,
+});
+
 const SSE_HEARTBEAT_MS = 30_000;
+
+// Longer than any docker call this can be waiting on (CONTAINER_ACTION_TIMEOUT_MS, the longest,
+// is 30s) plus the queue wait in docker.js's run(), so a request only hits this once the call
+// behind it has stopped being merely slow.
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 50_000;
 
 const HISTORY_RANGES = {
   '1h': { sinceMs: 3_600_000, bucketMs: 15_000 },
@@ -83,6 +94,48 @@ function requireHost(req, res, next) {
   if (!host) return res.status(404).json({ error: 'unknown host' });
   req.host = host;
   next();
+}
+
+// A browser allows about six concurrent connections per origin over HTTP/1.1, and this app holds
+// some of them open indefinitely by design (the events and log SSE streams). That makes a request
+// which never answers far more expensive than one that fails: it holds a connection slot, and
+// once all six are held the tab cannot issue *any* request - including the ones a reload needs -
+// and looks completely frozen while the server is fine. Node's own default here is a 300s
+// requestTimeout, which is well past the point the user has given up and restarted the container.
+// So: answer, always, even if the answer is 504.
+//
+// SSE routes are exempt - a stream that is still open at 50s is working, not stuck. They are
+// matched by suffix because the host and container ids in the middle of the path are arbitrary.
+const STREAMING_PATH_RE = /\/(logs|logs\/download|events\/stream)$/;
+
+function requestTimeout(ms) {
+  return (req, res, next) => {
+    if (STREAMING_PATH_RE.test(req.path)) return next();
+
+    let timedOut = false;
+
+    // The handler is still running when the 504 goes out, and will eventually try to send its
+    // own (real) response. Without this, that second send throws ERR_HTTP_HEADERS_SENT, which
+    // Express 5 routes to the error handler, which sees headersSent and destroys a connection
+    // that had already been answered correctly. Dropping the late write is the whole fix - and
+    // the 504 itself has to go out through the captured original, since by the time it's sent
+    // this override is already in place and would swallow it too.
+    const sendJson = res.json.bind(res);
+    res.json = (body) => (timedOut ? res : sendJson(body));
+
+    const timer = setTimeout(() => {
+      if (res.headersSent || res.writableEnded) return;
+      timedOut = true;
+      logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
+      res.status(504);
+      sendJson({ error: 'timed out waiting for the docker daemon' });
+    }, ms);
+
+    const clear = () => clearTimeout(timer);
+    res.on('finish', clear);
+    res.on('close', clear);
+    next();
+  };
 }
 
 // docker.js's run() attaches the CLI's real stderr to err.stderr; anything else (a plain thrown
@@ -164,11 +217,18 @@ app.post('/login', loginLimiter, async (req, res) => {
 app.get('/healthz', (req, res) => {
   try {
     db.ping();
-    res.type('text/plain').send('ok');
   } catch (err) {
     logger.error('healthz.failed', { error: err.message });
-    res.status(503).type('text/plain').send('unhealthy');
+    return res.status(503).type('text/plain').send('unhealthy: sqlite');
   }
+  // Liveness of the poll loop, not of any Docker host - see watchdog.js. An unreachable daemon
+  // still completes its poll, so this can only fail if the loop itself has stopped, which is
+  // exactly the "still serving, but every number is frozen" state a restart is the fix for.
+  const health = watchdog.status();
+  if (!health.ok) {
+    return res.status(503).type('text/plain').send(`unhealthy: ${health.reason}`);
+  }
+  res.type('text/plain').send('ok');
 });
 
 // Prometheus scrapers can't do session-cookie auth, so /metrics lives outside the
@@ -193,15 +253,27 @@ app.get('/', requireAuth, (req, res) => {
 
 const api = express.Router();
 api.use(requireAuth);
+api.use(requestTimeout(REQUEST_TIMEOUT_MS));
 
 api.get('/session', (req, res) => {
   res.json({ username: req.session.username, role: req.session.role, version: appVersion });
 });
 
+// The collector already establishes reachability for every host every POLL_MS, and already has
+// `docker info`'s hostname in the same snapshot. Probing again per request meant one `docker
+// version` (and sometimes one `docker info`) per host per browser poll - CLI spawns whose answer
+// was sitting in memory the whole time, and, on a host slow enough to matter, a request that
+// blocked for the full 20s SSH probe timeout to report something already known. Live probes are
+// kept only for the window before a host's first poll lands.
 api.get('/hosts', async (req, res) => {
   const hosts = loadHosts();
   const results = await Promise.all(
     hosts.map(async (h) => {
+      const snapshot = metricsCollector.getSnapshot(h.id);
+      if (snapshot && snapshot.ts) {
+        const name = h.name || (!h.dockerHost && snapshot.hostInfo ? snapshot.hostInfo.hostname : null) || h.id;
+        return { id: h.id, name, reachable: snapshot.reachable };
+      }
       const reachable = await checkHost(h);
       let name = h.name;
       // Local (non-SSH) hosts don't need a manually configured name - fall back to the
@@ -219,16 +291,22 @@ api.get('/hosts', async (req, res) => {
   res.json(results);
 });
 
+// Served from the collector's snapshot for the same reason /stats already is: it's at most
+// POLL_MS stale, which is the browser's own poll interval anyway, and a live `docker ps` per tab
+// per 5s multiplies with every open tab against a daemon that may already be the bottleneck.
+// ?fresh=1 forces the live call - used right after a start/stop/restart, where waiting up to
+// POLL_MS to see the new state would read as the button not having worked.
 api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
   const host = req.host;
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  const useSnapshot = req.query.fresh !== '1' && snapshot && snapshot.reachable && snapshot.statsTs;
   try {
-    const containers = await listContainers(host);
+    const containers = useSnapshot ? snapshot.containers : await listContainers(host);
     const sinceTs = Date.now() - 3_600_000;
     const restartCounts = db.getRestartCountsByContainer(req.params.hostId, sinceTs);
-    for (const c of containers) {
-      c.restartCount1h = restartCounts.get(c.id) || 0;
-    }
-    res.json(containers);
+    // The snapshot's container objects are the collector's own and get read on every poll -
+    // copy rather than annotating them in place with a field only this response wants.
+    res.json(containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 })));
   } catch (err) {
     dockerError(res, err);
   }
@@ -671,6 +749,30 @@ if (require.main === module) {
     alerts.start();
     eventWatcher.start();
     metricsCollector.start();
+    watchdog.start();
+  });
+
+  // Node defaults to 300s here, which is five minutes of a browser connection slot held by a
+  // request that is never going to answer - see requestTimeout above for why that is the
+  // difference between a slow page and a frozen one. This is the socket-level backstop for
+  // anything the middleware doesn't cover; keepAliveTimeout stays under it so idle sockets are
+  // recycled rather than counted against the same limit.
+  server.requestTimeout = REQUEST_TIMEOUT_MS + 10_000;
+  server.headersTimeout = 30_000;
+  server.keepAliveTimeout = 20_000;
+
+  // An unhandled rejection is Node's default path to a hard crash. Most of the ones this app can
+  // produce are a single failed docker call or db write - losing one poll is recoverable, losing
+  // the process takes monitoring down for every host - so they're logged and swallowed. An
+  // uncaught exception is different: the stack it unwound through is arbitrary, so nothing after
+  // it can be trusted, and the honest move is to exit and let `restart: unless-stopped` bring
+  // back a process in a known state.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('process.unhandled_rejection', { error: (reason && reason.message) || String(reason) });
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error('process.uncaught_exception', { error: err.message, stack: err.stack });
+    process.exit(1);
   });
 
   // Without this, `docker stop` sends SIGTERM and the default handler kills the
@@ -678,6 +780,7 @@ if (require.main === module) {
   const shutdown = (signal) => {
     // eslint-disable-next-line no-console -- plain shutdown banner, not a structured logger.js event
     console.log(`[opendockwatch] received ${signal}, shutting down`);
+    watchdog.stop();
     metricsCollector.stop();
     eventWatcher.stop();
     alerts.stop();
@@ -700,4 +803,4 @@ if (require.main === module) {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = { app, api };
+module.exports = { app, api, requestTimeout };

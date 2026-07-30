@@ -60,10 +60,14 @@ ENV PORT=3000
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# GET /healthz (server/index.js) does one trivial sqlite query, nothing docker-CLI-related - a
-# slow/unreachable *remote* SSH host has no business flapping this container's own health. node
-# over curl/wget: curl isn't installed and busybox wget's flag/exit-code behaviour differs across
-# Alpine versions, where a two-line http.get is unambiguous and needs nothing extra in the image.
+# GET /healthz (server/index.js) checks two things, neither of which touches the Docker CLI: a
+# trivial sqlite query, and whether the metrics poll loop is still turning (see watchdog.js). A
+# slow/unreachable *remote* SSH host has no business flapping this container's own health, and it
+# doesn't - an unreachable host still completes its poll normally, so only the loop itself having
+# stopped can fail this. Note that Docker never restarts a container for being unhealthy; this
+# reports, and watchdog.js's self-exit is what actually recovers a wedged instance via the restart
+# policy. node over curl/wget: curl isn't installed and busybox wget's flag/exit-code behaviour
+# differs across Alpine versions, where a two-line http.get is unambiguous and needs nothing extra.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 

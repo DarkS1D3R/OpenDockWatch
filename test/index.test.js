@@ -29,7 +29,8 @@ const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-index-test-${process.
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
-const { app, api } = require('../server/index');
+const { app, api, requestTimeout } = require('../server/index');
+const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
 
@@ -121,5 +122,72 @@ test('role gating over real HTTP requests', async (t) => {
     // requireAdmin gate the viewer above was stopped at, without ever shelling out to docker for
     // a host that doesn't exist.
     assert.equal((await admin.post(`/api/hosts/${FAKE_HOST_ID}/containers/abc/start`)).status, 404);
+  });
+});
+
+// A request that never answers is worse than one that fails: over HTTP/1.1 a browser has about
+// six connections per origin, and this app permanently holds some of them open for its SSE
+// streams - so requests that hang until Node's 300s default eventually leave the tab unable to
+// issue any request at all, which is the "site is hung, restart the container" state. These
+// exercise the middleware directly against a throwaway app, since no real route can be made to
+// hang without a docker daemon behind it.
+test('requestTimeout', async (t) => {
+  function appWith(handler, { ms = 40, path: routePath = '/api/thing' } = {}) {
+    const testApp = express();
+    testApp.use(requestTimeout(ms));
+    testApp.get(routePath, handler);
+    return testApp;
+  }
+
+  await t.test('answers 504 rather than hanging when a handler never responds', async () => {
+    const res = await request(appWith(() => {})).get('/api/thing');
+    assert.equal(res.status, 504);
+    assert.match(res.body.error, /timed out/);
+  });
+
+  await t.test('a handler that answers in time is untouched', async () => {
+    const res = await request(appWith((req, r) => r.json({ ok: true }))).get('/api/thing');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { ok: true });
+  });
+
+  await t.test('a late response after the 504 is dropped, not thrown', async () => {
+    // The handler is still running when the 504 goes out and will eventually try to send its own
+    // response. That second send must be a no-op: unguarded it throws ERR_HTTP_HEADERS_SENT,
+    // which express routes to the error handler, which destroys a connection that was already
+    // answered correctly.
+    let lateSendThrew = null;
+    const testApp = appWith((req, r) => {
+      setTimeout(() => {
+        try {
+          r.status(502).json({ error: 'docker finally failed' });
+        } catch (err) {
+          lateSendThrew = err;
+        }
+      }, 120);
+    });
+    const res = await request(testApp).get('/api/thing');
+    assert.equal(res.status, 504, 'the client must still get the timeout response');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(lateSendThrew, null, 'the handler must not blow up when it finally answers');
+  });
+
+  await t.test('leaves SSE routes alone - a stream still open past the timeout is working', async () => {
+    let cleared = false;
+    const testApp = express();
+    testApp.use(requestTimeout(40));
+    testApp.get('/api/hosts/h/containers/c/logs', (req, r) => {
+      r.set({ 'Content-Type': 'text/event-stream' });
+      r.flushHeaders();
+      setTimeout(() => {
+        cleared = true;
+        r.write('data: line\n\n');
+        r.end();
+      }, 120);
+    });
+    const res = await request(testApp).get('/api/hosts/h/containers/c/logs');
+    assert.equal(res.status, 200);
+    assert.equal(cleared, true);
+    assert.match(res.text, /data: line/);
   });
 });
