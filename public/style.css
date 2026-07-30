@@ -1178,6 +1178,20 @@ table.containers td:nth-child(7) {
 .log-panel.fullscreen .log-viewer-pane {
   height: calc(100vh - 191px);
 }
+.log-panel.embedded {
+  margin-top: 0;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.log-panel.embedded .log-view-wrap {
+  flex: 1;
+  min-height: 0;
+}
+.log-panel.embedded .log-viewer-pane {
+  height: 100%;
+}
 .log-panel-header {
   display: flex;
   justify-content: space-between;
@@ -1443,6 +1457,66 @@ table.containers td:nth-child(7) {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+}
+
+.logs-tab-wrap {
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+  /* The host card is hidden for this tab (app.js), so the offset only has to clear the topbar and
+     .main's own padding - the same topbar-only situation .cy-fullscreen sizes for. */
+  height: calc(100vh - 200px);
+  min-height: 420px;
+}
+.logs-tab-list {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+.logs-tab-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.logs-tab-group {
+  margin-bottom: 10px;
+}
+.logs-tab-group-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 6px;
+}
+.logs-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.logs-tab-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logs-tab-viewer {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.logs-tab-empty {
+  margin: auto;
 }
 
 .activity-wrap {

@@ -25,6 +25,15 @@
 #     (shared-cache) joining exactly one container on each side, which yields a single clean
 #     cross-project edge rather than a pair-wise mesh.
 #
+#   * Two opendockwatch.depends_on labels demonstrate manual edges - relationships Docker's own
+#     depends_on/network data can't show. demo-shop-api -> payments resolves to a same-project
+#     service (api calls the payment gateway over HTTP at runtime; the *compose* depends_on only
+#     runs the other way, payments waiting on api at startup, which isn't the same relationship).
+#     demo-blog-api -> demo-shop-api resolves via the literal-container-name fallback instead,
+#     since the two projects share no service names - the blog's "shop the look" widget reading
+#     product data from the shop API, with no network link between demo-front and demo-back to
+#     reveal it.
+#
 # Two ports are published so the container list and the graph's port badges have something real to
 # show. They default high to stay out of the way - 8080 in particular is often already taken, by
 # Dozzle among others - and either can be overridden:
@@ -130,6 +139,7 @@ up() {
   $D run -d --name demo-shop-api --network demo-back $SHOP \
     --label com.docker.compose.service=api \
     --label com.docker.compose.depends_on=db:service_healthy,cache:service_healthy \
+    --label opendockwatch.depends_on=payments:http \
     -e NODE_ENV=production -e DATABASE_URL=postgres://shop@demo-shop-db:5432/shop \
     -e REDIS_URL=redis://demo-shop-cache:6379 -e LOG_LEVEL=info \
     --health-cmd "true" --health-interval 10s \
@@ -215,6 +225,7 @@ up() {
 
   $D run -d --name demo-blog-api --network demo-front $BLOG \
     --label com.docker.compose.service=api \
+    --label opendockwatch.depends_on=demo-shop-api:reads \
     -e NODE_ENV=production -e CACHE_URL=redis://demo-shop-cache:6379 \
     --health-cmd "true" --health-interval 10s \
     alpine:3.20 sh -c '

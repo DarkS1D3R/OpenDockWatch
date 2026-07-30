@@ -9,6 +9,12 @@ import { createLogStream } from '../lib/logStream.js';
 // needs to orchestrate that. `fullscreen` is the one bit of state the root still needs to know
 // about directly (v-model) - it hides the host card and other panels, which is the root's layout
 // to control, not this component's.
+//
+// `embedded` is the other mode this renders in: the Logs tab (LogsView) mounts one of these per
+// selected container inside its own right-hand pane instead of the root's overlay slot. There's
+// no "close" in that context (picking a different container in the list is the equivalent) and no
+// "fullscreen" (the pane already fills the tab), so both buttons are hidden and the panel fills
+// its parent's height via CSS instead of the fullscreen vh-calc.
 export default {
   name: 'LogViewer',
   props: {
@@ -17,6 +23,7 @@ export default {
     containerName: { type: String, default: '' },
     withDetail: { type: Boolean, default: false },
     fullscreen: { type: Boolean, default: false },
+    embedded: { type: Boolean, default: false },
   },
   emits: ['close', 'update:fullscreen'],
   data() {
@@ -67,9 +74,14 @@ export default {
   },
   mounted() {
     this.startStream();
-    this.$nextTick(() => {
-      this.$el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    // Embedded instances sit in a fixed spot inside the Logs tab's layout and get remounted every
+    // time the active container changes (keyed by container id) - scrolling the page to align them
+    // would jump the whole tab on every click instead of just swapping the stream underneath it.
+    if (!this.embedded) {
+      this.$nextTick(() => {
+        this.$el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
   },
   beforeUnmount() {
     if (this._stream) {
@@ -127,7 +139,7 @@ export default {
     },
   },
   template: `
-    <div class="log-panel" :class="{ 'with-detail': withDetail && !fullscreen, fullscreen: fullscreen }">
+    <div class="log-panel" :class="{ 'with-detail': withDetail && !fullscreen, fullscreen: fullscreen, embedded: embedded }">
       <div class="log-panel-header">
         <strong>{{ containerName }}</strong>
         <div class="log-panel-controls">
@@ -174,10 +186,10 @@ export default {
           >
             🕐 Time
           </button>
-          <button class="small-btn" @click="toggleFullscreen" :title="fullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'">
+          <button v-if="!embedded" class="small-btn" @click="toggleFullscreen" :title="fullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'">
             {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
           </button>
-          <button @click="$emit('close')">Close</button>
+          <button v-if="!embedded" @click="$emit('close')">Close</button>
         </div>
       </div>
       <div class="log-view-wrap">

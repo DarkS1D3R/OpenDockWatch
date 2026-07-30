@@ -7,6 +7,7 @@ const {
   parseHealth,
   networkEdges,
   dependsOnEdges,
+  customDependsOnEdges,
   parseMountsList,
   computeRate,
   computeIoRates,
@@ -217,6 +218,74 @@ test('dependsOnEdges', async (t) => {
       { id: 'b', composeProject: 'esb', composeService: 'db' },
     ];
     const edges = dependsOnEdges(containers, 'a\tdb:service_healthy:false');
+    assert.equal(edges.length, 0);
+  });
+});
+
+test('customDependsOnEdges', async (t) => {
+  await t.test('resolves a same-project service by name', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\tdb:reads');
+    assert.equal(edges.length, 1);
+    assert.deepEqual(edges[0], { source: 'a', target: 'b', kind: 'manual', label: 'reads' });
+  });
+
+  await t.test('handles multiple comma-separated targets without truncating', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+      { id: 'c', name: 'shop-cache', composeProject: 'shop', composeService: 'cache' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\tdb:reads,cache:uses');
+    assert.equal(edges.length, 2);
+    assert.deepEqual(edges.map((e) => e.target).sort(), ['b', 'c']);
+  });
+
+  await t.test('resolves a scaled service to all of its replica containers', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'w1', name: 'shop-worker-1', composeProject: 'shop', composeService: 'worker' },
+      { id: 'w2', name: 'shop-worker-2', composeProject: 'shop', composeService: 'worker' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\tworker');
+    assert.equal(edges.length, 2);
+    assert.deepEqual(edges.map((e) => e.target).sort(), ['w1', 'w2']);
+  });
+
+  await t.test('produces no edges for a container with no depends_on label', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\t\nb\t');
+    assert.equal(edges.length, 0);
+  });
+
+  await t.test('falls back to a literal container name for a cross-project target', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', name: 'blog-db', composeProject: 'blog', composeService: 'db' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\tblog-db:reads');
+    assert.equal(edges.length, 1);
+    assert.deepEqual(edges[0], { source: 'a', target: 'b', kind: 'manual', label: 'reads' });
+  });
+
+  await t.test('produces no edge for a target that matches neither a same-project service nor any container name', () => {
+    const containers = [
+      { id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+      { id: 'b', name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+    ];
+    const edges = customDependsOnEdges(containers, 'a\tnonexistent:reads');
+    assert.equal(edges.length, 0);
+  });
+
+  await t.test('skips a self-referencing entry', () => {
+    const containers = [{ id: 'a', name: 'shop-api', composeProject: 'shop', composeService: 'api' }];
+    const edges = customDependsOnEdges(containers, 'a\tapi:self');
     assert.equal(edges.length, 0);
   });
 });

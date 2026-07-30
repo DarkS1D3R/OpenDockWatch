@@ -85,6 +85,14 @@ function requireHost(req, res, next) {
   next();
 }
 
+// docker.js's run() attaches the CLI's real stderr to err.stderr; anything else (a plain thrown
+// Error, no CLI behind it) only has err.message. Every docker-backed route reports failure the
+// same way, so this is the one place that fallback is spelled out instead of copy-pasted into
+// every catch block.
+function dockerError(res, err, status = 502) {
+  res.status(status).json({ error: err.stderr || err.message });
+}
+
 if (!process.env.SESSION_SECRET) {
   logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
@@ -148,6 +156,21 @@ app.post('/login', loginLimiter, async (req, res) => {
   }
 });
 
+// Backs the Dockerfile's HEALTHCHECK - reachable with no credentials (a container-internal probe
+// has none to offer) and deliberately narrow: a trivial sqlite round-trip, not a docker CLI call.
+// Only the local sqlite connection has any business gating "is this container healthy" - a
+// slow/unreachable *remote* SSH host failing this would make Docker restart the whole app over
+// something a restart can't fix, taking down monitoring for every other host along with it.
+app.get('/healthz', (req, res) => {
+  try {
+    db.ping();
+    res.type('text/plain').send('ok');
+  } catch (err) {
+    logger.error('healthz.failed', { error: err.message });
+    res.status(503).type('text/plain').send('unhealthy');
+  }
+});
+
 // Prometheus scrapers can't do session-cookie auth, so /metrics lives outside the
 // requireAuth-protected router and is gated by a separate shared-secret token instead.
 app.get('/metrics', (req, res) => {
@@ -207,7 +230,7 @@ api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
     }
     res.json(containers);
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -216,7 +239,7 @@ api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId
   try {
     res.json(await getContainerInspect(host, req.params.id));
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -225,7 +248,7 @@ api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
   try {
     res.json(await getHostInfo(host));
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -242,7 +265,7 @@ api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
   try {
     res.json(await getStats(host));
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -255,7 +278,7 @@ api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
     for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
     res.json(topology);
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -266,7 +289,7 @@ api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
   try {
     res.json(await getDiskUsage(host));
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -278,7 +301,7 @@ api.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => {
   try {
     res.json(await getDiskUsageImages(host));
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -492,7 +515,7 @@ api.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (req, 
     await testHostConnection(host);
     res.json({ ok: true });
   } catch (err) {
-    res.status(502).json({ error: err.stderr || err.message });
+    dockerError(res, err);
   }
 });
 
@@ -526,9 +549,10 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, req
     logger.info(`container.${req.params.action}`, logFields);
     res.json({ ok: true });
   } catch (err) {
-    db.updateAuditLogResult(auditId, 'error', err.stderr || err.message);
-    logger.error(`container.${req.params.action}`, { ...logFields, error: err.stderr || err.message });
-    res.status(502).json({ error: err.stderr || err.message });
+    const detail = err.stderr || err.message;
+    db.updateAuditLogResult(auditId, 'error', detail);
+    logger.error(`container.${req.params.action}`, { ...logFields, error: detail });
+    dockerError(res, err);
   }
 });
 
@@ -634,34 +658,46 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });
 });
 
-const server = app.listen(PORT, () => {
-  // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
-  console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
-  eventWatcher.start();
-  metricsCollector.start();
-});
+// Only listens and starts the background pollers when this file is run directly (`node
+// server/index.js`, which is what `npm start`/`npm run dev`/the Dockerfile all do) - not when
+// it's `require()`'d, which is how test/index.test.js loads `app` to exercise the route layer
+// with supertest. Without this guard, importing the module for its routes would also open a
+// real listening port and start polling whatever's in config/hosts.json.
+if (require.main === module) {
+  const server = app.listen(PORT, () => {
+    // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
+    console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
+    alerts.loadBreachState();
+    alerts.start();
+    eventWatcher.start();
+    metricsCollector.start();
+  });
 
-// Without this, `docker stop` sends SIGTERM and the default handler kills the
-// process immediately - potentially mid-write to the sqlite db.
-function shutdown(signal) {
-  // eslint-disable-next-line no-console -- plain shutdown banner, not a structured logger.js event
-  console.log(`[opendockwatch] received ${signal}, shutting down`);
-  metricsCollector.stop();
-  eventWatcher.stop();
+  // Without this, `docker stop` sends SIGTERM and the default handler kills the
+  // process immediately - potentially mid-write to the sqlite db.
+  const shutdown = (signal) => {
+    // eslint-disable-next-line no-console -- plain shutdown banner, not a structured logger.js event
+    console.log(`[opendockwatch] received ${signal}, shutting down`);
+    metricsCollector.stop();
+    eventWatcher.stop();
+    alerts.stop();
 
-  let closed = false;
-  const finish = () => {
-    if (closed) return;
-    closed = true;
-    db.close();
-    process.exit(0);
+    let closed = false;
+    const finish = () => {
+      if (closed) return;
+      closed = true;
+      db.close();
+      process.exit(0);
+    };
+
+    // server.close() waits for open connections to end, but log/event SSE streams
+    // are intentionally long-lived - don't let them block shutdown indefinitely.
+    server.close(finish);
+    setTimeout(finish, 5000);
   };
 
-  // server.close() waits for open connections to end, but log/event SSE streams
-  // are intentionally long-lived - don't let them block shutdown indefinitely.
-  server.close(finish);
-  setTimeout(finish, 5000);
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+module.exports = { app, api };

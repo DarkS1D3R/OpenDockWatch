@@ -252,6 +252,55 @@ function dependsOnEdges(containers, dependsOnRaw) {
   return edges;
 }
 
+// Resolves the opendockwatch.depends_on label into manual dependency edges - the compose-native
+// alternative to hand-maintaining edges in hosts.json's `edges` array (see manualEdges below):
+// declared right on the service that has the dependency instead of in a separate config file.
+// Same truncation hazard as com.docker.compose.depends_on above, and the same fix - fetched via
+// its own dedicated `docker ps --format` rather than pulled from the general Labels string.
+//
+// customDependsOnRaw is tab-separated "<containerId>\t<label value>" lines, one per container
+// (value may be empty). Each comma-separated entry is "target[:label]" - target resolves to a
+// same-compose-project service first (so a project's own services can reference each other by
+// their short name, exactly like native depends_on, including fanning out to every replica of a
+// scaled service), falling back to a literal container name for cross-project or non-compose
+// targets - the same targeting hosts.json's manual `edges` already supports.
+function customDependsOnEdges(containers, customDependsOnRaw) {
+  const byProjectService = new Map();
+  for (const c of containers) {
+    if (!c.composeProject || !c.composeService) continue;
+    const key = `${c.composeProject}::${c.composeService}`;
+    if (!byProjectService.has(key)) byProjectService.set(key, []);
+    byProjectService.get(key).push(c.id);
+  }
+  const byName = new Map(containers.map((c) => [c.name, c.id]));
+  const byId = new Map(containers.map((c) => [c.id, c]));
+
+  const edges = [];
+  for (const line of (customDependsOnRaw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIdx = trimmed.indexOf('\t');
+    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
+    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+    if (!value) continue;
+    const source = byId.get(id);
+    if (!source) continue;
+    for (const entry of value.split(',')) {
+      const [rawTarget, rawLabel] = entry.split(':');
+      const target = (rawTarget || '').trim();
+      if (!target) continue;
+      const sameProjectTargets = source.composeProject ? byProjectService.get(`${source.composeProject}::${target}`) : null;
+      const targetIds =
+        sameProjectTargets && sameProjectTargets.length ? sameProjectTargets : byName.has(target) ? [byName.get(target)] : [];
+      for (const targetId of targetIds) {
+        if (targetId === id) continue;
+        edges.push({ source: id, target: targetId, kind: 'manual', label: rawLabel ? rawLabel.trim() : null });
+      }
+    }
+  }
+  return edges;
+}
+
 // Resolves each container's mount sources for the Flow view's tree mode. Docker's `{{.Mounts}}`
 // format truncates long bind-mount source paths (and, with --no-trunc, so does the paired
 // {{.ID}} column - it comes back as the full 64-char id instead of the usual 12-char short one),
@@ -304,9 +353,10 @@ function manualEdges(containers, declared = []) {
 async function getTopology(host, snapshot) {
   const useSnapshot = snapshot && snapshot.containers && snapshot.containers.length;
   const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const [stats, dependsOnRaw, mountsRaw] = await Promise.all([
+  const [stats, dependsOnRaw, customDependsOnRaw, mountsRaw] = await Promise.all([
     useSnapshot ? Promise.resolve(snapshot.stats || {}) : getStats(host).catch(() => ({})),
     run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
+    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "opendockwatch.depends_on"}}']).catch(() => ''),
     run([...hostArgs(host), 'ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Mounts}}']).catch(() => ''),
   ]);
   const mountsById = parseMountsList(mountsRaw);
@@ -332,7 +382,12 @@ async function getTopology(host, snapshot) {
       blockWriteRate: s ? (s.blockWriteRate ?? null) : null,
     };
   });
-  const edges = [...networkEdges(containers), ...dependsOnEdges(containers, dependsOnRaw), ...manualEdges(containers, host.edges)];
+  const edges = [
+    ...networkEdges(containers),
+    ...dependsOnEdges(containers, dependsOnRaw),
+    ...customDependsOnEdges(containers, customDependsOnRaw),
+    ...manualEdges(containers, host.edges),
+  ];
   return { nodes, edges };
 }
 
@@ -458,6 +513,7 @@ module.exports = {
   parseHealth,
   networkEdges,
   dependsOnEdges,
+  customDependsOnEdges,
   parseMountsList,
   computeRate,
   computeIoRates,

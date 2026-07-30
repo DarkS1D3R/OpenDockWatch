@@ -6,7 +6,15 @@ const { withIoRates, BUCKET_EXPR } = require('./metricsHistory');
 const DATA_DIR = path.join(__dirname, '../data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, 'opendockwatch.db'));
+// Overridable so test/index.test.js can point this at an isolated temp file instead of the real
+// data/opendockwatch.db - that file is also the one a running container has open (WAL mode's
+// shared-memory file doesn't survive being touched from both a native-Windows process and a
+// WSL2-mounted container view of the same path), so a test process opening it directly risks
+// wedging a real running instance rather than just its own in-memory state. Unset in normal
+// operation, so this is a no-op for npm start/the Dockerfile.
+const DB_PATH = process.env.OPENDOCKWATCH_DB_PATH || path.join(DATA_DIR, 'opendockwatch.db');
+
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -70,13 +78,26 @@ db.exec(`
     rule TEXT NOT NULL,
     severity TEXT NOT NULL,
     message TEXT NOT NULL,
-    acknowledged INTEGER NOT NULL DEFAULT 0
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    webhook_delivered_at INTEGER,
+    webhook_attempts INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
 
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+
+  -- Persists alerts.js's in-memory sustained-breach tracking (a CPU/mem threshold that's been
+  -- over the line for part of its sustain window) so a restart mid-breach doesn't forget how long
+  -- it's been running and silently reset the countdown right when a deploy or crash coincides with
+  -- a real incident. "key" is the same string alerts.js already builds in memory
+  -- (hostId:containerId:rule, or hostId:host:rule for host-level rules) - opaque to this table,
+  -- just persisted as-is.
+  CREATE TABLE IF NOT EXISTS alert_breaches (
+    key TEXT PRIMARY KEY,
+    start_ts INTEGER NOT NULL
   );
 `);
 
@@ -89,6 +110,15 @@ db.exec(`
 for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER', 'system_mem_total_bytes INTEGER']) {
   try {
     db.exec(`ALTER TABLE host_metrics ADD COLUMN ${column}`);
+  } catch {
+    /* column already exists */
+  }
+}
+
+// Same upgrading-install backfill as above, for the webhook delivery tracking columns.
+for (const column of ['webhook_delivered_at INTEGER', 'webhook_attempts INTEGER NOT NULL DEFAULT 0']) {
+  try {
+    db.exec(`ALTER TABLE alerts ADD COLUMN ${column}`);
   } catch {
     /* column already exists */
   }
@@ -119,6 +149,24 @@ const stmts = {
   `),
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ?`),
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0`),
+  markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
+  markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
+  // Picked up by alerts.js's retry sweep: never attempted (webhook_attempts = 0, e.g. no webhook
+  // was configured at fire time) is deliberately excluded - only rows that were actually tried and
+  // failed are retried. sinceTs bounds the lookback so a webhook that's been down for hours
+  // doesn't get a backlog replayed all at once once it recovers.
+  getPendingWebhookRetries: db.prepare(`
+    SELECT * FROM alerts
+    WHERE webhook_delivered_at IS NULL AND webhook_attempts > 0 AND webhook_attempts < @maxAttempts AND ts >= @sinceTs
+    ORDER BY ts ASC
+    LIMIT @limit
+  `),
+  setBreachStart: db.prepare(`
+    INSERT INTO alert_breaches (key, start_ts) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET start_ts = excluded.start_ts
+  `),
+  deleteBreachStart: db.prepare(`DELETE FROM alert_breaches WHERE key = ?`),
+  getAllBreaches: db.prepare(`SELECT key, start_ts AS startTs FROM alert_breaches`),
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
     WHERE host_id = ? AND container_id IS ? AND rule = ?
@@ -204,6 +252,7 @@ const stmts = {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `),
   deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
+  ping: db.prepare(`SELECT 1`),
 };
 
 function insertContainerMetric(sample) {
@@ -238,6 +287,30 @@ function ackAlert(id) {
 
 function ackAllAlerts(hostId) {
   return stmts.ackAllAlerts.run(hostId).changes;
+}
+
+function markWebhookDelivered(id) {
+  stmts.markWebhookDelivered.run(Date.now(), id);
+}
+
+function markWebhookAttemptFailed(id) {
+  stmts.markWebhookAttemptFailed.run(id);
+}
+
+function getPendingWebhookRetries({ maxAttempts, sinceTs, limit }) {
+  return stmts.getPendingWebhookRetries.all({ maxAttempts, sinceTs, limit });
+}
+
+function setBreachStart(key, startTs) {
+  stmts.setBreachStart.run(key, startTs);
+}
+
+function deleteBreachStart(key) {
+  stmts.deleteBreachStart.run(key);
+}
+
+function getAllBreaches() {
+  return stmts.getAllBreaches.all();
 }
 
 function getLastAlertFireTs(hostId, containerId, rule) {
@@ -303,6 +376,14 @@ function deleteSetting(key) {
   stmts.deleteSetting.run(key);
 }
 
+// Used by GET /healthz - a trivial round-trip through the actual sqlite connection, not just "is
+// the process listening". Throws (rather than returning a boolean) on a wedged/erroring
+// connection, e.g. the WAL/shm lock contention that briefly took the real db down this session -
+// that's the failure mode a container healthcheck exists to catch.
+function ping() {
+  stmts.ping.get();
+}
+
 function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
   return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs }));
 }
@@ -334,6 +415,12 @@ module.exports = {
   insertAlert,
   ackAlert,
   ackAllAlerts,
+  markWebhookDelivered,
+  markWebhookAttemptFailed,
+  getPendingWebhookRetries,
+  setBreachStart,
+  deleteBreachStart,
+  getAllBreaches,
   getLastAlertFireTs,
   countRestartsSince,
   getRestartCountsByContainer,
@@ -349,6 +436,7 @@ module.exports = {
   getSetting,
   setSetting,
   deleteSetting,
+  ping,
   pruneOld,
   close,
 };

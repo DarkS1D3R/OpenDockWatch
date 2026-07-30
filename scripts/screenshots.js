@@ -172,6 +172,13 @@ async function main() {
   await btn('Graph').click();
   await page.waitForTimeout(1200);
 
+  console.log('logs tab');
+  await page.locator('.view-toggle button', { hasText: 'Logs' }).first().click();
+  await page.waitForTimeout(1200);
+  await page.locator('.logs-tab-row', { hasText: 'demo-shop-api' }).first().click();
+  await page.waitForTimeout(3000);
+  await shot('logs-tab', { fitHeight: false });
+
   console.log('details panel');
   await clearSelection();
   await page.locator('.view-toggle button', { hasText: 'List' }).first().click();
