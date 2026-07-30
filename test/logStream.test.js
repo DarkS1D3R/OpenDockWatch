@@ -120,6 +120,49 @@ test('createLogStream', async (t) => {
     assert.equal(StubEventSource.instances.length, 2);
   });
 
+  await t.test('gives up after repeated disconnects with no line in between', () => {
+    // EventSource reconnects on its own forever, and each reconnect spawns a `docker logs` on the
+    // server - for a container that no longer exists that's an unbounded drip of child processes
+    // and a connection slot never released.
+    const flushed = [];
+    const stream = logStream.createLogStream({
+      url: 'http://x/logs',
+      onFlush: (lines) => flushed.push(...lines.map((l) => l.text)),
+      onLoadingChange: () => {},
+      EventSourceImpl: StubEventSource,
+      schedule: makeSync(),
+    });
+    stream.start();
+    const source = StubEventSource.instances[0];
+
+    for (let i = 0; i < 5; i++) source.onerror();
+
+    assert.equal(source.closed, true, 'must close the source so it stops reconnecting');
+    // The explanatory line has to survive - closing via stop() would discard the buffer holding
+    // it, leaving a silently dead pane.
+    assert.match(flushed.at(-1), /stopped after repeated disconnects/);
+  });
+
+  await t.test('a line arriving resets the disconnect budget', () => {
+    const stream = logStream.createLogStream({
+      url: 'http://x/logs',
+      onFlush: () => {},
+      onLoadingChange: () => {},
+      EventSourceImpl: StubEventSource,
+      schedule: makeSync(),
+    });
+    stream.start();
+    const source = StubEventSource.instances[0];
+
+    // A container that genuinely restarts disconnects and reconnects repeatedly over a long
+    // session; as long as it keeps producing output, the stream must stay open indefinitely.
+    for (let cycle = 0; cycle < 4; cycle++) {
+      for (let i = 0; i < 4; i++) source.onerror();
+      source.onmessage({ data: 'still alive' });
+    }
+    assert.equal(source.closed, false);
+  });
+
   await t.test('the loading timer clears the spinner if no line ever arrives', () => {
     mock.timers.enable({ apis: ['setTimeout'] });
     try {

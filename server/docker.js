@@ -20,16 +20,79 @@ function checkTimeoutMs(host) {
   return host && host.dockerHost ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
 }
 
-function run(args, timeoutMs = CMD_TIMEOUT_MS) {
+// execFile's own `timeout` only sends SIGTERM. A `docker` CLI blocked on a wedged daemon socket
+// (or an ssh child that has stopped reading its control channel) can sit on that signal, and
+// since the promise below only settles from execFile's callback - which waits for the process to
+// actually exit and its stdio to close - a CLI that ignores SIGTERM never settles it at all. That
+// is the shape of the leak: the caller's await never returns, the child stays resident, and every
+// subsequent poll adds another one. This is the escalation: SIGTERM first (the CLI gets a chance
+// to tear its ssh session down cleanly), SIGKILL a few seconds later if it's still alive.
+const KILL_GRACE_MS = 5000;
+
+// Nothing else bounds how many `docker` processes can be in flight at once: the collector polls
+// on its own cadence, and every browser tab adds its own request-driven calls on top. Under a
+// slow daemon those overlap instead of queueing, and the fix for a slow daemon is never "spawn
+// more clients at it". Calls past the limit wait for a slot, and give up rather than wait
+// forever - a request that fails fast frees the browser connection it was holding, which is the
+// whole point (a queued-forever request is indistinguishable from the hang this guards against).
+const MAX_CONCURRENT = Number(process.env.DOCKER_MAX_CONCURRENT) || 12;
+const MAX_QUEUE_WAIT_MS = 15_000;
+
+let active = 0;
+const waiters = [];
+
+function acquire() {
+  if (active < MAX_CONCURRENT) {
+    active++;
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
-    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const waiter = { resolve, reject, timer: null };
+    waiter.timer = setTimeout(() => {
+      const idx = waiters.indexOf(waiter);
+      if (idx !== -1) waiters.splice(idx, 1);
+      reject(new Error(`docker command queued behind ${MAX_CONCURRENT} others for ${MAX_QUEUE_WAIT_MS}ms - daemon is not keeping up`));
+    }, MAX_QUEUE_WAIT_MS);
+    waiters.push(waiter);
+  });
+}
+
+function release() {
+  const waiter = waiters.shift();
+  if (!waiter) {
+    active--;
+    return;
+  }
+  // The slot passes straight to the waiter rather than being freed and re-taken, so `active`
+  // stays accurate and a burst of waiters can't all wake into the same one.
+  clearTimeout(waiter.timer);
+  waiter.resolve();
+}
+
+function spawnDocker(args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let killTimer = null;
+    const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      clearTimeout(killTimer);
       if (err) {
         err.stderr = stderr;
         return reject(err);
       }
       resolve(stdout);
     });
+    killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }, timeoutMs + KILL_GRACE_MS);
   });
+}
+
+async function run(args, timeoutMs = CMD_TIMEOUT_MS) {
+  await acquire();
+  try {
+    return await spawnDocker(args, timeoutMs);
+  } finally {
+    release();
+  }
 }
 
 async function getHostInfo(host) {
@@ -350,15 +413,48 @@ function manualEdges(containers, declared = []) {
 // ps`/`docker stats` calls on every topology request, and it's the only place the rx/tx and
 // read/write rates (computed by metricsCollector from consecutive polls) are available. Falls
 // back to a fresh live fetch when there's no usable snapshot yet (e.g. right after server start).
-async function getTopology(host, snapshot) {
-  const useSnapshot = snapshot && snapshot.containers && snapshot.containers.length;
-  const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const [stats, dependsOnRaw, customDependsOnRaw, mountsRaw] = await Promise.all([
-    useSnapshot ? Promise.resolve(snapshot.stats || {}) : getStats(host).catch(() => ({})),
+// The three label/mount lookups above are three more `docker ps` calls, and getTopology runs on
+// every /topology request - i.e. every 5s per browser tab sitting in Flow view, on top of the
+// collector's own poll. None of it is live data: depends_on labels and mounts are fixed at
+// container creation and cannot change without the container being recreated under a new id. So
+// the cache key is the container-id set itself, with a TTL only as a backstop - create or destroy
+// a container and the signature changes, which refetches immediately; otherwise the same answer
+// is reused instead of being re-derived from three CLI spawns a second later.
+const TOPOLOGY_META_TTL_MS = 60_000;
+const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
+
+async function getTopologyMeta(host, containers) {
+  const signature = containers
+    .map((c) => c.id)
+    .sort()
+    .join(',');
+  const cached = topologyMetaCache.get(host.id);
+  if (cached && cached.signature === signature && Date.now() - cached.ts < TOPOLOGY_META_TTL_MS) return cached;
+  const [dependsOnRaw, customDependsOnRaw, mountsRaw] = await Promise.all([
     run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
     run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "opendockwatch.depends_on"}}']).catch(() => ''),
     run([...hostArgs(host), 'ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Mounts}}']).catch(() => ''),
   ]);
+  const meta = { ts: Date.now(), signature, dependsOnRaw, customDependsOnRaw, mountsRaw };
+  topologyMetaCache.set(host.id, meta);
+  return meta;
+}
+
+// Called by metricsCollector.removeHost so a host deleted (or edited) through Settings doesn't
+// leave its cached topology metadata behind for an id that may later be reused for a different
+// daemon entirely.
+function forgetHost(hostId) {
+  topologyMetaCache.delete(hostId);
+}
+
+async function getTopology(host, snapshot) {
+  const useSnapshot = snapshot && snapshot.containers && snapshot.containers.length;
+  const containers = useSnapshot ? snapshot.containers : await listContainers(host);
+  const [stats, meta] = await Promise.all([
+    useSnapshot ? Promise.resolve(snapshot.stats || {}) : getStats(host).catch(() => ({})),
+    getTopologyMeta(host, containers),
+  ]);
+  const { dependsOnRaw, customDependsOnRaw, mountsRaw } = meta;
   const mountsById = parseMountsList(mountsRaw);
   const nodes = containers.map((c) => {
     const s = stats[c.id];
@@ -495,6 +591,7 @@ async function getDiskUsageImages(host) {
 module.exports = {
   checkHost,
   testHostConnection,
+  forgetHost,
   listContainers,
   containerAction,
   streamLogs,

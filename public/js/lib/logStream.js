@@ -12,6 +12,15 @@
 // browser - gets a node unit test with a stub source and a synchronous scheduler.
 const defaultSchedule = (cb) => requestAnimationFrame(cb);
 
+// EventSource reconnects on its own after any disconnect, forever, and the server side of this
+// spawns a `docker logs` process per connection. For a container that no longer exists that's a
+// loop with no exit: the CLI finds nothing and quits, the server ends the response, the browser
+// reconnects a few seconds later, repeat for as long as the panel stays open - a permanent drip
+// of child processes and a connection slot never released. Genuine restarts reconnect inside
+// this budget (any line received resets the count); only a stream that can't produce a single
+// line across this many attempts is given up on.
+const MAX_CONSECUTIVE_ERRORS = 5;
+
 export function createLogStream({
   url,
   onFlush,
@@ -25,6 +34,7 @@ export function createLogStream({
   let nextId = 0;
   let loadingTimer = null;
   let source = null;
+  let errorCount = 0;
 
   function queueLine(text) {
     buffer.push(text);
@@ -46,23 +56,41 @@ export function createLogStream({
   function start() {
     stop();
     nextId = 0;
+    errorCount = 0;
     onLoadingChange(true);
     // A container with no log output at all would otherwise never clear the spinner, since that
     // only happens once a line actually arrives.
     loadingTimer = setTimeout(() => onLoadingChange(false), loadingTimeoutMs);
     source = new EventSourceImpl(url);
-    source.onmessage = (e) => queueLine(e.data);
-    source.onerror = () => queueLine('[opendockwatch] log stream disconnected');
+    source.onmessage = (e) => {
+      errorCount = 0;
+      queueLine(e.data);
+    };
+    source.onerror = () => {
+      errorCount++;
+      if (errorCount >= MAX_CONSECUTIVE_ERRORS) {
+        queueLine('[opendockwatch] log stream stopped after repeated disconnects - reopen to retry');
+        // Only the source, not stop() - that discards the buffer, taking the line just queued
+        // above with it, and the user would be left with a silently dead pane and no explanation.
+        closeSource();
+        return;
+      }
+      queueLine('[opendockwatch] log stream disconnected');
+    };
   }
 
-  function stop() {
+  function closeSource() {
     clearTimeout(loadingTimer);
-    buffer = [];
-    flushPending = false;
     if (source) {
       source.close();
       source = null;
     }
+  }
+
+  function stop() {
+    buffer = [];
+    flushPending = false;
+    closeSource();
   }
 
   return { start, stop };
