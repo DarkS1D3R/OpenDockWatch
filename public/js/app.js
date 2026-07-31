@@ -78,6 +78,7 @@ createApp({
 
       logViewerOpen: false,
       logViewerFullscreen: false,
+      logViewerWrap: true,
 
       settingsOpen: false,
     };
@@ -524,6 +525,7 @@ createApp({
         :container-name="selectedContainer ? selectedContainer.name : ''"
         :with-detail="!!selectedContainer"
         v-model:fullscreen="logViewerFullscreen"
+        v-model:wrap="logViewerWrap"
         @close="closeLogViewer"
       ></log-viewer>
 

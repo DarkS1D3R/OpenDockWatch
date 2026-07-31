@@ -1168,6 +1168,12 @@ table.containers td:nth-child(7) {
   background: var(--panel);
   overflow: hidden;
   transition: margin-right 0.15s ease;
+  /* Lets the @container rules further down key off *this pane's own* width, not the viewport's -
+     the thing that actually determines whether its header controls have room is how wide the pane
+     itself is (a quarter-width cell in a 4-up grid is cramped on any screen), not the browser
+     window. */
+  container-type: inline-size;
+  container-name: log-panel;
 }
 .log-panel.with-detail {
   margin-right: 520px;
@@ -1192,6 +1198,15 @@ table.containers td:nth-child(7) {
 .log-panel.embedded .log-viewer-pane {
   height: 100%;
 }
+/* The pane the rest of a multi-pane group follows when synced. */
+.log-panel.pane-main {
+  border-color: var(--accent);
+}
+/* Opted out of sync - dashed to read as "detached" from its siblings at a glance, not just via
+   the toggle button's own state. */
+.log-panel.pane-desynced {
+  border-style: dashed;
+}
 .log-panel-header {
   display: flex;
   justify-content: space-between;
@@ -1209,6 +1224,14 @@ table.containers td:nth-child(7) {
 .log-panel-controls input {
   width: 220px;
 }
+/* The tail-size <select> is left at its own natural size (32px, from the shared select/input/
+   button base rule) and everything else in the header is pinned to match it - .small-btn and
+   .log-level-toggle button both carry their own smaller padding/font-size for other contexts they
+   also appear in, so without this the header reads as a ragged row of different-height controls. */
+.log-panel-controls button:not(.filter-clear-btn),
+.log-panel-controls .log-filter-input-wrap input {
+  height: 32px;
+}
 .log-filter-group {
   display: flex;
   align-items: center;
@@ -1220,7 +1243,16 @@ table.containers td:nth-child(7) {
   align-items: center;
 }
 .log-filter-input-wrap input {
+  padding-left: 22px;
   padding-right: 22px;
+}
+.log-filter-icon {
+  position: absolute;
+  left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+  line-height: 1;
 }
 .log-filter-input-wrap input.filter-invalid {
   border-color: var(--danger);
@@ -1303,6 +1335,68 @@ table.containers td:nth-child(7) {
   color: #14161a;
 }
 
+/* The narrow-pane fallback for .log-level-toggle above - hidden until the @container rule near
+   the bottom of this file switches the two. */
+.log-level-toggle-compact {
+  display: none;
+  position: relative;
+}
+.log-levels-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+/* Same colored buttons as .log-level-toggle-full (same color rules, keyed off the shared
+   level-error/warn/info/debug classes) - just stacked into a column instead of joined into a
+   horizontal pill row, since a dropdown reads better as a short list than as another wide row. */
+.log-level-toggle-stacked {
+  flex-direction: column;
+  gap: 4px;
+  width: 100px;
+}
+.log-level-toggle-stacked button {
+  border-radius: 6px;
+  text-align: left;
+}
+.log-level-toggle-stacked button:first-child,
+.log-level-toggle-stacked button:last-child {
+  border-radius: 6px;
+  border-left: 1px solid var(--border);
+}
+
+/* Below this width a pane's header doesn't have comfortable room for four level buttons plus a
+   224px search box plus tail/download/sync/main/close - not just the point where it breaks, the
+   point where it's still wrapping to two rows and looking cramped even though nothing's actually
+   overlapping. Swaps the level buttons for the dropdown above, and collapses the search box to an
+   icon that expands back to a usable width on focus. */
+@container log-panel (max-width: 760px) {
+  .log-level-toggle-full {
+    display: none;
+  }
+  .log-level-toggle-compact {
+    display: block;
+  }
+  .log-filter-input-wrap input {
+    width: 26px;
+    padding-right: 4px;
+    transition: width 0.15s ease;
+  }
+  .log-filter-input-wrap input::placeholder {
+    color: transparent;
+  }
+  .log-filter-input-wrap input:focus {
+    width: 140px;
+    padding-right: 22px;
+  }
+}
+
 .log-highlight {
   background: #ffd33d;
   color: #1a1305;
@@ -1334,6 +1428,11 @@ table.containers td:nth-child(7) {
 }
 .hide-ts .log-ts {
   display: none;
+}
+.log-view.no-wrap {
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
 }
 
 .log-view-wrap {
@@ -1463,9 +1562,10 @@ table.containers td:nth-child(7) {
   display: flex;
   gap: 20px;
   align-items: stretch;
-  /* The host card is hidden for this tab (app.js), so the offset only has to clear the topbar and
-     .main's own padding - the same topbar-only situation .cy-fullscreen sizes for. */
-  height: calc(100vh - 200px);
+  /* No fixed height here on purpose - a hardcoded calc(100vh - Npx) only matches one exact
+     combination of browser chrome/zoom/window size and leaves a gap under real ones that differ.
+     LogsView.js measures its own top offset and sets height as an inline style instead, updated on
+     any layout change via ResizeObserver - min-height stays as the floor for a very short window. */
   min-height: 420px;
 }
 .logs-tab-list {
@@ -1484,6 +1584,10 @@ table.containers td:nth-child(7) {
   color: var(--text);
   padding: 4px 8px;
   font-size: 12px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.logs-tab-wrap-toggle {
   width: 100%;
   margin-bottom: 8px;
 }
@@ -1533,6 +1637,28 @@ table.containers td:nth-child(7) {
 }
 .log-pane-close-btn {
   padding: 3px 8px;
+}
+/* The "designate as main" star - deliberately no button chrome (no border/background even on
+   hover or active) since a bordered box around a single glyph read as harder to pick out than the
+   glyph itself; color and the outline/filled swap in the template carry the state instead. */
+.log-pane-main-btn {
+  background: none;
+  border: 1px solid transparent;
+  padding: 0 4px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+}
+button.log-pane-main-btn:hover {
+  background: none;
+  border-color: transparent;
+  color: var(--text);
+}
+.log-pane-main-btn.active {
+  color: #e3b341;
+}
+button.log-pane-main-btn.active:hover {
+  color: #e3b341;
 }
 
 .activity-wrap {
