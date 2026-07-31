@@ -983,6 +983,9 @@ table.containers td:nth-child(7) {
   border-top: 2px dashed var(--border);
   display: inline-block;
 }
+.line-network {
+  border-top-color: var(--seq-net);
+}
 .line-depends-on {
   border-top: 2px solid var(--seq-mem);
 }

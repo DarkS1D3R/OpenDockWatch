@@ -54,13 +54,24 @@ export const MEM_COLOR = '#199e70';
 export const BLAST_UPSTREAM_COLOR = '#a371f7';
 export const BLAST_DOWNSTREAM_COLOR = '#f0883e';
 
+// Graph mode's cross-project shared-network edge. Used to be var(--border) itself (#2b2f38) -
+// deliberately muted to read as background, but that made it nearly invisible once zoomed out far
+// enough that the line's rendered width shrinks with it. --seq-net is already the app's own
+// network-associated hue (the Net I/O chart series) and already validated for contrast against a
+// dark background (see style.css's color-set comment), so it's the natural fix rather than picking
+// a new color from scratch.
+export const NETWORK_COLOR = '#d160a8';
+
 export const CY_STYLE = [
   {
     selector: 'node.group',
     style: {
       'background-color': '#1d2027',
-      'border-width': 1,
-      'border-color': '#2b2f38',
+      'border-width': 1.5,
+      // Was #2b2f38 (var(--border)) - too close to the canvas background to read as a box outline
+      // at a glance. Matches the label's own color instead of introducing a third gray - the box
+      // is now exactly as visible as the project name sitting inside it.
+      'border-color': '#8b909c',
       label: 'data(label)',
       'font-size': 12,
       color: '#8b909c',
@@ -78,8 +89,8 @@ export const CY_STYLE = [
     selector: 'node.cy-expand-collapse-collapsed-node',
     style: {
       'background-color': '#1d2027',
-      'border-width': 1,
-      'border-color': '#2b2f38',
+      'border-width': 1.5,
+      'border-color': '#8b909c',
       label: '',
       width: 170,
       height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : 88),
@@ -140,8 +151,8 @@ export const CY_STYLE = [
   {
     selector: 'edge.edge-network',
     style: {
-      'line-color': '#2b2f38',
-      width: 2,
+      'line-color': NETWORK_COLOR,
+      width: 3,
       'curve-style': 'bezier',
       'line-style': 'dashed',
       'target-arrow-shape': 'none',

@@ -255,6 +255,7 @@ export default {
           <span class="toolbar-sep"></span>
           <button @click="collapseAll">Collapse all</button>
           <button @click="expandAll">Expand all</button>
+          <button @click="resetFlowView" title="Undo any dragged positions and re-fit the camera">Reset view</button>
         </template>
         <template v-else>
           <button @click="resetFlowView" title="Undo any dragged positions and re-fit the camera">Reset view</button>

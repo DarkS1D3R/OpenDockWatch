@@ -6,6 +6,7 @@ import {
   SHARED_MOUNT_COLOR,
   BLAST_UPSTREAM_COLOR,
   BLAST_DOWNSTREAM_COLOR,
+  NETWORK_COLOR,
   PROJ_ICON_SVG,
   NET_ICON_SVG,
   MOUNT_BIND_ICON_SVG,
@@ -215,7 +216,7 @@ function svgGroupNode(n) {
   const y1 = n.y - n.height / 2;
   const count = d.count || 0;
   let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
-  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#2b2f38" stroke-width="1"/>`;
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#8b909c" stroke-width="1.5"/>`;
   if (d.health) svg += `<circle cx="${x1 + n.width - 10}" cy="${y1 + 8}" r="3.5" fill="${healthColor(d.health)}"/>`;
   svg += `<text x="${n.x}" y="${y1 + 26}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(d.label)}</text>`;
   svg += `<text x="${n.x}" y="${y1 + 42}" text-anchor="middle" font-size="9" fill="#8b909c">${count} container${count === 1 ? '' : 's'}</text>`;
@@ -230,7 +231,7 @@ function svgGroupBox(n) {
   const y1 = n.y - n.height / 2;
   return (
     `<g opacity="${n.faded ? 0.15 : 1}">` +
-    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#2b2f38" stroke-width="1"/>` +
+    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#8b909c" stroke-width="1.5"/>` +
     `<text x="${n.x}" y="${y1 + 16}" text-anchor="middle" font-size="12" fill="#8b909c">${svgEscape(n.data.label)}</text>` +
     `</g>`
   );
@@ -306,7 +307,7 @@ function svgNode(n) {
 }
 
 const EDGE_SVG_STYLE = {
-  network: { color: '#2b2f38', dash: '6,4', arrow: false, taxi: false },
+  network: { color: NETWORK_COLOR, dash: '6,4', arrow: false, taxi: false },
   depends_on: { color: '#199e70', dash: null, arrow: true, taxi: false },
   manual: { color: '#4f8cff', dash: null, arrow: true, taxi: false },
   'tree-proj': { color: '#3a3f4b', dash: null, arrow: false, taxi: true },
