@@ -183,3 +183,166 @@ test('createLogStream', async (t) => {
     }
   });
 });
+
+// A stand-in for `document` that only needs the two things logStream uses: a `hidden` flag and
+// visibilitychange listener registration.
+class StubDoc {
+  constructor() {
+    this.hidden = false;
+    this.listeners = [];
+  }
+  addEventListener(type, fn) {
+    if (type === 'visibilitychange') this.listeners.push(fn);
+  }
+  removeEventListener(type, fn) {
+    this.listeners = this.listeners.filter((l) => l !== fn);
+  }
+  // Flip visibility and fire the event, the way a real browser does on tab switch.
+  setHidden(hidden) {
+    this.hidden = hidden;
+    for (const fn of [...this.listeners]) fn();
+  }
+}
+
+// Backgrounded-tab suspension. A dashboard is exactly the kind of page left open in a tab for days,
+// and each open stream costs a browser connection (of which there are ~6 per origin) plus a
+// server-side `docker logs -f` child for as long as it's held.
+test('createLogStream suspension', async (t) => {
+  const GRACE = 60_000;
+
+  function build(overrides = {}) {
+    StubEventSource.instances = [];
+    const doc = new StubDoc();
+    const events = { flushed: [], resets: 0, suspendChanges: [] };
+    const stream = logStream.createLogStream({
+      url: 'http://x/logs',
+      onFlush: (lines) => events.flushed.push(...lines.map((l) => l.text)),
+      onLoadingChange: () => {},
+      onReset: () => events.resets++,
+      onSuspendChange: (s) => events.suspendChanges.push(s),
+      EventSourceImpl: StubEventSource,
+      schedule: makeSync(),
+      doc,
+      hiddenGraceMs: GRACE,
+      ...overrides,
+    });
+    return { stream, doc, events };
+  }
+
+  await t.test('hiding the tab does not suspend until the grace period elapses', () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { stream, doc } = build();
+      stream.start();
+      const source = StubEventSource.instances[0];
+
+      doc.setHidden(true);
+      mock.timers.tick(GRACE - 1);
+      assert.equal(source.closed, false, 'a quick tab switch must not tear four synced panes down');
+      assert.equal(stream.isSuspended(), false);
+
+      mock.timers.tick(2);
+      assert.equal(source.closed, true);
+      assert.equal(stream.isSuspended(), true);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  await t.test('coming back before the grace elapses cancels the pending suspend entirely', () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { stream, doc, events } = build();
+      stream.start();
+      const source = StubEventSource.instances[0];
+
+      doc.setHidden(true);
+      mock.timers.tick(GRACE / 2);
+      doc.setHidden(false);
+      mock.timers.tick(GRACE * 2);
+
+      assert.equal(source.closed, false, 'the original connection must survive untouched');
+      assert.equal(StubEventSource.instances.length, 1, 'and must not be replaced by a reconnect');
+      assert.deepEqual(events.suspendChanges, [], 'nothing to report - it never suspended');
+      assert.equal(events.resets, 0, 'and the pane must not have been cleared');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  await t.test('returning after a suspend reconnects and resets the caller first', () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { stream, doc, events } = build();
+      stream.start();
+      doc.setHidden(true);
+      mock.timers.tick(GRACE + 1);
+
+      doc.setHidden(false);
+      assert.equal(StubEventSource.instances.length, 2, 'a fresh connection on return');
+      assert.equal(stream.isSuspended(), false);
+      // `docker logs --tail N` replays the tail on reconnect, so the caller has to drop what it is
+      // holding or every resume duplicates it.
+      assert.equal(events.resets, 1);
+      assert.deepEqual(events.suspendChanges, [true, false]);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  await t.test('a suspend does not count against the reconnect budget', () => {
+    // Otherwise a few background/foreground cycles would permanently kill a healthy stream: the
+    // give-up counter is meant to catch a container that cannot produce a line, not a tab switch.
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { stream, doc } = build();
+      stream.start();
+
+      for (let cycle = 0; cycle < 4; cycle++) {
+        doc.setHidden(true);
+        mock.timers.tick(GRACE + 1);
+        doc.setHidden(false);
+      }
+
+      const latest = StubEventSource.instances.at(-1);
+      assert.equal(latest.closed, false, 'still connected after four full cycles');
+      // Four more errors would exceed MAX_CONSECUTIVE_ERRORS (5) if the suspends had counted.
+      for (let i = 0; i < 4; i++) latest.onerror();
+      assert.equal(latest.closed, false);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  await t.test('stop() detaches the visibility listener so a stopped stream stays stopped', () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { stream, doc } = build();
+      stream.start();
+      stream.stop();
+      assert.equal(doc.listeners.length, 0);
+
+      const before = StubEventSource.instances.length;
+      doc.setHidden(true);
+      mock.timers.tick(GRACE * 2);
+      doc.setHidden(false);
+      assert.equal(StubEventSource.instances.length, before, 'a torn-down stream must not resurrect');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  await t.test('suspend()/resume() are no-ops before start and idempotent after', () => {
+    const { stream, events } = build();
+    stream.suspend();
+    stream.resume();
+    assert.deepEqual(events.suspendChanges, []);
+
+    stream.start();
+    stream.suspend();
+    stream.suspend();
+    stream.resume();
+    stream.resume();
+    assert.deepEqual(events.suspendChanges, [true, false]);
+  });
+});

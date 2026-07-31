@@ -1,8 +1,8 @@
 import { MAX_LOG_LINES } from '../constants.js';
-import { detectLogLevel, highlightLine, stripAnsi, parseLineTsMs } from '../format.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs } from '../lib/logSync.js';
+import { decorateLines, selectLines } from '../lib/logLines.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Mounted fresh by the root each time "Logs" is opened for a container (v-if, not
@@ -66,6 +66,10 @@ export default {
       lines: [],
       atBottom: true,
       loading: false,
+      // Set by the stream when it hands its connection back while the tab is in the background -
+      // rendered as a note in the header so a pane that has stopped updating never looks like a
+      // container that has simply gone quiet.
+      suspended: false,
       showTimestamps: true,
       // The narrow-pane fallback for the level toggle - a dropdown menu instead of four buttons
       // wide enough to clutter a half- or quarter-width pane. Which one is actually visible is a
@@ -91,24 +95,15 @@ export default {
       if (!this.regexMode || !this.filter.trim()) return null;
       return this.testRegex ? null : 'Invalid regex';
     },
+    // The per-line level/timestamp/HTML work this used to do on every recompute now happens once
+    // per line in appendLines - see lib/logLines.js for why that mattered at four panes.
     filteredLines() {
-      const filterText = this.filter.trim();
-      const filterLower = filterText.toLowerCase();
-      const regexMode = this.regexMode;
-      const testRegex = this.testRegex;
-      return this.lines
-        .filter((line) => {
-          const level = detectLogLevel(stripAnsi(line.text));
-          if (level && !this.levels[level]) return false;
-          if (!filterText) return true;
-          if (regexMode) return testRegex ? testRegex.test(line.text) : true;
-          return line.text.toLowerCase().includes(filterLower);
-        })
-        .map((line) => ({
-          id: line.id,
-          html: highlightLine(line.text, filterText, regexMode && !!testRegex),
-          tsMs: parseLineTsMs(line.text),
-        }));
+      return selectLines(this.lines, {
+        levels: this.levels,
+        filterText: this.filter.trim(),
+        regexMode: this.regexMode,
+        testRegex: this.testRegex,
+      });
     },
   },
   created() {
@@ -141,17 +136,29 @@ export default {
       if (this._stream) this._stream.stop();
       this.lines = [];
       this.atBottom = true;
+      // A fresh stream is never suspended - the flag would otherwise survive from the stream this
+      // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
+      this.suspended = false;
       this._stream = createLogStream({
         url: logsUrl(this.hostId, this.containerId, this.tail),
         onFlush: (lines) => this.appendLines(lines),
         onLoadingChange: (loading) => {
           this.loading = loading;
         },
+        // The stream gives its connection back while the tab is backgrounded and reconnects from
+        // the tail on return, so what's on screen has to go with it or the tail arrives twice.
+        onReset: () => {
+          this.lines = [];
+          this.atBottom = true;
+        },
+        onSuspendChange: (suspended) => {
+          this.suspended = suspended;
+        },
       });
       this._stream.start();
     },
     appendLines(lines) {
-      for (const line of lines) this.lines.push(line);
+      for (const line of decorateLines(lines)) this.lines.push(line);
       if (this.lines.length > MAX_LOG_LINES) {
         this.lines.splice(0, this.lines.length - MAX_LOG_LINES);
       }
@@ -263,6 +270,7 @@ export default {
     >
       <div class="log-panel-header">
         <strong>{{ containerName }}</strong>
+        <span v-if="suspended" class="log-paused-badge" title="Paused while this tab was in the background - it resumes from the latest lines when you come back">paused</span>
         <div class="log-panel-controls">
           <div class="log-level-toggle log-level-toggle-full">
             <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>

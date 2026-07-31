@@ -10,6 +10,13 @@ export const MAX_POLL_BACKOFF_MS = 60_000;
 export const HIDDEN_POLL_MS = 30_000;
 export const MAX_LOG_LINES = 3000;
 // How many containers' logs the Logs tab can stream side by side, scroll-synced by timestamp.
+//
+// This is a connection budget as much as a layout choice: each pane is a long-lived EventSource,
+// and a browser allows only about six per origin over HTTP/1.1 (which is how this app is served -
+// no proxy, no HTTP/2). Exhaust them and the tab can't issue *any* request, including the ones a
+// reload needs. Four is safe because log streams are scoped to the view that owns them - see
+// app.js's detailPanelVisible - so the Logs tab's panes are the only streams open while it's
+// active, leaving two connections for the poll loop. Raising this eats that margin directly.
 export const MAX_OPEN_LOG_PANES = 4;
 export const PREVIEW_TAIL = 100;
 export const METRICS_HISTORY_LEN = 24;

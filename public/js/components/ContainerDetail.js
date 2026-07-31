@@ -1,7 +1,8 @@
-import { MAX_LOG_LINES, PREVIEW_TAIL } from '../constants.js';
-import { healthColor, healthLabel, formatRatePair, highlightLine } from '../format.js';
+import { PREVIEW_TAIL } from '../constants.js';
+import { healthColor, healthLabel, formatRatePair } from '../format.js';
 import { logsUrl, apiGetContainerInspect } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
+import { decorateLines } from '../lib/logLines.js';
 
 // The right-hand detail panel for one container: status/stats rows, `docker inspect` details
 // (env/mounts/labels), start/stop/restart, and the small log preview. Mounted once per selection
@@ -27,6 +28,9 @@ export default {
       previewLines: [],
       atBottom: true,
       loading: false,
+      // See LogViewer's own `suspended` - set by the stream when it releases its connection while
+      // the tab is backgrounded, so a stalled preview is labelled rather than silently stale.
+      suspended: false,
     };
   },
   computed: {
@@ -41,6 +45,7 @@ export default {
         this.closeStream();
         this.previewLines = [];
         this.loading = false;
+        this.suspended = false;
         this.containerInspect = null;
         if (newId) {
           this.openStream(newId);
@@ -74,6 +79,15 @@ export default {
         onLoadingChange: (loading) => {
           this.loading = loading;
         },
+        // Same as LogViewer: the stream gives its connection back while the tab is backgrounded
+        // and reconnects from the tail, so the preview has to be cleared to match.
+        onReset: () => {
+          this.previewLines = [];
+          this.atBottom = true;
+        },
+        onSuspendChange: (suspended) => {
+          this.suspended = suspended;
+        },
       });
       this._stream.start();
     },
@@ -84,9 +98,12 @@ export default {
       }
     },
     appendLines(lines) {
-      for (const line of lines) this.previewLines.push(line);
-      if (this.previewLines.length > MAX_LOG_LINES) {
-        this.previewLines.splice(0, this.previewLines.length - MAX_LOG_LINES);
+      for (const line of decorateLines(lines)) this.previewLines.push(line);
+      // PREVIEW_TAIL, not MAX_LOG_LINES: this pane opens with a 100-line tail and is a preview -
+      // letting it grow to 3000 meant it quietly became as expensive to render as the full viewer,
+      // for lines nobody can usefully read in a 520px-wide panel. The full viewer is one click away.
+      if (this.previewLines.length > PREVIEW_TAIL) {
+        this.previewLines.splice(0, this.previewLines.length - PREVIEW_TAIL);
       }
       if (this.atBottom) {
         this.$nextTick(() => {
@@ -103,9 +120,6 @@ export default {
       this.atBottom = true;
       const el = this.$refs.previewLogView;
       if (el) el.scrollTop = el.scrollHeight;
-    },
-    formatPreviewLine(text) {
-      return highlightLine(text, '', false);
     },
     fmtRatePair(a, b) {
       return formatRatePair(a, b);
@@ -190,11 +204,12 @@ export default {
 
         <div class="log-section-header">
           <h3>Logs</h3>
+          <span v-if="suspended" class="log-paused-badge" title="Paused while this tab was in the background - it resumes from the latest lines when you come back">paused</span>
           <button class="small-btn" @click="$emit('open-log-viewer')" title="Open larger log view with filtering">Log Viewer ⤢</button>
         </div>
         <div class="log-view-wrap">
           <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-          <pre class="log-view detail-log" ref="previewLogView" @scroll="onScroll"><div v-for="line in previewLines" :key="line.id" v-html="formatPreviewLine(line.text)"></div></pre>
+          <pre class="log-view detail-log" ref="previewLogView" @scroll="onScroll"><div v-for="line in previewLines" :key="line.id" v-html="line.baseHtml"></div></pre>
           <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
         </div>
       </div>

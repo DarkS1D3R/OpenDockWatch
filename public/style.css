@@ -1217,6 +1217,19 @@ table.containers td:nth-child(7) {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
+/* Shown when a stream has handed its connection back because the tab was in the background (see
+   logStream.js's HIDDEN_SUSPEND_GRACE_MS). margin-right: auto so it sits beside the title in both
+   headers it appears in, rather than being spread to the middle by their space-between. */
+.log-paused-badge {
+  margin-left: 8px;
+  margin-right: auto;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
 .log-panel-controls {
   display: flex;
   flex-wrap: wrap;
