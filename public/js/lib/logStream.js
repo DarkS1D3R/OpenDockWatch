@@ -8,9 +8,14 @@
 // {id, text} objects to append; trimming to a max line count and following the scroll position
 // are the caller's concern, same as before this was extracted.
 //
-// EventSourceImpl and schedule are injectable so this - otherwise only exercisable in a real
-// browser - gets a node unit test with a stub source and a synchronous scheduler.
+// A stream also suspends itself while the tab is in the background - see HIDDEN_SUSPEND_GRACE_MS
+// below. That's here rather than in each component because this factory is the one thing every log
+// stream in the app already goes through.
+//
+// EventSourceImpl, schedule and doc are injectable so this - otherwise only exercisable in a real
+// browser - gets a node unit test with a stub source, a synchronous scheduler and a fake document.
 const defaultSchedule = (cb) => requestAnimationFrame(cb);
+const defaultDoc = typeof document === 'undefined' ? null : document;
 
 // EventSource reconnects on its own after any disconnect, forever, and the server side of this
 // spawns a `docker logs` process per connection. For a container that no longer exists that's a
@@ -21,13 +26,29 @@ const defaultSchedule = (cb) => requestAnimationFrame(cb);
 // line across this many attempts is given up on.
 const MAX_CONSECUTIVE_ERRORS = 5;
 
+// How long the tab has to stay hidden before an open stream gives up its connection. A backgrounded
+// tab otherwise holds one browser connection *and* one server-side `docker logs -f` child per open
+// stream indefinitely - and a dashboard is exactly the kind of page left open in a tab for days.
+// The poll loop already stops itself when hidden (app.js's pollTick); this is the same idea for the
+// streams.
+//
+// Not immediate, because resuming is not free: `docker logs --tail N` re-sends the tail, so a
+// resume resets the pane (see onReset). Suspending the moment you glance at another tab would throw
+// away four scroll-synced panes' positions for a two-second detour. A minute of genuine absence is
+// a different thing, and by then the reset is what you'd want anyway.
+const HIDDEN_SUSPEND_GRACE_MS = 60_000;
+
 export function createLogStream({
   url,
   onFlush,
   onLoadingChange,
+  onReset = () => {},
+  onSuspendChange = () => {},
   EventSourceImpl = EventSource,
   schedule = defaultSchedule,
+  doc = defaultDoc,
   loadingTimeoutMs = 2000,
+  hiddenGraceMs = HIDDEN_SUSPEND_GRACE_MS,
 }) {
   let buffer = [];
   let flushPending = false;
@@ -35,6 +56,9 @@ export function createLogStream({
   let loadingTimer = null;
   let source = null;
   let errorCount = 0;
+  let started = false;
+  let suspended = false;
+  let hiddenTimer = null;
 
   function queueLine(text) {
     buffer.push(text);
@@ -53,8 +77,7 @@ export function createLogStream({
     onFlush(pending.map((text) => ({ id: nextId++, text })));
   }
 
-  function start() {
-    stop();
+  function openSource() {
     nextId = 0;
     errorCount = 0;
     onLoadingChange(true);
@@ -87,11 +110,66 @@ export function createLogStream({
     }
   }
 
+  function start() {
+    stop();
+    started = true;
+    attachVisibility();
+    openSource();
+  }
+
+  // Gives the connection back without tearing the stream down - it stays "started", so it knows to
+  // come back when the tab does. Deliberately not routed through the error path: a suspend is not a
+  // disconnect and must not count against MAX_CONSECUTIVE_ERRORS, or a few background/foreground
+  // cycles would permanently kill a perfectly healthy stream.
+  function suspend() {
+    if (!started || suspended) return;
+    suspended = true;
+    closeSource();
+    onSuspendChange(true);
+  }
+
+  function resume() {
+    if (!started || !suspended) return;
+    suspended = false;
+    // `docker logs --tail N` starts from the tail again, so whatever the caller is holding is about
+    // to be duplicated by the reconnect. It clears first (and ids restart from 0 in openSource, so
+    // they stay unique against an emptied list).
+    buffer = [];
+    flushPending = false;
+    onReset();
+    openSource();
+    onSuspendChange(false);
+  }
+
+  function onVisibilityChange() {
+    if (!doc) return;
+    clearTimeout(hiddenTimer);
+    hiddenTimer = null;
+    if (doc.hidden) {
+      hiddenTimer = setTimeout(suspend, hiddenGraceMs);
+    } else {
+      resume();
+    }
+  }
+
+  function attachVisibility() {
+    if (doc && doc.addEventListener) doc.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  function detachVisibility() {
+    if (doc && doc.removeEventListener) doc.removeEventListener('visibilitychange', onVisibilityChange);
+  }
+
   function stop() {
+    started = false;
+    suspended = false;
+    clearTimeout(hiddenTimer);
+    hiddenTimer = null;
+    detachVisibility();
     buffer = [];
     flushPending = false;
     closeSource();
   }
 
-  return { start, stop };
+  return { start, stop, suspend, resume, isSuspended: () => suspended };
 }

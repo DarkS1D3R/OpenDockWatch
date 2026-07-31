@@ -444,7 +444,7 @@ test('renderSvg', async (t) => {
   });
 
   const edgeKinds = [
-    ['network', '#2b2f38'],
+    ['network', '#d160a8'],
     ['depends_on', '#199e70'],
     ['manual', '#4f8cff'],
     ['tree-proj', '#3a3f4b'],

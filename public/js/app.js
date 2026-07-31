@@ -78,6 +78,7 @@ createApp({
 
       logViewerOpen: false,
       logViewerFullscreen: false,
+      logViewerWrap: true,
 
       settingsOpen: false,
     };
@@ -111,6 +112,19 @@ createApp({
     },
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
+    },
+    // The detail panel carries a live log-preview EventSource, and a browser only allows about six
+    // connections per origin over HTTP/1.1 - which the Logs tab can claim four of on its own. So a
+    // log stream only runs in the views its component is actually part of: the panel (and the
+    // bottom Log Viewer that its button opens) belong to List and Flow, the Logs tab owns its
+    // panes, Activity owns its event stream. Worst case is then four, leaving two connections for
+    // the poll loop instead of none.
+    //
+    // Note this gates the panel's *rendering*, not `selectedContainerId` - the selection itself
+    // survives a trip through the Logs tab, so Flow's blast-radius highlight and the panel's own
+    // contents come back exactly as they were.
+    detailPanelVisible() {
+      return !!this.selectedContainer && (this.view === 'list' || this.view === 'flow');
     },
     containerMetricsView() {
       const out = {};
@@ -319,6 +333,12 @@ createApp({
     async setView(v) {
       this.view = v;
       if (v !== 'flow') this.flowFullscreen = false;
+      // The bottom Log Viewer belongs to the views that can open it (List and Flow, via the detail
+      // panel's button). Closing it on the way into a view that can't is what actually releases its
+      // connection - logViewerOpen is a v-if, so this unmounts it and stops the stream. It stays
+      // closed on the way back rather than reappearing, since by then it's not what you were
+      // looking at. See detailPanelVisible for the budget this is protecting.
+      if (v === 'logs' || v === 'activity') this.closeLogViewer();
       if (v === 'flow') await this.fetchTopology();
     },
     async fetchContainers({ fresh = false } = {}) {
@@ -456,11 +476,11 @@ createApp({
         :host-id="selectedHostId"
         :metrics-history="hostMetricsHistory"
         :disk-usage="diskUsage"
-        :with-detail="!!selectedContainer || settingsOpen"
+        :with-detail="detailPanelVisible || settingsOpen"
         v-model:fullscreen="hostCardFullscreen"
       ></host-card>
 
-      <div v-show="!logViewerFullscreen && !hostCardFullscreen" class="layout" :class="{ 'with-detail': !!selectedContainer || settingsOpen }">
+      <div v-show="!logViewerFullscreen && !hostCardFullscreen" class="layout" :class="{ 'with-detail': detailPanelVisible || settingsOpen }">
         <div class="main">
           <div v-show="view === 'list'">
             <container-list
@@ -505,7 +525,7 @@ createApp({
         </div>
 
         <container-detail
-          v-if="selectedContainer"
+          v-if="detailPanelVisible"
           :container="selectedContainer"
           :stats="stats"
           :host-id="selectedHostId"
@@ -522,8 +542,9 @@ createApp({
         :host-id="selectedHostId"
         :container-id="selectedContainerId"
         :container-name="selectedContainer ? selectedContainer.name : ''"
-        :with-detail="!!selectedContainer"
+        :with-detail="detailPanelVisible"
         v-model:fullscreen="logViewerFullscreen"
+        v-model:wrap="logViewerWrap"
         @close="closeLogViewer"
       ></log-viewer>
 

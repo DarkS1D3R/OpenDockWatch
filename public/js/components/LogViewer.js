@@ -1,8 +1,8 @@
 import { MAX_LOG_LINES } from '../constants.js';
-import { detectLogLevel, highlightLine, stripAnsi, parseLineTsMs } from '../format.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs } from '../lib/logSync.js';
+import { decorateLines, selectLines } from '../lib/logLines.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Mounted fresh by the root each time "Logs" is opened for a container (v-if, not
@@ -14,10 +14,10 @@ import { closestIndexByTs } from '../lib/logSync.js';
 // `embedded` is the other mode this renders in: the Logs tab (LogsView) mounts one of these per
 // selected container inside its own right-hand pane instead of the root's overlay slot. There's
 // no "fullscreen" in that context (the pane already fills the tab), so that button is hidden and
-// the panel fills its parent's height via CSS instead of the fullscreen vh-calc. `closable` is
+// the panel fills its parent's height via CSS instead of the fullscreen vh-calc. `multiPane` is
 // independent of `embedded` - LogsView only sets it once 2+ panes are open side by side, so a
-// single embedded pane still has no close button (picking a different row is the equivalent, same
-// as before multi-pane existed).
+// single embedded pane still has no close/sync/main controls (picking a different row is the
+// close equivalent, and sync is meaningless with nothing else to sync with).
 //
 // `scroll-sync` is the other half of LogsView's multi-pane sync: emitted with { containerId,
 // tsMs } - this pane's own id and the epoch-ms timestamp of whichever line is now at the top of
@@ -26,6 +26,18 @@ import { closestIndexByTs } from '../lib/logSync.js';
 // open pane and calls `scrollToTimestamp` on every *other* one - not the sender itself, which
 // would otherwise re-snap its own scrollTop to the nearest line boundary every frame and fight a
 // continuous scroll gesture (most visible on whichever pane has the most lines to scroll through).
+//
+// `syncEnabled` (default true) is LogsView's per-pane opt-out - a pane with it off neither emits
+// scroll-sync (guarded in onScroll below) nor gets moved by scrollToTimestamp (LogsView skips it,
+// but scrollToTimestamp also refuses to move a disabled pane on its own, so this component stays
+// correct even called directly). `isMain` is purely a display flag - LogsView is the one that
+// decides a designated pane's scrolling is the only thing that drives the rest; this component
+// just renders the star and emits `set-main` when it's clicked.
+//
+// `wrap` (default true) follows the same embedded/standalone split as fullscreen: standalone owns
+// it via its own header toggle (v-model), embedded has no toggle of its own at all since LogsView
+// puts one toggle at the top of its container list that governs every open pane at once, rather
+// than repeating it in each pane's already-crowded header.
 export default {
   name: 'LogViewer',
   props: {
@@ -35,9 +47,16 @@ export default {
     withDetail: { type: Boolean, default: false },
     fullscreen: { type: Boolean, default: false },
     embedded: { type: Boolean, default: false },
-    closable: { type: Boolean, default: false },
+    multiPane: { type: Boolean, default: false },
+    syncEnabled: { type: Boolean, default: true },
+    isMain: { type: Boolean, default: false },
+    // Whether long lines wrap (word-break) or run off the side with a horizontal scrollbar.
+    // Standalone (!embedded) owns this itself via its own header toggle (v-model, same shape as
+    // fullscreen). Embedded panes never render that toggle - LogsView has exactly one wrap toggle
+    // for the whole tab instead of one per pane, so it just feeds this prop straight down.
+    wrap: { type: Boolean, default: true },
   },
-  emits: ['close', 'update:fullscreen', 'scroll-sync'],
+  emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
     return {
       tail: 200,
@@ -47,7 +66,18 @@ export default {
       lines: [],
       atBottom: true,
       loading: false,
+      // Set by the stream when it hands its connection back while the tab is in the background -
+      // rendered as a note in the header so a pane that has stopped updating never looks like a
+      // container that has simply gone quiet.
+      suspended: false,
       showTimestamps: true,
+      // The narrow-pane fallback for the level toggle - a dropdown menu instead of four buttons
+      // wide enough to clutter a half- or quarter-width pane. Which one is actually visible is a
+      // CSS container-query call (log-panel's own width, not the viewport's - what matters is how
+      // much room *this pane* has, same reasoning as the search input's collapse-on-focus below),
+      // but the open/closed state itself still needs to exist even when the compact version isn't
+      // currently shown.
+      levelsMenuOpen: false,
     };
   },
   computed: {
@@ -65,24 +95,15 @@ export default {
       if (!this.regexMode || !this.filter.trim()) return null;
       return this.testRegex ? null : 'Invalid regex';
     },
+    // The per-line level/timestamp/HTML work this used to do on every recompute now happens once
+    // per line in appendLines - see lib/logLines.js for why that mattered at four panes.
     filteredLines() {
-      const filterText = this.filter.trim();
-      const filterLower = filterText.toLowerCase();
-      const regexMode = this.regexMode;
-      const testRegex = this.testRegex;
-      return this.lines
-        .filter((line) => {
-          const level = detectLogLevel(stripAnsi(line.text));
-          if (level && !this.levels[level]) return false;
-          if (!filterText) return true;
-          if (regexMode) return testRegex ? testRegex.test(line.text) : true;
-          return line.text.toLowerCase().includes(filterLower);
-        })
-        .map((line) => ({
-          id: line.id,
-          html: highlightLine(line.text, filterText, regexMode && !!testRegex),
-          tsMs: parseLineTsMs(line.text),
-        }));
+      return selectLines(this.lines, {
+        levels: this.levels,
+        filterText: this.filter.trim(),
+        regexMode: this.regexMode,
+        testRegex: this.testRegex,
+      });
     },
   },
   created() {
@@ -100,6 +121,7 @@ export default {
         this.$el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
+    document.addEventListener('click', this.onDocumentClick);
   },
   beforeUnmount() {
     if (this._stream) {
@@ -107,23 +129,36 @@ export default {
       this._stream = null;
     }
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
+    document.removeEventListener('click', this.onDocumentClick);
   },
   methods: {
     startStream() {
       if (this._stream) this._stream.stop();
       this.lines = [];
       this.atBottom = true;
+      // A fresh stream is never suspended - the flag would otherwise survive from the stream this
+      // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
+      this.suspended = false;
       this._stream = createLogStream({
         url: logsUrl(this.hostId, this.containerId, this.tail),
         onFlush: (lines) => this.appendLines(lines),
         onLoadingChange: (loading) => {
           this.loading = loading;
         },
+        // The stream gives its connection back while the tab is backgrounded and reconnects from
+        // the tail on return, so what's on screen has to go with it or the tail arrives twice.
+        onReset: () => {
+          this.lines = [];
+          this.atBottom = true;
+        },
+        onSuspendChange: (suspended) => {
+          this.suspended = suspended;
+        },
       });
       this._stream.start();
     },
     appendLines(lines) {
-      for (const line of lines) this.lines.push(line);
+      for (const line of decorateLines(lines)) this.lines.push(line);
       if (this.lines.length > MAX_LOG_LINES) {
         this.lines.splice(0, this.lines.length - MAX_LOG_LINES);
       }
@@ -155,8 +190,9 @@ export default {
       // A sync-driven scroll (scrollToTimestamp, called from LogsView in response to a *different*
       // pane's user scroll) shouldn't itself broadcast - every pane doing that would ping-pong
       // forever. rAF-throttled the same way logStream.js throttles its own flush, since a real drag
-      // scroll fires this dozens of times a frame otherwise.
-      if (this._programmatic || this._syncRaf) return;
+      // scroll fires this dozens of times a frame otherwise. A pane with sync turned off doesn't
+      // broadcast at all - scrolling it is meant to be a private, independent action.
+      if (this._programmatic || this._syncRaf || !this.syncEnabled) return;
       this._syncRaf = requestAnimationFrame(() => {
         this._syncRaf = null;
         const tsMs = this.visibleTopTsMs();
@@ -184,6 +220,9 @@ export default {
     // LogsView's multi-pane sync. _programmatic suppresses the scroll-sync this would otherwise
     // trigger right back (cleared next frame, after the resulting native scroll event has fired).
     scrollToTimestamp(tsMs) {
+      // LogsView already skips a sync-disabled pane when broadcasting, but guarding here too means
+      // this stays correct even if something else ever calls it directly.
+      if (!this.syncEnabled) return;
       const el = this.$refs.logView;
       if (!el || tsMs == null) return;
       const index = closestIndexByTs(
@@ -206,23 +245,60 @@ export default {
     toggleLevel(level) {
       this.levels = { ...this.levels, [level]: !this.levels[level] };
     },
+    // Closes the compact level dropdown on an outside click - clicks on the menu itself or its
+    // toggle button are excluded so ticking several levels in a row doesn't close it after each one.
+    onDocumentClick(e) {
+      if (!this.levelsMenuOpen) return;
+      if (this.$refs.levelsMenuWrap && !this.$refs.levelsMenuWrap.contains(e.target)) {
+        this.levelsMenuOpen = false;
+      }
+    },
     toggleFullscreen() {
       this.$emit('update:fullscreen', !this.fullscreen);
     },
   },
   template: `
-    <div class="log-panel" :class="{ 'with-detail': withDetail && !fullscreen, fullscreen: fullscreen, embedded: embedded }">
+    <div
+      class="log-panel"
+      :class="{
+        'with-detail': withDetail && !fullscreen,
+        fullscreen: fullscreen,
+        embedded: embedded,
+        'pane-main': multiPane && isMain,
+        'pane-desynced': multiPane && !syncEnabled,
+      }"
+    >
       <div class="log-panel-header">
         <strong>{{ containerName }}</strong>
+        <span v-if="suspended" class="log-paused-badge" title="Paused while this tab was in the background - it resumes from the latest lines when you come back">paused</span>
         <div class="log-panel-controls">
-          <div class="log-level-toggle">
+          <div class="log-level-toggle log-level-toggle-full">
             <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
             <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
             <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
             <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
           </div>
+          <div class="log-level-toggle-compact" ref="levelsMenuWrap">
+            <button
+              class="small-btn"
+              :class="{ active: levelsMenuOpen }"
+              @click="levelsMenuOpen = !levelsMenuOpen"
+              title="Log level filters"
+            >
+              ☰ Levels
+            </button>
+            <div v-if="levelsMenuOpen" class="log-levels-menu">
+              <div class="log-level-toggle log-level-toggle-stacked">
+                <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
+                <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+                <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
+                <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+              </div>
+            </div>
+          </div>
           <div class="log-filter-group">
             <div class="log-filter-input-wrap">
+              <span class="log-filter-icon">🔍</span>
               <input
                 type="text"
                 v-model="filter"
@@ -261,15 +337,42 @@ export default {
           <button v-if="!embedded" class="small-btn" @click="toggleFullscreen" :title="fullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'">
             {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
           </button>
+          <button
+            v-if="!embedded"
+            class="small-btn"
+            :class="{ active: wrap }"
+            @click="$emit('update:wrap', !wrap)"
+            :title="wrap ? 'Wrapping long lines - turn off to scroll sideways instead' : 'Not wrapping - long lines scroll sideways'"
+          >
+            {{ wrap ? '↵ Wrap' : '↔ No wrap' }}
+          </button>
+          <template v-if="multiPane">
+            <button
+              class="small-btn"
+              :class="{ active: syncEnabled }"
+              @click="$emit('toggle-sync')"
+              :title="syncEnabled ? 'Synced - scroll it to move the other open panes, or turn this off to scroll it independently' : 'Not synced - scrolling this pane does not move, or get moved by, the others'"
+            >
+              {{ syncEnabled ? '🔗 Synced' : '⛓️‍💥 Independent' }}
+            </button>
+            <button
+              class="log-pane-main-btn"
+              :class="{ active: isMain }"
+              @click="$emit('set-main')"
+              :title="isMain ? 'This is the pane the others follow when synced - click to unset' : 'Make this the pane the others follow when synced'"
+            >
+              {{ isMain ? '★' : '☆' }}
+            </button>
+          </template>
           <button v-if="!embedded" @click="$emit('close')">Close</button>
-          <button v-else-if="closable" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
+          <button v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
             ✕
           </button>
         </div>
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
     </div>
