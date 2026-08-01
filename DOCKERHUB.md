@@ -1,4 +1,9 @@
-# OpenDockWatch
+# ![OpenDockWatch](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/public/logo.svg) OpenDockWatch
+
+[![Docker Image Size](https://img.shields.io/docker/image-size/darks1d3r/opendockwatch?label=image%20size)](https://hub.docker.com/r/darks1d3r/opendockwatch)
+[![Docker Pulls](https://img.shields.io/docker/pulls/darks1d3r/opendockwatch)](https://hub.docker.com/r/darks1d3r/opendockwatch)
+[![Version](https://img.shields.io/github/v/release/DarkS1D3R/OpenDockWatch?label=version)](https://github.com/DarkS1D3R/OpenDockWatch/releases)
+[![Test](https://img.shields.io/github/actions/workflow/status/DarkS1D3R/OpenDockWatch/ci.yml?branch=main&label=test)](https://github.com/DarkS1D3R/OpenDockWatch/actions/workflows/ci.yml)
 
 A small self-hosted Docker dashboard: containers grouped by Compose project, CPU/memory stats, start/stop/restart, live log tailing, and an ArgoCD-style topology view of how containers relate to each other. Works against the local Docker daemon and any number of remote hosts over SSH. No orchestration, no scheduling, no Kubernetes — just visibility and basic control, in the spirit of Dozzle.
 
