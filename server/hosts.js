@@ -58,11 +58,9 @@ function hasLocalHost(hosts, excludeId = null) {
   return hosts.some((h) => !h.dockerHost && h.id !== excludeId);
 }
 
-// Invalidate on any change under config/ - covers editing hosts.json in place
-// and hosts.json being created/removed (which switches the active file) -
-// so config changes apply without restarting the process. unref() so this
-// background watcher alone doesn't keep the process (or a test run
-// requiring this module) alive.
+// Invalidate on any change under config/ - covers editing hosts.json in place and it being
+// created/removed (which switches the active file) - so config changes apply live. unref() so
+// this background watcher alone doesn't keep the process (or a test requiring this module) alive.
 try {
   fs.watch(CONFIG_DIR, () => {
     cache = null;

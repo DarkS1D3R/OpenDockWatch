@@ -57,9 +57,8 @@ const HISTORY_RANGES = {
 const MAX_ROW_LIMIT = 1000;
 
 // Number('abc') is NaN, and better-sqlite3 rejects NaN outright ("datatype mismatch") rather
-// than treating it as absent - so a garbled ?limit=/?since= would 500 the request instead of
-// falling back to the default. Clamping the upper bound too keeps a hand-written ?limit=10000000
-// from pulling the whole table into memory.
+// than treating it as absent - so a garbled ?limit=/?since= would 500 instead of falling back.
+// Clamping the upper bound too keeps a hand-written ?limit=10000000 from pulling the whole table.
 function intParam(raw, fallback, max = Number.MAX_SAFE_INTEGER) {
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
@@ -76,10 +75,9 @@ function tailParam(raw, fallback) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-// Container ids/names go into the docker CLI's argv. Nothing is ever run through a shell
-// (execFile/spawn with an args array), so this isn't about injection - it's that an id starting
-// with "-" would be read by docker as a flag rather than as a container, and is better refused
-// here than handed over to be misparsed.
+// Container ids/names go into the docker CLI's argv (execFile/spawn with an array, never a
+// shell), so this isn't about injection - it's that an id starting with "-" would be read by
+// docker as a flag rather than a container, better refused here than handed over misparsed.
 const CONTAINER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
 function requireContainerId(req, res, next) {
@@ -96,16 +94,9 @@ function requireHost(req, res, next) {
   next();
 }
 
-// A browser allows about six concurrent connections per origin over HTTP/1.1, and this app holds
-// some of them open indefinitely by design (the events and log SSE streams). That makes a request
-// which never answers far more expensive than one that fails: it holds a connection slot, and
-// once all six are held the tab cannot issue *any* request - including the ones a reload needs -
-// and looks completely frozen while the server is fine. Node's own default here is a 300s
-// requestTimeout, which is well past the point the user has given up and restarted the container.
-// So: answer, always, even if the answer is 504.
-//
-// SSE routes are exempt - a stream that is still open at 50s is working, not stuck. They are
-// matched by suffix because the host and container ids in the middle of the path are arbitrary.
+// A browser allows ~6 connections per origin over HTTP/1.1, some held open indefinitely by
+// design (SSE streams) - a request that never answers holds a slot until the tab can't issue
+// any request at all. So: answer, always, even 504. SSE routes are exempt by path suffix.
 const STREAMING_PATH_RE = /\/(logs|logs\/download|events\/stream)$/;
 
 function requestTimeout(ms) {
@@ -114,12 +105,9 @@ function requestTimeout(ms) {
 
     let timedOut = false;
 
-    // The handler is still running when the 504 goes out, and will eventually try to send its
-    // own (real) response. Without this, that second send throws ERR_HTTP_HEADERS_SENT, which
-    // Express 5 routes to the error handler, which sees headersSent and destroys a connection
-    // that had already been answered correctly. Dropping the late write is the whole fix - and
-    // the 504 itself has to go out through the captured original, since by the time it's sent
-    // this override is already in place and would swallow it too.
+    // The handler is still running when the 504 goes out and will eventually send its own real
+    // response, which would throw ERR_HTTP_HEADERS_SENT and destroy an already-answered
+    // connection - dropping the late write is the fix. The 504 goes out through the captured original.
     const sendJson = res.json.bind(res);
     res.json = (body) => (timedOut ? res : sendJson(body));
 
@@ -138,10 +126,9 @@ function requestTimeout(ms) {
   };
 }
 
-// docker.js's run() attaches the CLI's real stderr to err.stderr; anything else (a plain thrown
-// Error, no CLI behind it) only has err.message. Every docker-backed route reports failure the
-// same way, so this is the one place that fallback is spelled out instead of copy-pasted into
-// every catch block.
+// docker.js's run() attaches the CLI's real stderr to err.stderr; anything else only has
+// err.message. Every docker-backed route reports failure the same way, so this fallback is
+// spelled out once here instead of copy-pasted into every catch block.
 function dockerError(res, err, status = 502) {
   res.status(status).json({ error: err.stderr || err.message });
 }
@@ -150,12 +137,9 @@ if (!process.env.SESSION_SECRET) {
   logger.warn('config.session_secret.missing', { hint: 'using an insecure default - set SESSION_SECRET in .env' });
 }
 
-// Behind a reverse proxy terminating TLS (nginx, etc.), this is required for
-// `cookie.secure: 'auto'` below to correctly mark the session cookie Secure, and for
-// req.ip/the login rate limiter to see the real client IP instead of the proxy's.
-// Left off by default: if OpenDockWatch is reachable directly (no proxy in front), trusting
-// X-Forwarded-For lets a client spoof req.ip on every request, which defeats the login rate
-// limiter (a fresh "IP" per attempt) and forges the IP in auth.failure log lines.
+// Behind a reverse proxy terminating TLS, needed for `cookie.secure: 'auto'` and req.ip/the
+// login rate limiter to see the real client IP. Left off by default: without a proxy, trusting
+// X-Forwarded-For lets a client spoof req.ip, defeating the rate limiter and forging log lines.
 if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
@@ -209,11 +193,9 @@ app.post('/login', loginLimiter, async (req, res) => {
   }
 });
 
-// Backs the Dockerfile's HEALTHCHECK - reachable with no credentials (a container-internal probe
-// has none to offer) and deliberately narrow: a trivial sqlite round-trip, not a docker CLI call.
-// Only the local sqlite connection has any business gating "is this container healthy" - a
-// slow/unreachable *remote* SSH host failing this would make Docker restart the whole app over
-// something a restart can't fix, taking down monitoring for every other host along with it.
+// Backs the Dockerfile's HEALTHCHECK - reachable with no credentials, deliberately narrow: a
+// trivial sqlite round-trip, not a docker CLI call. Only local sqlite gates health; a remote SSH
+// host being unreachable shouldn't restart the whole app and take down every other host's monitoring.
 app.get('/healthz', (req, res) => {
   try {
     db.ping();
@@ -259,12 +241,9 @@ api.get('/session', (req, res) => {
   res.json({ username: req.session.username, role: req.session.role, version: appVersion });
 });
 
-// The collector already establishes reachability for every host every POLL_MS, and already has
-// `docker info`'s hostname in the same snapshot. Probing again per request meant one `docker
-// version` (and sometimes one `docker info`) per host per browser poll - CLI spawns whose answer
-// was sitting in memory the whole time, and, on a host slow enough to matter, a request that
-// blocked for the full 20s SSH probe timeout to report something already known. Live probes are
-// kept only for the window before a host's first poll lands.
+// The collector already establishes reachability and hostname for every host every POLL_MS -
+// probing again per request meant a CLI spawn (and up to a 20s SSH timeout) per browser poll for
+// an answer already sitting in memory. Live probes are kept only before a host's first poll lands.
 api.get('/hosts', async (req, res) => {
   const hosts = loadHosts();
   const results = await Promise.all(
@@ -291,11 +270,9 @@ api.get('/hosts', async (req, res) => {
   res.json(results);
 });
 
-// Served from the collector's snapshot for the same reason /stats already is: it's at most
-// POLL_MS stale, which is the browser's own poll interval anyway, and a live `docker ps` per tab
-// per 5s multiplies with every open tab against a daemon that may already be the bottleneck.
-// ?fresh=1 forces the live call - used right after a start/stop/restart, where waiting up to
-// POLL_MS to see the new state would read as the button not having worked.
+// Served from the collector's snapshot, same reason as /stats: at most POLL_MS stale (the
+// browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. ?fresh=1
+// forces a live call right after a start/stop/restart, where staleness reads as "didn't work".
 api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
   const host = req.host;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
@@ -332,12 +309,9 @@ api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
 
 api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
   const host = req.host;
-  // Prefer metricsCollector's snapshot over a fresh `docker stats` call: it's the only place the
-  // NET/DISK rx/tx and read/write rates (computed from consecutive polls) are available, and it's
-  // already at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated
-  // on statsTs, not just reachable, since a freshly-added host (or one right after boot) has a
-  // reachable snapshot with empty stats until its first poll's docker calls finish (same reason
-  // getTopology below guards on snapshot.containers.length rather than just snapshot.reachable).
+  // Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's
+  // at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on
+  // statsTs, not just reachable, since a freshly-added host has empty stats until its first poll.
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   if (snapshot && snapshot.reachable && snapshot.statsTs) return res.json(snapshot.stats);
   try {
@@ -518,9 +492,8 @@ api.delete('/settings/thresholds', requireAdmin, (req, res) => {
 });
 
 // Host management (add/edit/remove monitored Docker hosts, including SSH-based remote ones) -
-// writes straight to config/hosts.json via saveHosts() and immediately starts/stops the
-// corresponding background polling (metricsCollector) and event watching (eventWatcher) for that
-// one host, so changes take effect without restarting the process.
+// writes to config/hosts.json via saveHosts() and immediately starts/stops the corresponding
+// metricsCollector polling and eventWatcher watching, so changes take effect without a restart.
 api.get('/settings/hosts', requireAdmin, (req, res) => {
   res.json(loadHosts());
 });
@@ -603,13 +576,9 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, req
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
   const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
 
-  // Written before containerAction runs, not after it resolves - the daemon emits the
-  // die/start event the container action causes as soon as it happens, which can reach
-  // eventWatcher before this CLI call returns (particularly a slow-to-stop container - see
-  // docker.js's CONTAINER_ACTION_TIMEOUT_MS comment). alerts.js's manual-stop/crash-loop
-  // suppression looks this row up by ts, so it needs to already exist at that moment rather
-  // than only appearing afterward, or a fast event races it and a manual stop/restart
-  // falsely reports as a crash.
+  // Written before containerAction runs, not after it resolves - the daemon can emit the
+  // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
+  // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
   const auditId = db.insertAuditLog({
     ts: Date.now(),
     username: req.session.username || null,
@@ -668,11 +637,9 @@ api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (
   // a periodic comment line keeps the connection alive.
   const heartbeat = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
 
-  // Either side can end this first: the client disconnecting (req 'close'), or `docker logs -f`
-  // itself exiting - a removed container or a restarted daemon ends the process without the
-  // client doing anything. Without ending the response on the latter, the heartbeat kept the
-  // connection looking alive forever and the viewer just silently stopped receiving lines.
-  // Ending it here lets EventSource's own reconnect-on-close behavior take over instead.
+  // Either side can end this first: client disconnect, or `docker logs -f` itself exiting (a
+  // removed container, a restarted daemon) - without ending the response on the latter, the
+  // heartbeat kept it looking alive forever. Ending it lets EventSource's reconnect take over.
   let closed = false;
   const cleanup = () => {
     if (closed) return;
@@ -724,23 +691,18 @@ api.get('/hosts/:hostId/containers/:id/logs/download', requireHost, requireConta
 
 app.use('/api', api);
 
-// Anything a route throws that it doesn't handle itself lands here. Without it, express's
-// default handler answers - and that one puts the whole stack trace in the response body
-// unless NODE_ENV=production, which is not something to rely on being set. Four arguments is
-// what marks this as an error handler rather than ordinary middleware; `next` is genuinely
-// used, for the already-streaming case (SSE) where the only correct move is to let express
-// destroy the connection.
+// Anything a route throws that it doesn't handle lands here - express's default handler would
+// otherwise leak the stack trace unless NODE_ENV=production. Four arguments mark this as an
+// error handler; `next` is used for the already-streaming (SSE) case where express must destroy it.
 app.use((err, req, res, next) => {
   logger.error('request.failed', { method: req.method, path: req.originalUrl, error: err.message });
   if (res.headersSent) return next(err);
   res.status(err.status || 500).json({ error: err.message });
 });
 
-// Only listens and starts the background pollers when this file is run directly (`node
-// server/index.js`, which is what `npm start`/`npm run dev`/the Dockerfile all do) - not when
-// it's `require()`'d, which is how test/index.test.js loads `app` to exercise the route layer
-// with supertest. Without this guard, importing the module for its routes would also open a
-// real listening port and start polling whatever's in config/hosts.json.
+// Only listens and starts background pollers when run directly (npm start/dev, the Dockerfile) -
+// not when require()'d, which is how test/index.test.js loads `app` for supertest. Without this
+// guard, importing the module for its routes would also open a port and start polling.
 if (require.main === module) {
   const server = app.listen(PORT, () => {
     // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
@@ -752,21 +714,16 @@ if (require.main === module) {
     watchdog.start();
   });
 
-  // Node defaults to 300s here, which is five minutes of a browser connection slot held by a
-  // request that is never going to answer - see requestTimeout above for why that is the
-  // difference between a slow page and a frozen one. This is the socket-level backstop for
-  // anything the middleware doesn't cover; keepAliveTimeout stays under it so idle sockets are
-  // recycled rather than counted against the same limit.
+  // Node defaults to 300s here - five minutes of a held connection slot for a request that's
+  // never answering (see requestTimeout above). This is the socket-level backstop for anything
+  // middleware doesn't cover; keepAliveTimeout stays under it so idle sockets get recycled.
   server.requestTimeout = REQUEST_TIMEOUT_MS + 10_000;
   server.headersTimeout = 30_000;
   server.keepAliveTimeout = 20_000;
 
-  // An unhandled rejection is Node's default path to a hard crash. Most of the ones this app can
-  // produce are a single failed docker call or db write - losing one poll is recoverable, losing
-  // the process takes monitoring down for every host - so they're logged and swallowed. An
-  // uncaught exception is different: the stack it unwound through is arbitrary, so nothing after
-  // it can be trusted, and the honest move is to exit and let `restart: unless-stopped` bring
-  // back a process in a known state.
+  // Most unhandled rejections here are one failed docker call or db write - losing a poll is
+  // recoverable, losing the process isn't - so they're logged and swallowed. An uncaught
+  // exception is different: the stack is untrustworthy, so the honest move is to exit and restart.
   process.on('unhandledRejection', (reason) => {
     logger.error('process.unhandled_rejection', { error: (reason && reason.message) || String(reason) });
   });

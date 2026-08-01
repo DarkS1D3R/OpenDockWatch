@@ -7,11 +7,8 @@ const DATA_DIR = path.join(__dirname, '../data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // Overridable so test/index.test.js can point this at an isolated temp file instead of the real
-// data/opendockwatch.db - that file is also the one a running container has open (WAL mode's
-// shared-memory file doesn't survive being touched from both a native-Windows process and a
-// WSL2-mounted container view of the same path), so a test process opening it directly risks
-// wedging a real running instance rather than just its own in-memory state. Unset in normal
-// operation, so this is a no-op for npm start/the Dockerfile.
+// data/opendockwatch.db - opening that file directly from a test risks wedging a real running
+// container's WAL/shm state. Unset in normal operation, a no-op for npm start/the Dockerfile.
 const DB_PATH = process.env.OPENDOCKWATCH_DB_PATH || path.join(DATA_DIR, 'opendockwatch.db');
 
 const db = new Database(DB_PATH);
@@ -89,24 +86,18 @@ db.exec(`
     value TEXT NOT NULL
   );
 
-  -- Persists alerts.js's in-memory sustained-breach tracking (a CPU/mem threshold that's been
-  -- over the line for part of its sustain window) so a restart mid-breach doesn't forget how long
-  -- it's been running and silently reset the countdown right when a deploy or crash coincides with
-  -- a real incident. "key" is the same string alerts.js already builds in memory
-  -- (hostId:containerId:rule, or hostId:host:rule for host-level rules) - opaque to this table,
-  -- just persisted as-is.
+  -- Persists alerts.js's in-memory sustained-breach tracking so a restart mid-breach doesn't
+  -- silently reset the countdown. "key" is the string alerts.js builds in memory
+  -- (hostId:containerId:rule or hostId:host:rule) - opaque to this table, just persisted as-is.
   CREATE TABLE IF NOT EXISTS alert_breaches (
     key TEXT PRIMARY KEY,
     start_ts INTEGER NOT NULL
   );
 `);
 
-// host_metrics gained these three columns after the table already existed for upgrading
-// installs - CREATE TABLE IF NOT EXISTS above only applies to a fresh database, so a plain
-// ALTER TABLE is needed to backfill them onto one that predates this. No migration framework
-// here (see CLAUDE.md), so this just runs unconditionally on every boot and swallows the
-// "duplicate column" error once it's already been applied - the simplest idempotent approach
-// available without a version-tracking table.
+// host_metrics gained these three columns after the table already existed for upgrading installs
+// - CREATE TABLE IF NOT EXISTS only covers a fresh database, so ALTER TABLE backfills them onto
+// one that predates this, swallowing "duplicate column" once already applied (see CLAUDE.md).
 for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER', 'system_mem_total_bytes INTEGER']) {
   try {
     db.exec(`ALTER TABLE host_metrics ADD COLUMN ${column}`);
@@ -151,10 +142,9 @@ const stmts = {
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0`),
   markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
   markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
-  // Picked up by alerts.js's retry sweep: never attempted (webhook_attempts = 0, e.g. no webhook
-  // was configured at fire time) is deliberately excluded - only rows that were actually tried and
-  // failed are retried. sinceTs bounds the lookback so a webhook that's been down for hours
-  // doesn't get a backlog replayed all at once once it recovers.
+  // Picked up by alerts.js's retry sweep: never-attempted rows (webhook_attempts = 0) are
+  // deliberately excluded, only actually-tried-and-failed ones retry. sinceTs bounds the
+  // lookback so a webhook down for hours doesn't get its whole backlog replayed at once.
   getPendingWebhookRetries: db.prepare(`
     SELECT * FROM alerts
     WHERE webhook_delivered_at IS NULL AND webhook_attempts > 0 AND webhook_attempts < @maxAttempts AND ts >= @sinceTs
@@ -186,11 +176,9 @@ const stmts = {
     WHERE host_id = ? AND acknowledged = 0
     GROUP BY container_id
   `),
-  // No `result = 'ok'` filter: index.js writes this row's ts at the moment the action is
-  // requested, before the docker CLI call runs - not after it resolves - specifically so it's
-  // already present (still 'pending') when a fast die/start event races the CLI call. Excluding
-  // 'pending'/'error' rows would reopen that race for exactly the slow-to-stop containers this
-  // suppression exists for.
+  // No `result = 'ok'` filter: index.js writes this row's ts when the action is requested, before
+  // the docker CLI call resolves, so it's present (still 'pending') when a fast die/start event
+  // races the CLI call. Excluding pending/error rows would reopen that race.
   countManualStopsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('stop', 'restart')
@@ -210,14 +198,9 @@ const stmts = {
   getAlertsByHost: db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
   getAlertsAll: db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`),
   countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`),
-  // Buckets samples into `bucketMs`-wide windows and averages numeric columns - keeps chart
-  // payloads small over long ranges without a separate downsampling job. The four I/O columns are
-  // MAX rather than AVG: they hold cumulative counters, so the value at the *end* of the bucket is
-  // what the next bucket's delta has to be measured against, and the average of a monotonically
-  // rising counter isn't a quantity that means anything. metricsHistory.js turns consecutive
-  // totals into the rates that actually get charted. (A container that restarts mid-bucket makes
-  // MAX that bucket's pre-restart peak - the following delta then goes negative and is reported as
-  // null, which is the intended outcome for a counter reset anyway.)
+  // Buckets into `bucketMs`-wide windows and averages numeric columns; the four I/O columns use
+  // MAX not AVG since they're cumulative counters - metricsHistory.js's withIoRates turns
+  // consecutive bucket totals into displayed rates. See CLAUDE.md for the restart-edge-case note.
   containerMetricsHistory: db.prepare(`
     SELECT
       ${BUCKET_EXPR} AS bucket,
@@ -377,9 +360,8 @@ function deleteSetting(key) {
 }
 
 // Used by GET /healthz - a trivial round-trip through the actual sqlite connection, not just "is
-// the process listening". Throws (rather than returning a boolean) on a wedged/erroring
-// connection, e.g. the WAL/shm lock contention that briefly took the real db down this session -
-// that's the failure mode a container healthcheck exists to catch.
+// the process listening". Throws (not a boolean) on a wedged/erroring connection, e.g. WAL/shm
+// lock contention - that's the failure mode a container healthcheck exists to catch.
 function ping() {
   stmts.ping.get();
 }

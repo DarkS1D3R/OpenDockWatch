@@ -30,29 +30,23 @@ export function clampPct(pct) {
 export const NODE_WIDTH = 170;
 export const FULL_LEAF_HEIGHT = 76;
 export const FULL_GROUP_HEIGHT = 88;
-// Extra box height per wrapped port-badge line beyond the first (see wrapPortsLabel/portLines) -
-// a container publishing enough ports to need more than one line grows the box to fit them
-// instead of letting them overflow it. Read from data('portLines') by three places that all need
-// to agree on the same box size: the live CY_STYLE height below, effectiveBoundingBox (so
-// overlap resolution/dagre layout reserve the right amount of room), and the SVG exporter.
+// Extra box height per wrapped port-badge line beyond the first (wrapPortsLabel/portLines) - a
+// container publishing enough ports grows the box to fit them. Read from data('portLines') by
+// three places needing the same box size: CY_STYLE height, effectiveBoundingBox, SVG exporter.
 export const PORT_EXTRA_LINE_HEIGHT = 10;
 export function containerFullHeight(portLines) {
   const extraLines = Math.max(0, (portLines || 0) - 1);
   return FULL_LEAF_HEIGHT + extraLines * PORT_EXTRA_LINE_HEIGHT;
 }
 
-// Container node data/classes shared by graph mode (buildElements, parented to a compose-group
-// box) and tree mode (buildTreeElements, no parent - see there) - factored out so both render
-// modes automatically pick up the same live CPU/RAM/health/badge fields from a single place.
-// Container node width (170px) minus the port badge's own left/right padding, at the badge's
-// 8px font - tuned so a wrapped line doesn't reach text-max-width's fallback wrap in the rare
-// case a mapping pushes it right up to the edge.
+// Container node data/classes shared by graph mode (parented to a compose-group box) and tree
+// mode (no parent) - factored out so both pick up the same live fields from one place.
+// PORT_LABEL_LINE_CHARS: node width minus the port badge's padding, tuned to avoid the fallback wrap.
 const PORT_LABEL_LINE_CHARS = 26;
 
-// Ports wrap at whole "host:container" mapping boundaries (never splitting one mapping across
-// lines) rather than raw character count, since a broken "800\n1:80" reads far worse than an
-// earlier line break before it - same idea as wrapPillLabel, just token-based instead of
-// character-based since a mapping has no natural mid-token split point worth preferring.
+// Ports wrap at whole "host:container" mapping boundaries, never splitting one mapping across
+// lines - a broken "800\n1:80" reads far worse than an earlier break. Same idea as wrapPillLabel,
+// just token-based since a mapping has no natural mid-token split point worth preferring.
 function wrapPortsLabel(text, maxLineChars) {
   const tokens = text.split(', ');
   const lines = [];
@@ -104,14 +98,9 @@ function containerNodeEl(n, selectedId, parent) {
 // node would just be noise, so those containers become their own roots instead.
 const NO_PROJECT = 'ungrouped';
 
-// Server's networkEdges already drops same-project pairs (the group box conveys that), but a
-// network shared across projects - a reverse proxy net, a shared cache - still comes back as one
-// edge per cross-project container pair, so two 10-container stacks on the same network draw up
-// to 100 crossing lines that say nothing individual container-to-container edges wouldn't. Graph
-// mode already has a box per compose project, so collapse those down to one edge per project
-// pair, merging the network names onto its label. Containers with no compose project have no box
-// to collapse into (NO_PROJECT is many unrelated standalones, not one thing) so they keep their
-// own per-container edges same as before.
+// A network shared across projects still comes back as one edge per cross-project container
+// pair - two 10-container stacks on one network draw up to 100 crossing lines. Collapses those
+// to one edge per project pair (merging network names), since graph mode already boxes projects.
 function aggregateNetworkEdges(edges, nodes) {
   const groupOf = new Map(nodes.map((n) => [n.id, n.group]));
   const keyOf = (id) => {
@@ -184,13 +173,9 @@ const MOUNT_LABEL_LINE_CHARS = 22;
 // keeps wrapped network names from overflowing them the same way long ones used to.
 const NET_LABEL_LINE_CHARS = 14;
 
-// Cytoscape's text-wrap: 'wrap' only auto-wraps at whitespace, and mount paths/volume/network
-// names have none - a 90-char bind-mount path (or a long "<project>_<network>" name) is one
-// unbreakable "word" as far as it's concerned, so it renders on one (very wide) line no matter
-// what text-max-width says, overflowing the pill. Pre-splitting into explicit lines here,
-// preferring path/word-separator boundaries for readability, is what actually makes long labels
-// wrap - text-max-width in CY_STYLE is just a fallback for the rare line that's still too long
-// after this (e.g. one giant filename with no separators at all).
+// Cytoscape's text-wrap only auto-wraps at whitespace, and mount paths/volume/network names have
+// none - a long path is one unbreakable "word" that overflows the pill. Pre-splitting into
+// explicit lines at path/word separators is what actually wraps them; CY_STYLE's fallback covers the rest.
 function wrapPillLabel(text, maxChars) {
   if (text.length <= maxChars) return text;
   const parts = text.split(/(?<=[/_-])/);
@@ -219,16 +204,9 @@ function mountLabel(source, kind) {
   return wrapPillLabel(text, MOUNT_LABEL_LINE_CHARS);
 }
 
-// ArgoCD-style tree for the Flow view's tree mode: project -> container -> (network | mount),
-// left-to-right via the same dagre layout graph mode uses, but with no compound group boxes -
-// rank order falls out of the edges alone. A network or volume shared by several containers is
-// deduped globally (one pill, multiple incoming edges) rather than rendered per-container, which
-// is the whole point: shared infrastructure becomes visually obvious. Pure/no cytoscape calls, so
-// it's unit-testable the same way buildElements/aggregateGroups are.
-//
-// Node/edge order matters here (unlike buildElements): updateGraph adds new elements one at a
-// time via cy.add(), so every node this function emits must appear in the returned array before
-// any edge that references it - hence the two passes below (pills first, then containers+edges).
+// ArgoCD-style tree for tree mode: project -> container -> (network | mount), via the same dagre
+// layout graph mode uses but with no compound group boxes. Shared networks/volumes dedupe
+// globally (one pill, multiple edges). Node order matters: cy.add() needs pills before edges.
 export function buildTreeElements(nodes, selectedId, { showNetworks = true, showMounts = true } = {}) {
   const projectIds = new Set();
   const netNames = new Set();
@@ -278,11 +256,9 @@ export function buildTreeElements(nodes, selectedId, { showNetworks = true, show
       }
     }
     if (showMounts) {
-      // Same de-dupe-per-container the pill-building pass above already does (a container
-      // mounting the same volume at two destinations only needs one edge to that one pill) -
-      // without it, this pass emits two edge elements sharing the same id. cytoscape's own
-      // `cy.add()` silently drops the second one today, but that's incidental, not a contract -
-      // deduping here makes it correct by construction instead of relying on that.
+      // Same de-dupe-per-container as the pill-building pass above (one edge per mounted volume,
+      // even at two destinations) - without it this emits two edges sharing an id. cy.add()
+      // silently drops the second today, but that's incidental; dedupe here is correct by construction.
       const seenMounts = new Set();
       for (const m of n.mounts || []) {
         if (seenMounts.has(m.source)) continue;

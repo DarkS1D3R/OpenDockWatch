@@ -9,18 +9,9 @@ const RANGES = [
   { key: '7d', label: '7d' },
 ];
 
-// One container's persisted metrics history, over a selectable window - the full-detail view
-// behind the List row's cell-sized sparklines. Those come from the root's live in-memory buffer
-// and only ever hold a couple of minutes; this reads the sqlite history the server has been
-// writing every poll all along, via GET /metrics/history?containerId=.
-//
-// Mounted with v-if by the root, per the pattern the log viewer and settings panel follow, so its
-// own mounted()/beforeUnmount() own the fetch and refresh lifecycle rather than the root
-// orchestrating it.
-//
-// All four charts share one hoverIndex, exactly as HostCard shares one between its CPU and RAM
-// tiles: the reason to stack them is being able to line a CPU spike up against what memory and
-// the network were doing at that same moment, which only works if one hover moves every crosshair.
+// One container's persisted metrics history over a selectable window - unlike the List row's
+// sparklines (root's few-minute in-memory buffer), this reads sqlite history via
+// GET /metrics/history. All four charts share one hoverIndex so spikes line up across them.
 export default {
   name: 'ContainerMetricsModal',
   components: { SparkTile },
@@ -53,10 +44,9 @@ export default {
     memSamples() {
       return this.rows.map((r) => r.memUsedBytes);
     },
-    // The I/O series are rates derived server-side from cumulative counters (see
-    // server/metricsHistory.js), so a null is ordinary rather than exceptional: the first bucket
-    // of any window has nothing to diff against, and a bucket spanning a container restart has a
-    // counter reset in it. They're passed through as nulls - sparkPaths skips those slots.
+    // The I/O series are rates derived server-side from cumulative counters (metricsHistory.js),
+    // so null is ordinary, not exceptional: the first bucket has nothing to diff against, and a
+    // restart-spanning bucket has a counter reset. Passed through as nulls; sparkPaths skips them.
     netRxSamples() {
       return this.rows.map((r) => r.netRxRate);
     },

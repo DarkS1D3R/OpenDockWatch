@@ -1,10 +1,6 @@
-// A browser allows roughly six concurrent connections per origin over HTTP/1.1, and this app
-// permanently holds some of them open for the SSE streams (events, log preview, log viewer). So a
-// fetch with no timeout isn't just a slow request - it's a connection slot held hostage, and once
-// enough of them pile up behind an unresponsive server the tab can't issue any request at all,
-// including the ones a reload needs. That's the "site is hung" state, and it survives the server
-// recovering, because nothing ever releases the sockets. A request that gives up releases its
-// slot; the poll loop in app.js then retries on its own schedule.
+// A browser allows ~6 connections per origin over HTTP/1.1, and this app permanently holds some
+// open for SSE streams - a fetch with no timeout is a connection slot held hostage, and enough of
+// them piling up leaves the tab unable to issue any request. A request that gives up releases its slot.
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 async function apiFetch(url, opts = {}) {

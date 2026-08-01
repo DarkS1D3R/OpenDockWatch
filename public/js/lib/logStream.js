@@ -1,41 +1,17 @@
 // Shared EventSource-backed log line stream: connection lifecycle, non-reactive line buffering,
-// rAF-batched flush, and the "no output yet" loading-spinner timer. A fast burst of lines (e.g. a
-// large tail on open) used to trigger its own reactive push + render per line - on a big backlog
-// that was thousands of full-list re-renders in a row and froze the tab. Buffering them and
-// flushing once per animation frame turns that into a handful of renders.
-//
-// The caller owns the reactive line array and scroll behavior - onFlush(batch) hands over
-// {id, text} objects to append; trimming to a max line count and following the scroll position
-// are the caller's concern, same as before this was extracted.
-//
-// A stream also suspends itself while the tab is in the background - see HIDDEN_SUSPEND_GRACE_MS
-// below. That's here rather than in each component because this factory is the one thing every log
-// stream in the app already goes through.
-//
-// EventSourceImpl, schedule and doc are injectable so this - otherwise only exercisable in a real
-// browser - gets a node unit test with a stub source, a synchronous scheduler and a fake document.
+// rAF-batched flush, hidden-tab suspension, and the loading-spinner timer. Caller owns the
+// reactive line array; onFlush(batch) hands over {id, text} to append. See CLAUDE.md.
 const defaultSchedule = (cb) => requestAnimationFrame(cb);
 const defaultDoc = typeof document === 'undefined' ? null : document;
 
-// EventSource reconnects on its own after any disconnect, forever, and the server side of this
-// spawns a `docker logs` process per connection. For a container that no longer exists that's a
-// loop with no exit: the CLI finds nothing and quits, the server ends the response, the browser
-// reconnects a few seconds later, repeat for as long as the panel stays open - a permanent drip
-// of child processes and a connection slot never released. Genuine restarts reconnect inside
-// this budget (any line received resets the count); only a stream that can't produce a single
-// line across this many attempts is given up on.
+// EventSource reconnects forever, and the server spawns a `docker logs` process per connection -
+// for a deleted container that's a permanent reconnect loop leaking child processes. Genuine
+// restarts reconnect within budget (any line resets the count); only a totally silent stream gives up.
 const MAX_CONSECUTIVE_ERRORS = 5;
 
-// How long the tab has to stay hidden before an open stream gives up its connection. A backgrounded
-// tab otherwise holds one browser connection *and* one server-side `docker logs -f` child per open
-// stream indefinitely - and a dashboard is exactly the kind of page left open in a tab for days.
-// The poll loop already stops itself when hidden (app.js's pollTick); this is the same idea for the
-// streams.
-//
-// Not immediate, because resuming is not free: `docker logs --tail N` re-sends the tail, so a
-// resume resets the pane (see onReset). Suspending the moment you glance at another tab would throw
-// away four scroll-synced panes' positions for a two-second detour. A minute of genuine absence is
-// a different thing, and by then the reset is what you'd want anyway.
+// How long the tab stays hidden before an open stream gives up its connection - a backgrounded
+// tab otherwise holds a browser connection and a server-side `docker logs -f` child indefinitely.
+// Not immediate: resuming resets the pane (re-tails), so a brief tab-glance shouldn't cost that.
 const HIDDEN_SUSPEND_GRACE_MS = 60_000;
 
 export function createLogStream({
@@ -117,10 +93,9 @@ export function createLogStream({
     openSource();
   }
 
-  // Gives the connection back without tearing the stream down - it stays "started", so it knows to
-  // come back when the tab does. Deliberately not routed through the error path: a suspend is not a
-  // disconnect and must not count against MAX_CONSECUTIVE_ERRORS, or a few background/foreground
-  // cycles would permanently kill a perfectly healthy stream.
+  // Gives the connection back without tearing the stream down - stays "started" so it knows to
+  // come back. Not routed through the error path: a suspend isn't a disconnect and must not
+  // count against MAX_CONSECUTIVE_ERRORS, or background/foreground cycles would kill a healthy stream.
   function suspend() {
     if (!started || suspended) return;
     suspended = true;

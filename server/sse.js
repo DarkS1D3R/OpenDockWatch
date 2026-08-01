@@ -2,11 +2,9 @@ const { EventEmitter } = require('events');
 
 const HEARTBEAT_MS = 30_000;
 
-// Small pub/sub so multiple browser tabs can share one live feed (events, alerts)
-// per host, independent of the existing 1:1 per-container log-stream SSE.
-// Host ids are user-chosen (Settings only requires letters/numbers/-/_), and EventEmitter
-// reserves a few names - 'error' above all, where emitting with no listener attached throws
-// and takes the whole process down. Prefixing keeps host ids out of that namespace entirely.
+// Small pub/sub so multiple browser tabs share one live feed (events, alerts) per host,
+// independent of the per-container log-stream SSE. Host ids are user-chosen and EventEmitter
+// reserves names like 'error' (emitting with no listener throws) - prefixing avoids collisions.
 function channel(hostId) {
   return `host:${hostId}`;
 }

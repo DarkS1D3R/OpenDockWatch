@@ -5,39 +5,8 @@ import { closestIndexByTs } from '../lib/logSync.js';
 import { decorateLines, selectLines } from '../lib/logLines.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
-// log body. Mounted fresh by the root each time "Logs" is opened for a container (v-if, not
-// v-show) - its own mounted()/beforeUnmount() start and stop the stream, so the root no longer
-// needs to orchestrate that. `fullscreen` is the one bit of state the root still needs to know
-// about directly (v-model) - it hides the host card and other panels, which is the root's layout
-// to control, not this component's.
-//
-// `embedded` is the other mode this renders in: the Logs tab (LogsView) mounts one of these per
-// selected container inside its own right-hand pane instead of the root's overlay slot. There's
-// no "fullscreen" in that context (the pane already fills the tab), so that button is hidden and
-// the panel fills its parent's height via CSS instead of the fullscreen vh-calc. `multiPane` is
-// independent of `embedded` - LogsView only sets it once 2+ panes are open side by side, so a
-// single embedded pane still has no close/sync/main controls (picking a different row is the
-// close equivalent, and sync is meaningless with nothing else to sync with).
-//
-// `scroll-sync` is the other half of LogsView's multi-pane sync: emitted with { containerId,
-// tsMs } - this pane's own id and the epoch-ms timestamp of whichever line is now at the top of
-// the viewport - whenever the *user* scrolls (not when `scrollToTimestamp` moves this pane in
-// response to another one's sync event - `_programmatic` guards that). LogsView listens on every
-// open pane and calls `scrollToTimestamp` on every *other* one - not the sender itself, which
-// would otherwise re-snap its own scrollTop to the nearest line boundary every frame and fight a
-// continuous scroll gesture (most visible on whichever pane has the most lines to scroll through).
-//
-// `syncEnabled` (default true) is LogsView's per-pane opt-out - a pane with it off neither emits
-// scroll-sync (guarded in onScroll below) nor gets moved by scrollToTimestamp (LogsView skips it,
-// but scrollToTimestamp also refuses to move a disabled pane on its own, so this component stays
-// correct even called directly). `isMain` is purely a display flag - LogsView is the one that
-// decides a designated pane's scrolling is the only thing that drives the rest; this component
-// just renders the star and emits `set-main` when it's clicked.
-//
-// `wrap` (default true) follows the same embedded/standalone split as fullscreen: standalone owns
-// it via its own header toggle (v-model), embedded has no toggle of its own at all since LogsView
-// puts one toggle at the top of its container list that governs every open pane at once, rather
-// than repeating it in each pane's already-crowded header.
+// log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
+// controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
   props: {
@@ -50,10 +19,9 @@ export default {
     multiPane: { type: Boolean, default: false },
     syncEnabled: { type: Boolean, default: true },
     isMain: { type: Boolean, default: false },
-    // Whether long lines wrap (word-break) or run off the side with a horizontal scrollbar.
-    // Standalone (!embedded) owns this itself via its own header toggle (v-model, same shape as
-    // fullscreen). Embedded panes never render that toggle - LogsView has exactly one wrap toggle
-    // for the whole tab instead of one per pane, so it just feeds this prop straight down.
+    // Whether long lines wrap or run off the side with a horizontal scrollbar. Standalone owns
+    // this via its own header toggle (v-model); embedded panes never render that toggle - LogsView
+    // has one wrap toggle for the whole tab and feeds this prop straight down instead.
     wrap: { type: Boolean, default: true },
   },
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
@@ -71,12 +39,9 @@ export default {
       // container that has simply gone quiet.
       suspended: false,
       showTimestamps: true,
-      // The narrow-pane fallback for the level toggle - a dropdown menu instead of four buttons
-      // wide enough to clutter a half- or quarter-width pane. Which one is actually visible is a
-      // CSS container-query call (log-panel's own width, not the viewport's - what matters is how
-      // much room *this pane* has, same reasoning as the search input's collapse-on-focus below),
-      // but the open/closed state itself still needs to exist even when the compact version isn't
-      // currently shown.
+      // The narrow-pane fallback for the level toggle - a dropdown instead of four buttons wide
+      // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
+      // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
     };
   },
@@ -187,11 +152,9 @@ export default {
     onScroll() {
       const el = this.$refs.logView;
       if (el) this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-      // A sync-driven scroll (scrollToTimestamp, called from LogsView in response to a *different*
-      // pane's user scroll) shouldn't itself broadcast - every pane doing that would ping-pong
-      // forever. rAF-throttled the same way logStream.js throttles its own flush, since a real drag
-      // scroll fires this dozens of times a frame otherwise. A pane with sync turned off doesn't
-      // broadcast at all - scrolling it is meant to be a private, independent action.
+      // A sync-driven scroll (scrollToTimestamp) shouldn't itself broadcast, or every pane would
+      // ping-pong forever. rAF-throttled like logStream.js's own flush, since a real drag scroll
+      // fires this dozens of times a frame. A pane with sync off never broadcasts at all.
       if (this._programmatic || this._syncRaf || !this.syncEnabled) return;
       this._syncRaf = requestAnimationFrame(() => {
         this._syncRaf = null;

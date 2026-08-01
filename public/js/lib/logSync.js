@@ -1,9 +1,6 @@
 // Pure binary search backing the Logs tab's multi-pane scroll sync: given a chronologically
-// sorted array of epoch-ms timestamps (entries may be null - a line with no parseable docker
-// timestamp, e.g. a synthetic "[opendockwatch] log stream disconnected" notice), find the index
-// of the entry closest to `target`. Kept separate from LogViewer.js (which owns the DOM reads/
-// writes around it) so the actual search logic - the part with real off-by-one risk - is
-// unit-tested without a browser.
+// sorted array of epoch-ms timestamps (entries may be null - unparseable/synthetic lines), find
+// the index closest to `target`. Kept separate from LogViewer.js so this off-by-one-risky logic is unit-tested.
 export function closestIndexByTs(tsMsArray, target) {
   if (!tsMsArray.length || target == null) return -1;
 
@@ -16,11 +13,9 @@ export function closestIndexByTs(tsMsArray, target) {
     else hi = mid;
   }
 
-  // lo is the first index whose value is >= target (or the array's end if none is) - but that
-  // value, and the one right before it, may themselves be null, so both directions need a
-  // nearest-non-null scan rather than assuming lo (or lo - 1) is directly usable. "after" starts
-  // its scan at lo itself (inclusive) and "before" at lo - 1, so an exact match at lo is never
-  // double-counted as its own "before" candidate.
+  // lo is the first index whose value is >= target - but that value, and the one before it, may
+  // themselves be null, so both directions need a nearest-non-null scan. "after" starts at lo
+  // (inclusive), "before" at lo - 1, so an exact match at lo is never double-counted.
   const before = nearestNonNull(tsMsArray, lo - 1, -1);
   const after = nearestNonNull(tsMsArray, lo, 1);
 

@@ -1,12 +1,9 @@
 import { healthColor, healthLabel, formatBytes } from '../format.js';
 import MiniSpark from './MiniSpark.js';
 
-// The List view: containers grouped by compose project, each with a collapsible table, mini
-// CPU/RAM sparklines, and start/stop/restart/Logs actions. Selection, actions, opening the log
-// viewer and opening the metrics modal are all owned by the root (they interact with state well
-// beyond this view - the Flow view's cy selection, the log viewer panel, the settings panel) so
-// this component only emits what happened; collapsedGroups is the one bit of UI state that's
-// genuinely local.
+// The List view: containers grouped by compose project, with mini sparklines and
+// start/stop/restart/Logs actions. Selection/actions/log-viewer/metrics-modal are owned by the
+// root; this component only emits what happened. collapsedGroups is the one bit of local UI state.
 export default {
   name: 'ContainerList',
   components: { MiniSpark },

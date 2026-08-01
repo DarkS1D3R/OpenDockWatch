@@ -1,22 +1,6 @@
-// Retakes the README/DOCKERHUB screenshot set against a running OpenDockWatch.
-//
-//   scripts/demo-stack.sh up --isolated        # something worth photographing
-//   docker run ... opendockwatch:local         # (the command that prints)
-//   SCREENSHOT_PASS=... npm run screenshots
-//
-// Point it at an instance watching the demo stack, not at real infrastructure - it refuses to
-// shoot a host whose containers aren't the demo ones, since the whole point is that nobody's
-// private container names end up in the README.
-//
-// Configuration, all optional except the password:
-//   SCREENSHOT_URL    default http://localhost:3100
-//   SCREENSHOT_USER   default demo
-//   SCREENSHOT_PASS   required - the plaintext behind AUTH_PASS_HASH
-//   SCREENSHOT_OUT    default <repo>/screenshots
-//   SCREENSHOT_WARM_MS  default 135000
-//   SCREENSHOT_SCALE  default 1
-//
-// Needs a browser: `npx playwright install chromium` once.
+// Retakes the README/DOCKERHUB screenshot set (scripts/demo-stack.sh up --isolated, then
+// SCREENSHOT_PASS=... npm run screenshots). Point it at an instance watching the demo stack, not
+// real infrastructure - it refuses to shoot a host whose containers aren't the demo ones.
 const path = require('path');
 const { chromium } = require('playwright');
 
@@ -44,10 +28,9 @@ async function main() {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
 
-  // Views differ a lot in height - the list grows with the container count, the flow canvas is
-  // fixed - so one viewport either crops one view or leaves a band of empty page under another.
-  // Overlay shots (the metrics modal, the log panel, anything fullscreen) are sized off the
-  // viewport itself, so they opt out and keep the tall default.
+  // Views differ a lot in height (list grows with container count, flow canvas is fixed), so one
+  // viewport either crops or leaves empty space. Overlay shots (modal, log panel, fullscreen) are
+  // sized off the viewport itself, so they opt out and keep the tall default.
   const fitViewport = async () => {
     const h = await page.evaluate(() => Math.ceil(document.documentElement.getBoundingClientRect().height));
     await page.setViewportSize({ width: VIEWPORT.width, height: Math.min(Math.max(h, 700), 2200) });

@@ -1,15 +1,8 @@
 const os = require('os');
 
-// Real host-wide CPU/memory usage - every process on the machine, not just the containers this
-// app itself watches (the existing host_cpu/host_mem numbers are a sum of container stats, which
-// undercounts anything running outside Docker). Only meaningful for the local host Node itself
-// runs on - a remote SSH host has no equivalent without installing an agent there, so callers
-// should only use this when a host has no dockerHost set (see hasLocalHost in hosts.js).
-//
-// Node reads os.cpus()/os.totalmem() from /proc, which is not cgroup-virtualized - if
-// OpenDockWatch itself runs in a container with a CPU/memory limit set, these still report the
-// real host's figures rather than the container's limit. See the README for this caveat.
-
+// Real host-wide CPU/memory usage (every process on the machine, not just watched containers) -
+// only meaningful for the local host Node runs on, not a remote SSH host (see hasLocalHost in
+// hosts.js). Not cgroup-virtualized: in a limited container this reports the real host, not the limit.
 function sampleCpuTimes() {
   let idle = 0;
   let total = 0;

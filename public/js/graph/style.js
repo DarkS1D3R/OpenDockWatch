@@ -1,20 +1,14 @@
 import { containerFullHeight } from './elements.js';
 
-// Below this zoom level a fit-to-screen view of more than a handful of containers is mostly
-// unreadable anyway (the 5px NET/DISK text is already illegible well before zoom 1, not just
-// below it) - compact mode trades the CPU/RAM bars and metric text for just enough to answer
-// "what is this and is it OK", legible at whatever zoom the graph actually fits at, one zoom-in
-// gesture away from the rest. Set high enough that only viewing at (or past) native size keeps
-// the full metrics - any amount of zooming out at all switches over.
+// Below this zoom, a fit-to-screen view of more than a handful of containers is mostly
+// unreadable anyway - compact mode trades CPU/RAM bars and metric text for just enough to answer
+// "what is this and is it OK". Set high so only native-size-or-closer viewing keeps full metrics.
 export const COMPACT_ZOOM_THRESHOLD = 1;
 const COMPACT_HEIGHT = 34;
 
-// Small "what type of node is this" glyphs for tree mode's project/network/mount pills - real
-// inline SVG (not emoji), reused two ways: wrapped in a data URI for CY_STYLE's background-image
-// below (so the live canvas view and PNG export, which just screenshots the canvas, draw them for
-// free), and inlined directly as <g> markup by svgExport.js's svgPillIcon for the hand-drawn SVG
-// exporter, which has no canvas to reference a background-image on. Coordinates are in a shared
-// 0-12 local space.
+// Small "what type of node is this" glyphs for tree mode's pills - real inline SVG, reused two
+// ways: a data URI for CY_STYLE's background-image (live canvas + PNG export), and inlined <g>
+// markup by svgExport.js's svgPillIcon (no canvas to reference). Shared 0-12 coordinate space.
 export const PROJ_ICON_SVG =
   '<path d="M6 1.2 11 3.6 6 6 1 3.6Z" fill="none" stroke="#2d5fa8" stroke-width="1" stroke-linejoin="round"/>' +
   '<path d="M1.5 6 6 8.2 10.5 6" fill="none" stroke="#2d5fa8" stroke-width="1" stroke-linejoin="round"/>' +
@@ -42,10 +36,9 @@ const MOUNT_VOLUME_ICON_URI = pillIconDataUri(MOUNT_VOLUME_ICON_SVG);
 // it gets this color instead of the usual amber/light-yellow regardless of which of those it is.
 export const SHARED_MOUNT_COLOR = '#f0883e';
 
-// Matches the CPU/mem color convention used everywhere else in the app (host tiles,
-// list-view sparklines): CPU is always --accent, mem is always --seq-mem, regardless of
-// value - magnitude is shown by bar length, not color, so the two bars stay identifiable
-// at a glance instead of both turning the same red/amber/green as they fill up.
+// Matches the CPU/mem color convention used everywhere else (host tiles, sparklines): CPU is
+// always --accent, mem always --seq-mem, regardless of value - magnitude is bar length, not
+// color, so the two bars stay identifiable instead of both turning red/amber/green as they fill.
 export const CPU_COLOR = '#4f8cff';
 export const MEM_COLOR = '#199e70';
 
@@ -54,12 +47,9 @@ export const MEM_COLOR = '#199e70';
 export const BLAST_UPSTREAM_COLOR = '#a371f7';
 export const BLAST_DOWNSTREAM_COLOR = '#f0883e';
 
-// Graph mode's cross-project shared-network edge. Used to be var(--border) itself (#2b2f38) -
-// deliberately muted to read as background, but that made it nearly invisible once zoomed out far
-// enough that the line's rendered width shrinks with it. --seq-net is already the app's own
-// network-associated hue (the Net I/O chart series) and already validated for contrast against a
-// dark background (see style.css's color-set comment), so it's the natural fix rather than picking
-// a new color from scratch.
+// Graph mode's cross-project shared-network edge. Used to be var(--border) (#2b2f38), muted to
+// read as background but nearly invisible once zoomed out far. --seq-net is the app's own
+// network-associated hue, already validated for contrast (style.css) - the natural fix.
 export const NETWORK_COLOR = '#d160a8';
 
 export const CY_STYLE = [
@@ -82,10 +72,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Applied by cytoscape-expand-collapse to the single node left standing once a compose
-    // group is collapsed - it keeps the 'group' class above (same underlying element, not a
-    // replacement), so this has to come after it to win the cascade. label is blanked the same
-    // way leaf nodes are - the html-label overlay below carries all the text instead.
+    // Applied by cytoscape-expand-collapse to the node left standing once a group collapses - it
+    // keeps the 'group' class too (same element), so this comes after it to win the cascade.
+    // label is blanked like leaf nodes; the html-label overlay carries all the text instead.
     selector: 'node.cy-expand-collapse-collapsed-node',
     style: {
       'background-color': '#1d2027',
@@ -189,11 +178,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Tree mode only - project/network/mount pills are plain (non-compound) nodes, so unlike
-    // node.group they get a fixed size and centered label rather than padding around children.
-    // A darker blue than node.net's border (rather than the muted gray node.stopped also uses)
-    // - a project box next to a stopped container otherwise reads as two of the same "state,"
-    // when a project is a grouping, not a state at all.
+    // Tree mode only - project/network/mount pills are plain (non-compound) nodes, fixed-size
+    // with a centered label, unlike node.group's padding-around-children. A darker blue than
+    // node.net's border (not node.stopped's gray) so a project reads as a grouping, not a state.
     selector: 'node.proj',
     style: {
       'background-color': '#1d2027',
@@ -248,12 +235,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Bind-mount source paths can be much longer than a network/project name (e.g. a full
-    // /mnt/... path) - a fixed width with text-wrap forces long paths onto multiple lines
-    // instead of overflowing a single-line pill; height: 'label' then grows the box to fit
-    // however many wrapped lines that took (short volume names still fit on one line).
-    // Colors and icon are split into .mount-bind/.mount-volume below - a bind mount (host path)
-    // and a named/anonymous volume are different Docker concepts that used to render identically.
+    // Bind-mount source paths can be much longer than a network/project name - fixed width with
+    // text-wrap forces them onto multiple lines; height: 'label' grows the box to fit them.
+    // Colors/icon split into .mount-bind/.mount-volume below, since those are different Docker concepts.
     selector: 'node.mount',
     style: {
       label: 'data(label)',
@@ -307,13 +291,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Orthogonal "taxi" routing (horizontal-vertical-horizontal), matching ArgoCD's own resource
-    // tree connectors - reads more like a hierarchy diagram than the diagonal bezier edges graph
-    // mode uses for network/depends-on/manual relationships. No arrowhead, same reason ArgoCD's
-    // doesn't have one: left-to-right position already conveys direction in a tree. Split into
-    // three kind-specific styles (rather than one shared edge-tree class) so a network pill's
-    // dashed blue lines and a mount pill's solid amber lines don't blend together once several
-    // containers converge on shared pills - the whole point of deduping them in the first place.
+    // Orthogonal "taxi" routing, matching ArgoCD's resource tree connectors - reads more like a
+    // hierarchy diagram than graph mode's diagonal bezier edges. No arrowhead: left-to-right
+    // position already conveys direction. Split into 3 kind-specific styles so lines converging on shared pills don't blend.
     selector: 'edge.edge-tree-proj',
     style: {
       'line-color': '#3a3f4b',
@@ -326,10 +306,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Straight rather than taxi routing - a network pill is often shared by many containers at
-    // different heights, and orthogonal elbows from all of them tend to run along the same
-    // horizontal bands and overlap each other. A direct line fans out at a distinct angle per
-    // source, which stays readable at higher fan-in than the elbow style does.
+    // Straight rather than taxi routing - a network pill shared by many containers at different
+    // heights gets orthogonal elbows that overlap along the same horizontal bands. A direct line
+    // fans out at a distinct angle per source, staying readable at higher fan-in.
     selector: 'edge.edge-tree-net',
     style: {
       'line-color': '#4f8cff',
@@ -340,11 +319,9 @@ export const CY_STYLE = [
     },
   },
   {
-    // Back to taxi (orthogonal), matching edge-tree-proj's ArgoCD-style look. The invisible-line
-    // bug this was briefly switched to 'straight' for turned out to be a stale-render issue (see
-    // updateCompactFlag's cy.style().update() call) rather than a taxi-geometry problem - fixed
-    // at the source now, so mounts get the elbow routing back. TREE_LAYOUT's extra nodeSep gives
-    // the turn points more room, as a further safety margin against tight-quarters overlap.
+    // Taxi (orthogonal), matching edge-tree-proj's ArgoCD look. Briefly switched to 'straight' to
+    // chase an invisible-line bug that turned out to be a stale-render issue (see
+    // updateCompactFlag's cy.style().update()), not a taxi-geometry one - fixed at the source.
     selector: 'edge.edge-tree-mount',
     style: {
       // Matches whichever pill it leads to (shared orange, else mount-bind's darker amber vs

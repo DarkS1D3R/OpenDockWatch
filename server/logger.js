@@ -1,8 +1,6 @@
-// Structured single-line audit/debug logging, written to stdout/stderr like the rest of the
-// app's console output - Docker already captures that as the container's log with zero extra
-// config. Kept as plain "key=value" text rather than JSON so it reads directly in `docker logs`,
-// and tagged [INFO]/[WARN]/[ERROR] so it's picked up by the app's own Log Viewer level filters
-// when watching this container's logs through itself.
+// Structured single-line audit/debug logging to stdout/stderr - Docker captures that as the
+// container's log for free. Plain "key=value" text (not JSON) so it reads directly in `docker
+// logs`, tagged [INFO]/[WARN]/[ERROR] so the app's own Log Viewer level filters pick it up too.
 function formatFields(fields) {
   return Object.entries(fields)
     .filter(([, v]) => v !== undefined && v !== null && v !== '')

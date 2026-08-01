@@ -25,10 +25,9 @@ export default {
       // crosshair on the RAM graph at the same x position too, and vice versa - the point being
       // to let a CPU spike be correlated against what RAM was doing at that same moment.
       hoverIndex: null,
-      // Per-image breakdown - fetched lazily the first time the Images disclosure is opened
-      // (see onImagesToggle), not alongside the regular disk-usage poll, since walking every
-      // image's shared/unique layer sizes is extra work nobody needs unless they're actually
-      // looking at the list.
+      // Per-image breakdown - fetched lazily the first time the Images disclosure opens (see
+      // onImagesToggle), not alongside the regular disk-usage poll, since walking every image's
+      // layer sizes is extra work nobody needs unless they're actually looking at the list.
       imagesExpanded: false,
       images: [],
       imagesLoaded: false,
@@ -73,9 +72,8 @@ export default {
       return this.metricsHistory.map((s) => s.systemMemUsedBytes);
     },
     // What the mem tile's corner box shows - defers to hostMemory.js to detect and correct for
-    // Docker running inside something (most commonly a Proxmox LXC) that caps memory below what
-    // hostSystemUsage's os.totalmem()-based figure sees. Null (same as hostSystemUsage) on a
-    // remote host.
+    // Docker running inside something (a Proxmox LXC) that caps memory below what
+    // hostSystemUsage's os.totalmem() sees. Null (same as hostSystemUsage) on a remote host.
     memHostDisplay() {
       return resolveHostMemoryDisplay({
         osUsedBytes: this.hostSystemUsage ? this.hostSystemUsage.memUsedBytes : null,

@@ -13,14 +13,9 @@ import {
   MOUNT_VOLUME_ICON_SVG,
 } from './style.js';
 
-// A vector export has no resolution ceiling to manage the way exportPng's EXPORT_SCALE/
-// container-resize dance has to - the whole graph is drawn at its natural size and the viewBox
-// just grows to fit, so a host with a lot of compose projects is never "too small to read or a
-// huge file" the way a raster export forces you to choose between. extractSvgGeometry (impure:
-// reads the live cy instance) and renderSvg (pure: geometry -> markup string) are kept separate
-// on purpose, mirroring buildElements/buildTreeElements' own pure-core/impure-adapter split -
-// renderSvg is unit-testable the same way, by feeding it a plain geometry object directly
-// instead of a live cytoscape instance.
+// A vector export has no resolution ceiling to manage, unlike exportPng's EXPORT_SCALE dance -
+// the viewBox just grows to fit. extractSvgGeometry (impure, reads live cy) and renderSvg (pure,
+// geometry -> markup) mirror buildElements' pure-core/impure-adapter split; renderSvg is unit-tested.
 
 const ALERT_BADGE_COLOR = '#e5534b';
 
@@ -62,13 +57,9 @@ function svgEdgeKind(e) {
   return null;
 }
 
-// Reads whatever's currently rendered (either mode) into plain, cytoscape-free data - the
-// opposite direction from buildElements/buildTreeElements (data -> cy elements), but the same
-// idea of keeping "what's actually drawn" independent of the library that draws it. Leaf/
-// collapsed-group sizing deliberately ignores the node's current (possibly compact-shrunk)
-// rendered height in favor of containerFullHeight/FULL_GROUP_HEIGHT (the same full-size-always
-// height CY_STYLE's own height function computes) - a vector export has no zoom-driven reason to
-// hide detail the way the live semantic-zoom view does.
+// Reads whatever's currently rendered into plain, cytoscape-free data - the opposite direction
+// from buildElements (data -> cy elements). Leaf/collapsed-group sizing ignores the node's
+// current compact-shrunk height in favor of the full-size CY_STYLE height: no zoom-driven reason to hide detail here.
 export function extractSvgGeometry(cy) {
   const nodes = [];
   cy.nodes().forEach((n) => {
@@ -93,10 +84,8 @@ export function extractSvgGeometry(cy) {
         height = FULL_GROUP_HEIGHT;
       } else {
         // Trust cytoscape's own live height here (unlike leaf/collapsed-group nodes above) -
-        // dagre's layout spaced this node's siblings assuming exactly this height, so drawing it
-        // any taller (e.g. to fit a wrapped mount label more generously) would overlap a
-        // neighbor dagre had no idea needed extra room. svgPillNode fits the text within
-        // whatever height this is instead of the other way around.
+        // dagre spaced this node's siblings assuming exactly this height, so drawing it taller
+        // would overlap a neighbor. svgPillNode fits text into this height, not the other way.
         width = n.width();
         height = n.height();
       }
@@ -189,10 +178,9 @@ function svgContainerNode(n) {
     svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
   }
   svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
-  // Fixed offsets from FULL_LEAF_HEIGHT (the original, single-port-line box height), not n.height
-  // - n.height grows to fit a wrapped port list (see containerFullHeight), and all of that extra
-  // room needs to land below this cluster (for the wrapped lines) rather than stretching the gap
-  // between it and the name above, which is what anchoring to the real (taller) n.height would do.
+  // Fixed offsets from FULL_LEAF_HEIGHT (single-port-line box height), not n.height - n.height
+  // grows to fit a wrapped port list, and that extra room must land below this cluster, not
+  // stretch the gap above it (which anchoring to the real, taller n.height would do).
   svg += svgMetricBars(x1 + 8, y1 + FULL_LEAF_HEIGHT - 32, n.width - 16, d.cpuPerc, d.memPerc);
   svg += `<text x="${x1 + 8}" y="${y1 + FULL_LEAF_HEIGHT - 10}" font-size="5" fill="#8b909c">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
   if (d.ports) {
@@ -238,9 +226,8 @@ function svgGroupBox(n) {
 }
 
 // Mirrors the live view's CY_STYLE background-image icons (style.js's PROJ_ICON_SVG etc.) -
-// drawn as real SVG elements here since the exporter has no canvas to reference a
-// background-image on. Coordinates in the icon constants are already in the shared 0-12 local
-// space, so this just translates that space to sit at the pill's left edge, vertically centered.
+// drawn as real SVG elements since the exporter has no canvas to reference a background-image
+// on. Icon coordinates are already in the shared 0-12 space; this just positions it at the pill's edge.
 function svgPillIcon(kind, x1, cy) {
   const svg = { proj: PROJ_ICON_SVG, net: NET_ICON_SVG, 'mount-bind': MOUNT_BIND_ICON_SVG, 'mount-volume': MOUNT_VOLUME_ICON_SVG }[kind];
   if (!svg) return '';
@@ -251,16 +238,9 @@ function svgPillIcon(kind, x1, cy) {
 // svgPillIcon at the left edge.
 const PILL_ICON_TEXT_SHIFT = 8;
 
-// Tree mode's project/network/mount pills - rect + left-edge type icon + centered text, matching
-// CY_STYLE's node.proj/.net/.mount(-bind|-volume). Mount labels already carry \n for wrapped long
-// paths (see wrapMountLabel) - split into one <tspan> per line rather than trying to word-wrap in SVG.
-//
-// The box is always exactly n.height - cytoscape's own live 'height: label' value, which is
-// also what dagre's layout used to space this node's siblings apart. Drawing it any taller to
-// fit the text more generously would overlap a neighbor dagre never reserved that extra room
-// from. So this fits the text INTO n.height instead: line spacing shrinks (down to a legibility
-// floor) if the box is tight relative to the line count, rather than the box growing to fit a
-// fixed line spacing - that reversed relationship is what caused the overlap.
+// Tree mode's project/network/mount pills, matching CY_STYLE's node.proj/.net/.mount(-bind|-volume).
+// Mount labels already carry \n for wrapped paths, split into one <tspan> per line. The box is
+// always exactly n.height (dagre spaced siblings by it); line spacing shrinks to fit instead of the box growing.
 function svgPillNode(n, { border, text, bg }) {
   const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
@@ -332,10 +312,9 @@ function svgArrowHead(from, to, color) {
   return `<polygon points="${to.x},${to.y} ${p1.x},${p1.y} ${p2.x},${p2.y}" fill="${color}"/>`;
 }
 
-// Mirrors CY_STYLE's edge-tree-mount line-color function: the flat EDGE_SVG_STYLE color is only
-// the mount-bind default. A shared mount/volume (converged on by 2+ containers) wins over kind,
-// same as the live view - losing that distinction here would lose the whole point of the shared-
-// mount signal the legend advertises.
+// Mirrors CY_STYLE's edge-tree-mount line-color function: EDGE_SVG_STYLE's flat color is only
+// the mount-bind default. A shared mount/volume wins over kind, same as the live view - losing
+// that here would lose the point of the shared-mount signal the legend advertises.
 function treeMountColor(e, fallback) {
   if (e.mountShared) return SHARED_MOUNT_COLOR;
   if (e.mountVolume) return '#e8c766';
@@ -413,10 +392,9 @@ export function renderSvg(geometry, { background = '#14161a' } = {}) {
   ].join('\n');
 }
 
-// cy.fit-to-all before extracting, matching exportPng's behavior - the export always captures
-// the whole graph, not just the current viewport. No container-resize or frame-wait needed the
-// way exportPng needs one: this reads cytoscape's own bounding boxes/positions, which are
-// already current the moment fit() returns, and never touches the DOM overlay at all.
+// cy.fit-to-all before extracting, matching exportPng - always captures the whole graph, not
+// just the viewport. No container-resize/frame-wait needed like exportPng: this reads
+// cytoscape's own bounding boxes, current the moment fit() returns, and never touches the DOM overlay.
 export async function exportSvg(cy) {
   if (!cy) return;
   const savedViewport = { zoom: cy.zoom(), pan: { ...cy.pan() } };

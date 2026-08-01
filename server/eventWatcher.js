@@ -87,13 +87,9 @@ function startWatcher(host) {
   });
 
   child.on('exit', () => {
-    // Identity check, not just a lookup by id: an edit through Settings is a removeHost +
-    // addHost pair, so by the time a dead stream's backoff elapses the map may hold a *new*
-    // state object (new child, new config) under the same id. Reviving this watcher against
-    // that entry would leave two `docker events` streams running for one host - every event
-    // inserted, published and alerted on twice - with the newer child orphaned where no
-    // removeHost/stop can ever kill it. The pending timer is tracked on the state for the
-    // same reason, so removeHost can cancel a restart that hasn't fired yet.
+    // Identity check, not a lookup by id: an edit through Settings is a removeHost + addHost
+    // pair, so a dead stream's backoff could revive against a *new* state object under the same
+    // id, leaving two `docker events` streams running for one host. See CLAUDE.md.
     if (watchers.get(host.id) !== state || state.stopped) return;
     if (state.healthyTimer) clearTimeout(state.healthyTimer);
     const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);

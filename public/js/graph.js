@@ -5,31 +5,21 @@ import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout
 import { loadCollapsedGroups, saveCollapsedGroups, saveNodePosition, saveViewport } from './graph/persistence.js';
 
 // The live cytoscape instance lifecycle: creating it, wiring its events, diffing poll-driven
-// updates into it, blast-radius/filter fading, and the PNG exporter (which screenshots the live
-// DOM, unlike graph/svgExport.js's hand-drawn vector pipeline). Element-building
-// (graph/elements.js), stylesheet/colors (graph/style.js), localStorage persistence
-// (graph/persistence.js), and dagre layout/overlap resolution (graph/layout.js) all live next
-// door - this file is what actually owns a `cy` instance.
+// updates into it, blast-radius/filter fading, and the PNG exporter. Element-building, styling,
+// persistence and layout live in graph/*.js - this file is what actually owns a `cy` instance.
 
 let htmlLabelRegistered = false;
 let expandCollapseRegistered = false;
 
-// Updates an existing cytoscape instance in place instead of recreating it, so pan/zoom set by
-// the user survives the next poll's refresh. Layout only re-runs when the set of nodes/edges
-// actually changed, in which case runLayout re-applies any saved (dragged) positions and
-// restores the saved camera - or fits, only if there's no saved camera yet for this host.
-// Pure data/class updates (status text, selection) never touch the viewport at all.
+// Updates an existing cytoscape instance in place instead of recreating it, so the user's pan/zoom
+// survives the next poll's refresh. Layout only re-runs when nodes/edges actually changed, in
+// which case runLayout re-applies saved positions/camera, or fits with no saved camera yet.
 export function updateGraph(cy, elements, hostId) {
   cy.scratch('_odw_latestElements', elements);
 
-  // cytoscape-expand-collapse physically removes a collapsed group's children from the graph
-  // (stashing them internally to restore on expand) - this diff must never try to add them back
-  // in, or it'd corrupt the plugin's bookkeeping and silently un-collapse the group. An earlier
-  // version briefly expanded/re-collapsed every poll to keep their data fresh, but that visibly
-  // flickered the collapsed box (and, with node-html-label's own async DOM sync, the metric
-  // values inside it) every 5s. Simpler and flicker-free: just skip them entirely while hidden -
-  // expandcollapse.afterexpand re-syncs their data from the cache above the moment the group is
-  // actually opened, so nothing gets rendered - or re-rendered - while nobody's looking at it.
+  // cytoscape-expand-collapse physically removes a collapsed group's children from the graph, so
+  // this diff must never add them back in or it'd corrupt the plugin's bookkeeping and silently
+  // un-collapse the group. Skipped entirely while hidden; afterexpand re-syncs them. See CLAUDE.md.
   const collapsedIds = new Set(cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()));
   const hiddenIds = new Set();
   if (collapsedIds.size) {
@@ -61,9 +51,8 @@ export function updateGraph(cy, elements, hostId) {
     if (existing && existing.length) {
       existing.data(el.data);
       // buildElements has no notion of collapse state, so el.classes for a collapsed group is
-      // always just 'group' - applying that as-is would strip the plugin's own
-      // cy-expand-collapse-collapsed-node marker class every poll and desync its bookkeeping
-      // from what's actually rendered (the group silently pops back open on the next poll).
+      // always just 'group' - applying it as-is would strip the plugin's own marker class every
+      // poll, desyncing its bookkeeping (the group silently pops back open on the next poll).
       const classes = collapsedIds.has(el.data.id) ? `${el.classes || ''} cy-expand-collapse-collapsed-node` : el.classes || '';
       existing.classes(classes);
     } else {
@@ -77,18 +66,14 @@ export function updateGraph(cy, elements, hostId) {
   }
 
   // .data(el.data) above merges rather than replaces, so an existing node's compact flag
-  // survives a poll refresh untouched - but a node that's brand new this poll (or one just
-  // revealed by expanding a group) starts with no compact flag at all, which would render it
-  // in full mode regardless of the current zoom until the next actual zoom/pan.
+  // survives a poll refresh - but a brand-new node (or one just revealed by expanding a group)
+  // starts with none, rendering full-mode regardless of zoom until the next actual zoom/pan.
   updateCompactFlag(cy);
 }
 
-// Walks depends_on edges transitively from the selected node in one direction. 'target' follows
-// edges forward (source -> target, i.e. "what this node depends on" - the chain it needs healthy
-// to function itself). 'source' follows them backward (i.e. everything that depends on this
-// node, directly or transitively - what breaks if it does). Returns both the reached node ids
-// and the specific edges used to reach them, so only the actual dependency path gets tinted -
-// not every edge that happens to connect two nodes that both end up somewhere in the set.
+// Walks depends_on edges transitively from the selected node. 'target' follows forward (what
+// this node depends on); 'source' follows backward (what breaks if it dies). Returns both the
+// reached node ids and the specific edges used, so only the actual dependency path gets tinted.
 function traverseDependsOn(cy, startId, followField) {
   const fromField = followField === 'target' ? 'source' : 'target';
   const edges = cy.edges('.edge-depends-on');
@@ -111,9 +96,8 @@ function traverseDependsOn(cy, startId, followField) {
 }
 
 // Dims everything outside the given selection/filter so the surrounding topology is easier to
-// read. filterText (if non-empty) takes priority over selectedId - typing a filter and having a
-// node selected at the same time would otherwise fight over what "faded" means. Group boxes are
-// never faded so the project outline stays legible either way.
+// read. filterText takes priority over selectedId - typing a filter while a node is selected
+// would otherwise fight over what "faded" means. Group boxes are never faded to stay legible.
 export function applyFading(cy, { selectedId, filterText } = {}) {
   if (!cy) return;
   cy.elements().removeClass('faded blast-upstream blast-downstream');
@@ -154,20 +138,18 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
     }
   }
 
-  // cytoscape-node-html-label renders its overlay from node data(), not from cytoscape's own
-  // style/class system, so the .faded class above never reaches the HTML label (name, icon,
-  // badges) on its own - only the canvas-drawn border and edges pick it up. Mirror it into data
-  // so the template (below) can fade the overlay to match.
+  // cytoscape-node-html-label renders its overlay from node data(), not cytoscape's style/class
+  // system, so .faded above never reaches the HTML label on its own - only canvas-drawn border
+  // and edges pick it up. Mirror it into data so the template can fade the overlay to match.
   cy.nodes().forEach((n) => {
     const faded = n.hasClass('faded');
     if (n.data('faded') !== faded) n.data('faded', faded);
   });
 }
 
-// cy.png() only rasterizes cytoscape's own <canvas> layer - it has no way to see the
-// node-html-label plugin's DOM overlay, which is what actually renders everything inside
-// a node box (name, icon, CPU/RAM bars, badges). html2canvas screenshots the real on-screen
-// DOM instead, canvas included, so the export matches what's actually visible.
+// cy.png() only rasterizes cytoscape's own <canvas>, not the node-html-label plugin's DOM
+// overlay that renders everything inside a node box. html2canvas screenshots the real on-screen
+// DOM instead, canvas included. See CLAUDE.md.
 const EXPORT_SCALE = 2;
 
 export async function exportPng(cy) {
@@ -181,27 +163,15 @@ export async function exportPng(cy) {
   const savedWidth = container.style.width;
   const savedHeight = container.style.height;
 
-  // html2canvas doesn't re-render cytoscape's <canvas> - it just copies its existing bitmap.
-  // On a standard (non-Retina) display that bitmap is only CSS-pixel resolution, so asking
-  // html2canvas for a higher `scale` was just stretching an already-low-res source, which reads
-  // as blurry. Temporarily rendering into a container EXPORT_SCALE times larger gives cytoscape
-  // a proportionally bigger canvas backing store (real pixels, not interpolated ones) to draw
-  // into - the node-html-label overlay scales up right along with it since its own transform
-  // tracks cytoscape's zoom, so text stays crisp too.
-  //
-  // Scaling the container size, zoom, AND pan all by the same EXPORT_SCALE is a uniform scale-up
-  // of the whole rendered coordinate system: renderedX = graphX * zoom + pan.x, so multiplying
-  // zoom/pan/container by the same factor leaves exactly the same graph-space area framed (the
-  // same crop, nothing added or cut off) - just with EXPORT_SCALE times as many real pixels to
-  // draw it into.
+  // html2canvas just copies cytoscape's existing (CSS-pixel-resolution) canvas bitmap, so asking
+  // for a higher `scale` merely stretches an already-low-res source. Instead, render into a
+  // container EXPORT_SCALE times larger for a proportionally bigger real backing store - see CLAUDE.md.
   const rect = container.getBoundingClientRect();
   container.style.width = `${rect.width * EXPORT_SCALE}px`;
   container.style.height = `${rect.height * EXPORT_SCALE}px`;
-  // Setting style.width/height doesn't take effect synchronously - the browser can defer layout
-  // until the next paint, so calling cy.resize() right away risks it reading the container's OLD
-  // size. Reading offsetHeight forces an immediate layout flush, so resize() sees the real new
-  // size and actually reallocates cytoscape's canvas at it (not just stretch the old bitmap via
-  // CSS, which is what was producing the blur in the first place).
+  // Setting style.width/height doesn't take effect synchronously, so calling cy.resize() right
+  // away risks it reading the container's OLD size. Reading offsetHeight forces an immediate
+  // layout flush so resize() sees the real new size and reallocates cytoscape's canvas at it.
   void container.offsetHeight;
   cy.resize();
   cy.viewport({
@@ -247,11 +217,9 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
     expandCollapseRegistered = true;
   }
   if (mode === 'graph' && typeof cy.expandCollapse === 'function') {
-    // fisheye off: it distorts sibling node positions during the collapse/expand animation,
-    // which fights with the dragged/saved positions this view otherwise goes out of its way to
-    // preserve. undoable off: skips requiring the separate undo-redo extension this app doesn't
-    // vendor. cueEnabled draws the click-to-toggle +/- affordance directly on each group box -
-    // that's the only interaction needed; no extra button click is required for the common case.
+    // fisheye off: distorts sibling positions during collapse/expand, fighting the dragged/saved
+    // positions this view preserves. undoable off: skips the undo-redo extension this app doesn't
+    // vendor. cueEnabled draws the click-to-toggle +/- affordance directly on each group box.
     const expandCollapseApi = cy.expandCollapse({
       layoutBy: null,
       fisheye: false,
@@ -284,10 +252,9 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
       // whatever the current zoom already says the rest of the graph should look like.
       updateCompactFlag(cy);
 
-      // A collapsed group is a small box, easy to drag right up against a neighbor without
-      // tripping the drag-time overlap check (that only guards individual node drops, not the
-      // much bigger box a group turns back into on expand). Push the whole just-reopened group
-      // - as a unit, so its own internal layout stays intact - clear of whatever it now overlaps.
+      // A collapsed group is a small box, easy to drag against a neighbor without tripping the
+      // drag-time overlap check (which only guards individual node drops, not the much bigger
+      // box a group turns back into on expand). Push the reopened group clear as a unit.
       resolveNodeOverlap(evt.target);
     });
 
@@ -300,9 +267,8 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
   }
 
   // Resolved on drop rather than continuously during 'drag': collision-checking every
-  // intermediate mouse position would block the node against anything its path happened to
-  // cross, even when the actual drop target is clear - it'd feel like getting stuck on
-  // furniture instead of just not being able to overlap once released.
+  // intermediate mouse position would block the node against anything its path crossed, even
+  // when the drop target is clear - feeling like getting stuck on furniture, not just refused overlap.
   cy.on('dragfree', 'node', (evt) => {
     const node = evt.target;
     resolveNodeOverlap(node);
