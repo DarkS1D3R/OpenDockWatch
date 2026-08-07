@@ -1302,10 +1302,33 @@ table.containers td:nth-child(7) {
   color: var(--danger);
   white-space: nowrap;
 }
-.filter-count-text {
+.search-hits-box {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
+}
+.search-hits-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 2px 3px;
+  line-height: 1;
+}
+.search-hits-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.search-hits-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.search-hits-count {
+  min-width: 44px;
+  text-align: center;
 }
 .log-viewer-pane {
   height: 320px;
@@ -1418,6 +1441,11 @@ table.containers td:nth-child(7) {
   color: #1a1305;
   border-radius: 2px;
   padding: 0 1px;
+}
+.search-active-line {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: rgba(88, 166, 255, 0.12);
 }
 
 .log-view {

@@ -43,6 +43,9 @@ export default {
       // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
       // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
+      // Which matching line the search-hits box is currently parked on - a line index into
+      // filteredLines, not a byte/char offset, since navigation jumps line to line (see activeHitIndex).
+      activeMatchIndex: 0,
     };
   },
   computed: {
@@ -70,11 +73,32 @@ export default {
         testRegex: this.testRegex,
       });
     },
+    searchActive() {
+      return !!this.filter.trim() && !this.regexError;
+    },
+    // Self-heals activeMatchIndex against a filteredLines list that shrank out from under it
+    // (level toggle, or the oldest matching line aging out past MAX_LOG_LINES) without a watcher.
+    activeHitIndex() {
+      if (!this.filteredLines.length) return -1;
+      return Math.min(this.activeMatchIndex, this.filteredLines.length - 1);
+    },
   },
   created() {
     this._stream = null;
     this._programmatic = false;
     this._syncRaf = null;
+  },
+  watch: {
+    // A new search term (or flipping regex mode) makes the old activeMatchIndex mean a different
+    // line, so it jumps back to the first hit rather than pointing at an unrelated match.
+    filter() {
+      this.activeMatchIndex = 0;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    regexMode() {
+      this.activeMatchIndex = 0;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
   },
   mounted() {
     this.startStream();
@@ -200,6 +224,34 @@ export default {
         this._programmatic = false;
       });
     },
+    nextMatch() {
+      if (!this.filteredLines.length) return;
+      this.activeMatchIndex = (this.activeHitIndex + 1) % this.filteredLines.length;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    prevMatch() {
+      if (!this.filteredLines.length) return;
+      this.activeMatchIndex = (this.activeHitIndex - 1 + this.filteredLines.length) % this.filteredLines.length;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    // Line-granularity, not per-occurrence: filteredLines' divs are the only stable scroll targets,
+    // and centering on the matching line is enough to read which term hit without indexing marks.
+    scrollToActiveMatch() {
+      const el = this.$refs.logView;
+      const child = el && this.activeHitIndex >= 0 ? el.children[this.activeHitIndex] : null;
+      if (!child) return;
+      this._programmatic = true;
+      child.scrollIntoView({ block: 'center' });
+      requestAnimationFrame(() => {
+        this._programmatic = false;
+      });
+    },
+    onFilterKeydown(e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (e.shiftKey) this.prevMatch();
+      else this.nextMatch();
+    },
     scrollToBottom() {
       this.atBottom = true;
       const el = this.$refs.logView;
@@ -265,6 +317,7 @@ export default {
               <input
                 type="text"
                 v-model="filter"
+                @keydown="onFilterKeydown"
                 :placeholder="regexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
                 :class="{ 'filter-invalid': regexError }"
               />
@@ -279,7 +332,11 @@ export default {
               .*
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
-            <span v-else-if="filter" class="filter-count-text">{{ filteredLines.length }} / {{ lines.length }}</span>
+            <div v-else-if="searchActive" class="search-hits-box">
+              <button class="search-hits-btn" @click="prevMatch" :disabled="!filteredLines.length" title="Previous match (Shift+Enter)">▲</button>
+              <span class="search-hits-count">{{ filteredLines.length ? activeHitIndex + 1 : 0 }} / {{ filteredLines.length }}</span>
+              <button class="search-hits-btn" @click="nextMatch" :disabled="!filteredLines.length" title="Next match (Enter)">▼</button>
+            </div>
           </div>
           <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
             <option :value="100">Last 100 lines</option>
@@ -335,7 +392,7 @@ export default {
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="(line, idx) in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && idx === activeHitIndex }" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
     </div>
