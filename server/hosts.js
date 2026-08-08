@@ -42,13 +42,17 @@ function isValidHostId(id) {
 
 // A blank dockerHost means "local socket", which is always valid - only a non-blank value needs
 // to actually be a well-formed ssh:// URL (the only remote transport the docker CLI supports here).
+// The leading-dash refusal is argv-injection defence, same reasoning as index.js's CONTAINER_ID_RE.
 function isValidDockerHostUrl(url) {
   if (!url) return true;
+  let parsed;
   try {
-    return new URL(url).protocol === 'ssh:';
+    parsed = new URL(url);
   } catch {
     return false;
   }
+  if (parsed.protocol !== 'ssh:' || !parsed.hostname) return false;
+  return !parsed.hostname.startsWith('-') && !parsed.username.startsWith('-');
 }
 
 // Two hosts both pointing at the local socket would just monitor the same daemon twice under

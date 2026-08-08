@@ -461,6 +461,20 @@ async function getContainerInspect(host, id) {
   };
 }
 
+// Config.Env entries are "KEY=value" and routinely hold DB passwords and API keys. Masks the
+// value while keeping the key, so a read-only viewer still sees which variables a container has
+// without the endpoint handing out every secret on every host. An empty value stays visibly empty.
+const ENV_MASK = '••••••';
+
+function maskEnvValues(env) {
+  return (env || []).map((entry) => {
+    const idx = entry.indexOf('=');
+    if (idx === -1) return entry;
+    const value = entry.slice(idx + 1);
+    return `${entry.slice(0, idx)}=${value ? ENV_MASK : ''}`;
+  });
+}
+
 // docker stop/restart wait out a 10s SIGTERM grace before SIGKILL - the same length as
 // CMD_TIMEOUT_MS, so execFile could kill the CLI and report failure a moment before the stop
 // actually completes daemon-side. Give action commands longer so a slow stop doesn't false-report.
@@ -550,6 +564,7 @@ module.exports = {
   getDiskUsageImages,
   parseDiskUsageImages,
   getContainerInspect,
+  maskEnvValues,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,

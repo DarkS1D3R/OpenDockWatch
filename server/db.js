@@ -238,8 +238,18 @@ const stmts = {
   ping: db.prepare(`SELECT 1`),
 };
 
-function insertContainerMetric(sample) {
-  stmts.insertContainerMetric.run(sample);
+// One transaction for the whole poll, not one implicit commit per row. WAL mode still runs at
+// synchronous=FULL, so per-row commits meant one fsync per container per 5s - and better-sqlite3
+// is synchronous, so on a slow bind-mounted volume that lands straight on the event loop.
+const insertContainerMetricsTx = db.transaction((samples) => {
+  for (const sample of samples) stmts.insertContainerMetric.run(sample);
+});
+
+function insertContainerMetrics(samples) {
+  // better-sqlite3 would happily run an empty transaction; skipping it avoids a pointless commit
+  // on a host whose containers are all stopped, which is every poll for an idle host.
+  if (!samples.length) return;
+  insertContainerMetricsTx(samples);
 }
 
 function insertHostMetric(sample) {
@@ -389,7 +399,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
 
 module.exports = {
   client: db,
-  insertContainerMetric,
+  insertContainerMetrics,
   insertHostMetric,
   insertEvent,
   insertAuditLog,

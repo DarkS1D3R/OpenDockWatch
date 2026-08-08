@@ -2,7 +2,7 @@ import { MAX_LOG_LINES } from '../constants.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs } from '../lib/logSync.js';
-import { decorateLines, selectLines } from '../lib/logLines.js';
+import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
@@ -43,9 +43,10 @@ export default {
       // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
       // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
-      // Which matching line the search-hits box is currently parked on - a line index into
-      // filteredLines, not a byte/char offset, since navigation jumps line to line (see activeHitIndex).
-      activeMatchIndex: 0,
+      // Which matching line the search-hits box is parked on, held as that line's id rather than
+      // its position - the buffer trims from the front while tailing, so a position stops meaning
+      // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
+      activeMatchId: null,
     };
   },
   computed: {
@@ -76,11 +77,11 @@ export default {
     searchActive() {
       return !!this.filter.trim() && !this.regexError;
     },
-    // Self-heals activeMatchIndex against a filteredLines list that shrank out from under it
-    // (level toggle, or the oldest matching line aging out past MAX_LOG_LINES) without a watcher.
+    // Resolves the id back to a position on every render, so the highlight follows its line as the
+    // list shifts underneath it (append, trim, level toggle) instead of staying put while the
+    // lines move past. Computed, so the lookup runs once per render pass and not once per line.
     activeHitIndex() {
-      if (!this.filteredLines.length) return -1;
-      return Math.min(this.activeMatchIndex, this.filteredLines.length - 1);
+      return hitIndexFor(this.filteredLines, this.activeMatchId);
     },
   },
   created() {
@@ -89,15 +90,13 @@ export default {
     this._syncRaf = null;
   },
   watch: {
-    // A new search term (or flipping regex mode) makes the old activeMatchIndex mean a different
-    // line, so it jumps back to the first hit rather than pointing at an unrelated match.
+    // A new search term (or flipping regex mode) is a new hit list, so the cursor goes back to the
+    // first of them rather than staying on a line that may not even match any more.
     filter() {
-      this.activeMatchIndex = 0;
-      this.$nextTick(() => this.scrollToActiveMatch());
+      this.resetMatchCursor();
     },
     regexMode() {
-      this.activeMatchIndex = 0;
-      this.$nextTick(() => this.scrollToActiveMatch());
+      this.resetMatchCursor();
     },
   },
   mounted() {
@@ -125,6 +124,9 @@ export default {
       if (this._stream) this._stream.stop();
       this.lines = [];
       this.atBottom = true;
+      // logStream restarts line ids from 0 for a new source, so a cursor held across one would
+      // point at whatever unrelated line inherits that id. Same reason in onReset below.
+      this.activeMatchId = null;
       // A fresh stream is never suspended - the flag would otherwise survive from the stream this
       // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
       this.suspended = false;
@@ -139,6 +141,7 @@ export default {
         onReset: () => {
           this.lines = [];
           this.atBottom = true;
+          this.activeMatchId = null;
         },
         onSuspendChange: (suspended) => {
           this.suspended = suspended;
@@ -224,14 +227,20 @@ export default {
         this._programmatic = false;
       });
     },
-    nextMatch() {
-      if (!this.filteredLines.length) return;
-      this.activeMatchIndex = (this.activeHitIndex + 1) % this.filteredLines.length;
+    resetMatchCursor() {
+      this.activeMatchId = null;
       this.$nextTick(() => this.scrollToActiveMatch());
     },
+    nextMatch() {
+      this.moveMatch(1);
+    },
     prevMatch() {
-      if (!this.filteredLines.length) return;
-      this.activeMatchIndex = (this.activeHitIndex - 1 + this.filteredLines.length) % this.filteredLines.length;
+      this.moveMatch(-1);
+    },
+    moveMatch(delta) {
+      const id = stepHitId(this.filteredLines, this.activeMatchId, delta);
+      if (id == null) return;
+      this.activeMatchId = id;
       this.$nextTick(() => this.scrollToActiveMatch());
     },
     // Line-granularity, not per-occurrence: filteredLines' divs are the only stable scroll targets,

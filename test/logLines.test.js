@@ -106,3 +106,72 @@ test('selectLines', async (t) => {
     assert.equal(logLines.selectLines(sample()).length, 4);
   });
 });
+
+// The Log Viewer's search cursor. These exist because the obvious implementation - a positional
+// index - is silently wrong in the one state the pane spends most of its life in: tailing at
+// MAX_LOG_LINES, where every appended line drops one off the front and shifts every index by one.
+test('hitIndexFor', async (t) => {
+  const hits = (...ids) => ids.map((id) => ({ id }));
+
+  await t.test('a null cursor means the first hit', () => {
+    assert.equal(logLines.hitIndexFor(hits(10, 11, 12), null), 0);
+    assert.equal(logLines.hitIndexFor(hits(10, 11, 12), undefined), 0);
+  });
+
+  await t.test('returns -1 when there are no hits at all', () => {
+    assert.equal(logLines.hitIndexFor([], null), -1);
+    assert.equal(logLines.hitIndexFor([], 11), -1);
+  });
+
+  await t.test('finds the selected line by id', () => {
+    assert.equal(logLines.hitIndexFor(hits(10, 11, 12), 12), 2);
+  });
+
+  // The regression this whole change is about: with a positional cursor, trimming the front of the
+  // buffer left the highlight on a different line than the one the user parked on, with no user
+  // action and no visible cause. By id it follows its line to the new position instead.
+  await t.test('follows its line when older lines are trimmed off the front', () => {
+    const before = hits(10, 11, 12, 13);
+    assert.equal(logLines.hitIndexFor(before, 13), 3);
+    const afterTrim = hits(12, 13, 14, 15);
+    assert.equal(logLines.hitIndexFor(afterTrim, 13), 1, 'cursor did not follow its line through a trim');
+  });
+
+  await t.test('falls back to the first hit when the selected line is gone entirely', () => {
+    assert.equal(logLines.hitIndexFor(hits(20, 21), 11), 0);
+  });
+});
+
+test('stepHitId', async (t) => {
+  const hits = (...ids) => ids.map((id) => ({ id }));
+
+  await t.test('steps forward and back from the current line', () => {
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), 11, 1), 12);
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), 11, -1), 10);
+  });
+
+  await t.test('wraps at both ends', () => {
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), 12, 1), 10);
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), 10, -1), 12);
+  });
+
+  await t.test('steps off the implicit first hit when nothing is selected yet', () => {
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), null, 1), 11);
+    assert.equal(logLines.stepHitId(hits(10, 11, 12), null, -1), 12);
+  });
+
+  await t.test('returns null with no hits to move between', () => {
+    assert.equal(logLines.stepHitId([], null, 1), null);
+    assert.equal(logLines.stepHitId([], 11, -1), null);
+  });
+
+  // A trim between rendering the hits box and pressing Enter must not step from a stale position.
+  await t.test('steps from where the vanished line fell back to, not from a stale index', () => {
+    assert.equal(logLines.stepHitId(hits(20, 21, 22), 11, 1), 21);
+  });
+
+  await t.test('a single hit steps to itself rather than off the end', () => {
+    assert.equal(logLines.stepHitId(hits(10), 10, 1), 10);
+    assert.equal(logLines.stepHitId(hits(10), 10, -1), 10);
+  });
+});

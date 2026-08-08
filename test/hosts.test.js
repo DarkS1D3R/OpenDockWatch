@@ -43,6 +43,19 @@ test('isValidDockerHostUrl', async (t) => {
     assert.equal(isValidDockerHostUrl('not a url'), false);
     assert.equal(isValidDockerHostUrl('ssh//missing-colon'), false);
   });
+
+  // This value ends up as a positional argv entry for the system `ssh` the docker CLI shells out
+  // to, so a leading dash is read as an option (-oProxyCommand=...) rather than a host to connect
+  // to. Admin-only route, but that's a privilege boundary worth keeping, not one worth spending.
+  await t.test('rejects a host or user starting with a dash (ssh argv injection)', () => {
+    assert.equal(isValidDockerHostUrl('ssh://-oProxyCommand=touch+pwned'), false);
+    assert.equal(isValidDockerHostUrl('ssh://user@-oProxyCommand=touch+pwned'), false);
+    assert.equal(isValidDockerHostUrl('ssh://-oProxyCommand=x@prod.example.com'), false);
+  });
+
+  await t.test('rejects an ssh URL with no host at all', () => {
+    assert.equal(isValidDockerHostUrl('ssh://'), false);
+  });
 });
 
 test('hasLocalHost', async (t) => {

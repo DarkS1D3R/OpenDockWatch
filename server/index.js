@@ -3,6 +3,7 @@
 // structured [opendockwatch] lines below.
 require('dotenv').config({ quiet: true });
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
 const rateLimit = require('express-rate-limit');
@@ -23,6 +24,7 @@ const {
   getDiskUsage,
   getDiskUsageImages,
   getContainerInspect,
+  maskEnvValues,
 } = require('./docker');
 const db = require('./db');
 const logger = require('./logger');
@@ -144,6 +146,36 @@ if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
 
+// No helmet dependency for five fixed headers. CSP is the load-bearing one: container log output
+// reaches the DOM through v-html, and the absence of 'unsafe-inline' below is what stops a crafted
+// log line's <img onerror=…> from running. See CLAUDE.md for what each escape hatch costs.
+const CSP = [
+  "default-src 'self'",
+  // 'unsafe-eval' is not optional: with no build step, Vue compiles every component's `template`
+  // string in the browser through the Function constructor, and without it the app renders blank.
+  // It does not re-enable inline scripts or event handlers, which is the part v-html needs.
+  "script-src 'self' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': CSP,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+  });
+  next();
+});
+
 app.use(express.json());
 app.use(
   session({
@@ -175,6 +207,15 @@ const loginLimiter = rateLimit({
   message: { error: 'too many login attempts, try again later' },
 });
 
+// Anything the pre-auth session held keeps its id through a login without this, so a session id
+// planted before sign-in would still be valid after it. saveUninitialized:false means there's
+// rarely a session to fixate here, but the guarantee should come from the login, not from that.
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
 app.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   try {
@@ -183,6 +224,7 @@ app.post('/login', loginLimiter, async (req, res) => {
       logger.warn('auth.failure', { user: username, ip: req.ip });
       return res.status(401).json({ error: 'invalid credentials' });
     }
+    await regenerateSession(req);
     req.session.authenticated = true;
     req.session.username = account.username;
     req.session.role = account.role;
@@ -213,14 +255,26 @@ app.get('/healthz', (req, res) => {
   res.type('text/plain').send('ok');
 });
 
+// Compares equal-length strings in constant time; a length mismatch is answered without one,
+// which leaks only the token's length. Plain !== leaks a prefix match through its return time,
+// which is worth avoiding on the one credential that travels in a URL.
+function tokenMatches(provided, expected) {
+  const a = Buffer.from(String(provided ?? ''));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // Prometheus scrapers can't do session-cookie auth, so /metrics lives outside the
-// requireAuth-protected router and is gated by a separate shared-secret token instead.
+// requireAuth-protected router and is gated by a separate shared-secret token instead. With no
+// token set the endpoint isn't published at all - see the 404 below.
 app.get('/metrics', (req, res) => {
   const token = process.env.METRICS_TOKEN;
-  if (token) {
-    const provided = req.get('authorization')?.replace(/^Bearer\s+/i, '') || req.query.token;
-    if (provided !== token) return res.status(401).send('unauthorized');
-  }
+  // Unset fails closed. This response carries every container name, compose project and usage
+  // figure across every host, so "no token configured" has to mean "not exposed" rather than
+  // "exposed to anyone who can reach the port" - a scraper sets METRICS_TOKEN, nobody else needs it.
+  if (!token) return res.status(404).type('text/plain').send('not found');
+  const provided = req.get('authorization')?.replace(/^Bearer\s+/i, '') || req.query.token;
+  if (!tokenMatches(provided, token)) return res.status(401).type('text/plain').send('unauthorized');
   res.set('Content-Type', 'text/plain; version=0.0.4');
   res.send(prometheus.render());
 });
@@ -289,10 +343,15 @@ api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
   }
 });
 
+// The viewer role means "can't change anything", not "can read every secret on every host" - and
+// Config.Env is where DB passwords and API keys live. Viewers get variable names with the values
+// masked, flagged by envMasked so the UI can say so rather than look like the values are blank.
 api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId, async (req, res) => {
   const host = req.host;
   try {
-    res.json(await getContainerInspect(host, req.params.id));
+    const inspect = await getContainerInspect(host, req.params.id);
+    if (req.session.role === 'admin') return res.json(inspect);
+    res.json({ ...inspect, env: maskEnvValues(inspect.env), envMasked: true });
   } catch (err) {
     dockerError(res, err);
   }

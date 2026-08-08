@@ -166,6 +166,7 @@ export default {
           <details class="inspect-section">
             <summary>Environment ({{ containerInspect.env.length }})</summary>
             <div class="inspect-list">
+              <div v-if="containerInspect.envMasked" class="muted small">Values hidden — environment values are visible to admin accounts only.</div>
               <div v-for="(line, i) in containerInspect.env" :key="i" class="inspect-line mono">{{ line }}</div>
               <div v-if="!containerInspect.env.length" class="muted small">None</div>
             </div>

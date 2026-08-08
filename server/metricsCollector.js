@@ -91,6 +91,11 @@ async function pollHost(host) {
     const elapsedSec = prev && prev.statsTs ? (ts - prev.statsTs) / 1000 : null;
     let cpuSum = 0;
     let memSum = 0;
+    // Collected first, then written in one transaction and only then alerted on. Inserting per
+    // container cost a commit (and an fsync) each; alerting per container mid-loop would have put
+    // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
+    const samples = [];
+    const alertSamples = [];
     for (const c of containers) {
       if (c.state !== 'running') continue;
       const s = stats[c.id];
@@ -101,7 +106,7 @@ async function pollHost(host) {
       const memPerc = parseFloat(s.memPerc) || 0;
       cpuSum += cpuPerc;
       const memUsedBytes = Math.round(parseMemUsedBytes(s.memUsage));
-      db.insertContainerMetric({
+      samples.push({
         hostId: host.id,
         containerId: c.id,
         ts,
@@ -114,7 +119,7 @@ async function pollHost(host) {
         blockWriteBytes: Math.round(s.blockWriteBytes || 0),
       });
       memSum += memUsedBytes;
-      alerts.handleSample({
+      alertSamples.push({
         hostId: host.id,
         containerId: c.id,
         containerName: c.name,
@@ -124,6 +129,9 @@ async function pollHost(host) {
         alertsDisabled: c.alertsDisabled,
       });
     }
+
+    db.insertContainerMetrics(samples);
+    for (const sample of alertSamples) alerts.handleSample(sample);
 
     // Containers that have gone away since the last poll can't dip back under threshold to
     // clear their own breach counters, so they're dropped here instead.

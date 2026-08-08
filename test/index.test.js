@@ -85,6 +85,86 @@ async function loginAs(username, password) {
   return agent;
 }
 
+// Container log output reaches the DOM through v-html, so script-src is what keeps a crafted log
+// line from becoming code - and it only helps if it's actually on every response, including the
+// static assets and the login page a browser reaches before it has a session.
+test('security headers are set on every response', async (t) => {
+  await t.test('the login page carries the CSP and the rest of the header set', async () => {
+    const res = await request(app).get('/login');
+    assert.equal(res.status, 200);
+    const csp = res.headers['content-security-policy'];
+    assert.ok(csp, 'no Content-Security-Policy header');
+    assert.match(csp, /script-src 'self'/);
+    assert.match(csp, /frame-ancestors 'none'/);
+    assert.equal(res.headers['x-content-type-options'], 'nosniff');
+    assert.equal(res.headers['x-frame-options'], 'DENY');
+    assert.equal(res.headers['referrer-policy'], 'no-referrer');
+  });
+
+  await t.test('static assets carry them too', async () => {
+    const res = await request(app).get('/assets/js/login.js');
+    assert.equal(res.status, 200);
+    assert.ok(res.headers['content-security-policy']);
+  });
+
+  // script-src carries 'unsafe-eval' (Vue's in-browser template compiler needs it) but must never
+  // carry 'unsafe-inline' - that's the directive standing between an <img onerror=…> in a log line
+  // and code execution, and it's the whole reason login.html's handler was moved to a file.
+  await t.test('script-src allows eval but never inline scripts', async () => {
+    const csp = (await request(app).get('/login')).headers['content-security-policy'];
+    const scriptSrc = csp
+      .split(';')
+      .map((d) => d.trim())
+      .find((d) => d.startsWith('script-src'));
+    assert.ok(scriptSrc, 'no script-src directive');
+    assert.equal(scriptSrc.includes("'unsafe-inline'"), false, 'script-src must not allow inline scripts');
+    // Present deliberately, and load-bearing - see CLAUDE.md. Asserted so removing it "to tighten
+    // the CSP" fails here rather than silently rendering every component blank in a browser.
+    assert.match(scriptSrc, /'unsafe-eval'/);
+  });
+
+  // login.html used to carry its submit handler in an inline <script>, which script-src blocks
+  // outright without 'unsafe-inline' - the CSP above is only honest if it really is an external file.
+  await t.test('login.html has no inline script for the CSP to block', async () => {
+    const res = await request(app).get('/login');
+    assert.equal(/<script(?![^>]*\ssrc=)/i.test(res.text), false, 'login.html still contains an inline <script>');
+    assert.match(res.text, /<script src="\/assets\/js\/login\.js">/);
+  });
+});
+
+test('GET /metrics', async (t) => {
+  const original = process.env.METRICS_TOKEN;
+  t.after(() => {
+    if (original === undefined) delete process.env.METRICS_TOKEN;
+    else process.env.METRICS_TOKEN = original;
+  });
+
+  // The response lists every container name, compose project and usage figure across every host.
+  // Unset used to mean "served to anyone who can reach the port"; it has to mean "not served".
+  await t.test('404s when no METRICS_TOKEN is configured, rather than serving unauthenticated', async () => {
+    delete process.env.METRICS_TOKEN;
+    const res = await request(app).get('/metrics');
+    assert.equal(res.status, 404);
+    assert.equal(res.text.includes('opendockwatch_'), false, 'metrics body leaked on the unconfigured path');
+  });
+
+  await t.test('401s on a wrong or missing token once one is configured', async () => {
+    process.env.METRICS_TOKEN = 'test-metrics-token';
+    assert.equal((await request(app).get('/metrics')).status, 401);
+    assert.equal((await request(app).get('/metrics?token=wrong')).status, 401);
+    assert.equal((await request(app).get('/metrics').set('Authorization', 'Bearer wrong')).status, 401);
+  });
+
+  await t.test('serves the exposition format for a correct token, by query or bearer header', async () => {
+    process.env.METRICS_TOKEN = 'test-metrics-token';
+    const viaQuery = await request(app).get('/metrics?token=test-metrics-token');
+    assert.equal(viaQuery.status, 200);
+    assert.match(viaQuery.text, /# TYPE opendockwatch_container_cpu_percent gauge/);
+    const viaHeader = await request(app).get('/metrics').set('Authorization', 'Bearer test-metrics-token');
+    assert.equal(viaHeader.status, 200);
+  });
+});
+
 test('GET /healthz is reachable with no session and reflects the real sqlite connection', async () => {
   const res = await request(app).get('/healthz');
   assert.equal(res.status, 200);
@@ -131,6 +211,32 @@ test('role gating over real HTTP requests', async (t) => {
 // issue any request at all, which is the "site is hung, restart the container" state. These
 // exercise the middleware directly against a throwaway app, since no real route can be made to
 // hang without a docker daemon behind it.
+// Without regenerate() the id survives the login, so a session id planted before sign-in is still
+// valid after it. Two logins on one agent is the observable form: the second must be issued a new
+// id, where an un-regenerated session would keep (and not even re-send) the first.
+test('login issues a fresh session id rather than upgrading the existing one', async () => {
+  const sidFrom = (res) => {
+    const cookies = res.headers['set-cookie'] || [];
+    const match = cookies.map((c) => /connect\.sid=([^;]+)/.exec(c)).find(Boolean);
+    return match ? match[1] : null;
+  };
+
+  const agent = request.agent(app);
+  const first = await agent.post('/login').send({ username: ADMIN_USER, password: ADMIN_PASSWORD });
+  assert.equal(first.status, 200);
+  const firstSid = sidFrom(first);
+  assert.ok(firstSid, 'first login set no session cookie');
+
+  const second = await agent.post('/login').send({ username: ADMIN_USER, password: ADMIN_PASSWORD });
+  assert.equal(second.status, 200);
+  const secondSid = sidFrom(second);
+  assert.ok(secondSid, 'second login set no session cookie - the session id was reused');
+  assert.notEqual(secondSid, firstSid);
+
+  // The regenerated session is a working one, not just a new id.
+  assert.equal((await agent.get('/api/session')).status, 200);
+});
+
 test('requestTimeout', async (t) => {
   function appWith(handler, { ms = 40, path: routePath = '/api/thing' } = {}) {
     const testApp = express();

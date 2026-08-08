@@ -43,3 +43,24 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
   }
   return out;
 }
+
+// The Log Viewer's search cursor is a line *id*, never a position. A pane tailing at
+// MAX_LOG_LINES trims from the front, so every drop shifts an index by one and it silently comes
+// to name a different line - the highlight walks the hit list on its own. See CLAUDE.md.
+export function hitIndexFor(lines, activeId) {
+  if (!lines.length) return -1;
+  if (activeId == null) return 0;
+  const i = lines.findIndex((l) => l.id === activeId);
+  // The parked-on line aged out of the buffer or was filtered away - fall back to the first hit,
+  // which is at least somewhere the user can see, rather than to whatever now sits at its index.
+  return i === -1 ? 0 : i;
+}
+
+// Steps the cursor by delta with wraparound, returning the newly selected line id (null when
+// there are no hits to move between). Reads the current position through hitIndexFor, so stepping
+// off a hit that just aged out continues from the fallback rather than from a stale index.
+export function stepHitId(lines, activeId, delta) {
+  if (!lines.length) return null;
+  const next = (hitIndexFor(lines, activeId) + delta + lines.length) % lines.length;
+  return lines[next].id;
+}
