@@ -52,6 +52,11 @@ db.exec(`
     raw_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_events_lookup ON events (host_id, container_id, ts);
+  -- getEvents filters on host_id and ts but not container_id, so the index above can only use its
+  -- leading column and SQLite sorts the host's whole retained history to answer a LIMIT 200.
+  -- This one makes it an index walk that stops at the limit. Both are kept - countRestartsSince
+  -- is per-container and still wants the first.
+  CREATE INDEX IF NOT EXISTS idx_events_host_ts ON events (host_id, ts);
 
   CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

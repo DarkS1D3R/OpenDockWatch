@@ -39,6 +39,26 @@ function parseEventLine(line, host) {
   };
 }
 
+// One event line's fan-out: persistence, live SSE push, rule engine. Deliberately never throws -
+// it runs inside a stdout 'data' handler, so anything escaping becomes an uncaughtException and
+// index.js exits on those, losing monitoring for every host over one failed sqlite write.
+function ingestEvent(event) {
+  try {
+    db.insertEvent({
+      hostId: event.hostId,
+      containerId: event.containerId,
+      containerName: event.containerName,
+      action: event.action,
+      ts: event.ts,
+      rawJson: JSON.stringify(event.raw),
+    });
+    broadcaster.publish(event.hostId, event);
+    alerts.handleEvent(event);
+  } catch (err) {
+    logger.error('events.handle.failed', { host: event.hostId, action: event.action, error: err.message });
+  }
+}
+
 function startWatcher(host) {
   const child = streamEvents(host);
   let buffer = '';
@@ -51,17 +71,7 @@ function startWatcher(host) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const event = parseEventLine(trimmed, host);
-      if (!event) continue;
-      db.insertEvent({
-        hostId: event.hostId,
-        containerId: event.containerId,
-        containerName: event.containerName,
-        action: event.action,
-        ts: event.ts,
-        rawJson: JSON.stringify(event.raw),
-      });
-      broadcaster.publish(host.id, event);
-      alerts.handleEvent(event);
+      if (event) ingestEvent(event);
     }
   });
 
@@ -133,4 +143,4 @@ function stop() {
   watchers.clear();
 }
 
-module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine };
+module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent };
