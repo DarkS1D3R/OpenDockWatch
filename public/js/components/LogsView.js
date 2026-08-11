@@ -15,10 +15,17 @@ export default {
   data() {
     return {
       search: '',
+      // 'multi': click toggles a pane open/closed, up to MAX_OPEN_LOG_PANES. 'single': one pane,
+      // click swaps which container fills it - see setViewMode/toggleOpen.
+      viewMode: 'multi',
       openIds: [],
       lastSyncTsMs: null,
       disabledSyncIds: [],
       mainId: null,
+      // The join-at timestamp handed to a pane at the moment it opens - see joinAtTsMs on LogViewer.
+      // Keyed by id and left in place after use; it's read once at that pane's mount, so a stale
+      // entry sitting here for a still-open pane has no further effect.
+      joinTsMsById: {},
       // Measured, not guessed - see updateWrapHeight.
       wrapHeightPx: 420,
       // One toggle for the whole tab rather than one per pane (LogViewer's own header has this too,
@@ -56,6 +63,7 @@ export default {
       this.lastSyncTsMs = null;
       this.disabledSyncIds = [];
       this.mainId = null;
+      this.joinTsMsById = {};
     },
     // A container that disappears from the list (removed, or filtered out by the topbar's state
     // toggle) shouldn't leave a pane stuck rendering a stream for an id no longer in it - or leave
@@ -95,6 +103,15 @@ export default {
       else delete this._panes[id];
     },
     toggleOpen(id) {
+      if (this.viewMode === 'single') {
+        // One pane, no sync partners to track - clicking the open row closes it (mirrors multi
+        // mode's toggle-off), clicking any other row just swaps the pane's container outright.
+        this.openIds = this.openIds[0] === id ? [] : [id];
+        this.disabledSyncIds = [];
+        this.mainId = null;
+        this.joinTsMsById = {};
+        return;
+      }
       if (this.openIds.includes(id)) {
         this.openIds = this.openIds.filter((openId) => openId !== id);
         this.disabledSyncIds = this.disabledSyncIds.filter((x) => x !== id);
@@ -103,15 +120,23 @@ export default {
       }
       if (this.atCap) return;
       this.openIds = [...this.openIds, id];
-      // Slot the new pane into the group's current timeframe instead of at its own live tail -
-      // wait a tick for it to mount and load its first burst of lines before moving it.
+      // Slot the new pane into the group's current timeframe instead of at its own live tail - the
+      // pane itself applies this once its first real burst of lines has loaded (joinAtTsMs prop).
       if (this.lastSyncTsMs != null) {
-        const tsMs = this.lastSyncTsMs;
-        this.$nextTick(() => {
-          const pane = this._panes[id];
-          if (pane) pane.scrollToTimestamp(tsMs);
-        });
+        this.joinTsMsById = { ...this.joinTsMsById, [id]: this.lastSyncTsMs };
       }
+    },
+    setViewMode(mode) {
+      if (this.viewMode === mode) return;
+      this.viewMode = mode;
+      if (mode !== 'single' || this.openIds.length <= 1) return;
+      // Collapsing multiple panes down to one: keep the main pane if there was one, else whichever
+      // was opened most recently - both read as "the one I was just looking at".
+      const keepId = this.mainId != null && this.openIds.includes(this.mainId) ? this.mainId : this.openIds[this.openIds.length - 1];
+      this.openIds = [keepId];
+      this.disabledSyncIds = [];
+      this.mainId = null;
+      this.joinTsMsById = {};
     },
     // The one place sync actually moves a pane. Gated on mainId first: once a pane is main, only
     // its scrolling drives the group - others' scroll-sync events still arrive but are ignored.
@@ -160,6 +185,20 @@ export default {
   template: `
     <div class="logs-tab-wrap" ref="wrap" :style="{ height: wrapHeightPx + 'px' }">
       <div class="logs-tab-list">
+        <div class="logs-tab-viewmode">
+          <button
+            class="small-btn"
+            :class="{ active: viewMode === 'single' }"
+            @click="setViewMode('single')"
+            title="One pane - click a container to swap it in"
+          >Single</button>
+          <button
+            class="small-btn"
+            :class="{ active: viewMode === 'multi' }"
+            @click="setViewMode('multi')"
+            :title="'Up to ' + maxPanes + ' panes side by side, synced by timestamp'"
+          >Multi</button>
+        </div>
         <button
           class="small-btn logs-tab-wrap-toggle"
           :class="{ active: wrapLines }"
@@ -177,7 +216,7 @@ export default {
             :key="c.id"
             class="logs-tab-row row-clickable"
             :class="{ 'row-selected': openIds.includes(c.id) }"
-            :title="atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
+            :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
             @click="toggleOpen(c.id)"
           >
             <span class="logs-tab-row-icon" v-html="stateIcon(c.state)"></span>
@@ -198,6 +237,7 @@ export default {
             :multi-pane="openContainers.length > 1"
             :sync-enabled="!disabledSyncIds.includes(c.id)"
             :is-main="mainId === c.id"
+            :join-at-ts-ms="joinTsMsById[c.id] ?? null"
             :wrap="wrapLines"
             @scroll-sync="onScrollSync"
             @toggle-sync="toggleSync(c.id)"
@@ -205,7 +245,7 @@ export default {
             @close="toggleOpen(c.id)"
           ></log-viewer>
         </div>
-        <div v-else class="logs-tab-empty muted">Select up to {{ maxPanes }} containers on the left to view their logs side by side.</div>
+        <div v-else class="logs-tab-empty muted">{{ viewMode === 'single' ? 'Select a container on the left to view its logs.' : 'Select up to ' + maxPanes + ' containers on the left to view their logs side by side.' }}</div>
       </div>
     </div>
   `,

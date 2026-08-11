@@ -1621,6 +1621,14 @@ table.containers td:nth-child(7) {
   padding: 10px;
   overflow-y: auto;
 }
+.logs-tab-viewmode {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.logs-tab-viewmode .small-btn {
+  flex: 1;
+}
 .logs-tab-search {
   background: var(--bg);
   border: 1px solid var(--border);

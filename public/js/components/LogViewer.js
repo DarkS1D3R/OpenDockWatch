@@ -23,6 +23,10 @@ export default {
     // this via its own header toggle (v-model); embedded panes never render that toggle - LogsView
     // has one wrap toggle for the whole tab and feeds this prop straight down instead.
     wrap: { type: Boolean, default: true },
+    // A timestamp to scroll to once this pane's first real burst of lines has loaded, instead of
+    // live-tailing at the bottom - LogsView sets this when opening a pane into an already-scrolled
+    // group. Read once at mount, in startStream; a later prop change doesn't re-trigger it.
+    joinAtTsMs: { type: Number, default: null },
   },
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
@@ -88,6 +92,7 @@ export default {
     this._stream = null;
     this._programmatic = false;
     this._syncRaf = null;
+    this._pendingJoinTsMs = null;
   },
   watch: {
     // A new search term (or flipping regex mode) is a new hit list, so the cursor goes back to the
@@ -130,6 +135,7 @@ export default {
       // A fresh stream is never suspended - the flag would otherwise survive from the stream this
       // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
       this.suspended = false;
+      this._pendingJoinTsMs = this.joinAtTsMs;
       this._stream = createLogStream({
         url: logsUrl(this.hostId, this.containerId, this.tail),
         onFlush: (lines) => this.appendLines(lines),
@@ -153,6 +159,15 @@ export default {
       for (const line of decorateLines(lines)) this.lines.push(line);
       if (this.lines.length > MAX_LOG_LINES) {
         this.lines.splice(0, this.lines.length - MAX_LOG_LINES);
+      }
+      // First real content since a pending join was requested - honor it instead of the normal
+      // tail-to-bottom behavior below, then never again for this stream (one-shot).
+      if (this._pendingJoinTsMs != null) {
+        const tsMs = this._pendingJoinTsMs;
+        this._pendingJoinTsMs = null;
+        this.atBottom = false;
+        this.$nextTick(() => this.scrollToTimestamp(tsMs));
+        return;
       }
       if (this.atBottom) {
         this.$nextTick(() => {
