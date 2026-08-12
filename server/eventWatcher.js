@@ -39,6 +39,26 @@ function parseEventLine(line, host) {
   };
 }
 
+// One event line's fan-out: persistence, live SSE push, rule engine. Deliberately never throws -
+// it runs inside a stdout 'data' handler, so anything escaping becomes an uncaughtException and
+// index.js exits on those, losing monitoring for every host over one failed sqlite write.
+function ingestEvent(event) {
+  try {
+    db.insertEvent({
+      hostId: event.hostId,
+      containerId: event.containerId,
+      containerName: event.containerName,
+      action: event.action,
+      ts: event.ts,
+      rawJson: JSON.stringify(event.raw),
+    });
+    broadcaster.publish(event.hostId, event);
+    alerts.handleEvent(event);
+  } catch (err) {
+    logger.error('events.handle.failed', { host: event.hostId, action: event.action, error: err.message });
+  }
+}
+
 function startWatcher(host) {
   const child = streamEvents(host);
   let buffer = '';
@@ -51,17 +71,7 @@ function startWatcher(host) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const event = parseEventLine(trimmed, host);
-      if (!event) continue;
-      db.insertEvent({
-        hostId: event.hostId,
-        containerId: event.containerId,
-        containerName: event.containerName,
-        action: event.action,
-        ts: event.ts,
-        rawJson: JSON.stringify(event.raw),
-      });
-      broadcaster.publish(host.id, event);
-      alerts.handleEvent(event);
+      if (event) ingestEvent(event);
     }
   });
 
@@ -87,13 +97,9 @@ function startWatcher(host) {
   });
 
   child.on('exit', () => {
-    // Identity check, not just a lookup by id: an edit through Settings is a removeHost +
-    // addHost pair, so by the time a dead stream's backoff elapses the map may hold a *new*
-    // state object (new child, new config) under the same id. Reviving this watcher against
-    // that entry would leave two `docker events` streams running for one host - every event
-    // inserted, published and alerted on twice - with the newer child orphaned where no
-    // removeHost/stop can ever kill it. The pending timer is tracked on the state for the
-    // same reason, so removeHost can cancel a restart that hasn't fired yet.
+    // Identity check, not a lookup by id: an edit through Settings is a removeHost + addHost
+    // pair, so a dead stream's backoff could revive against a *new* state object under the same
+    // id, leaving two `docker events` streams running for one host. See CLAUDE.md.
     if (watchers.get(host.id) !== state || state.stopped) return;
     if (state.healthyTimer) clearTimeout(state.healthyTimer);
     const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);
@@ -137,4 +143,4 @@ function stop() {
   watchers.clear();
 }
 
-module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine };
+module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent };

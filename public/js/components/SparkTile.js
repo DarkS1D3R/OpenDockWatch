@@ -4,30 +4,16 @@ import { padSlots, sparkPaths, hoverPoints, axisTickIndices } from '../lib/spark
 const AXIS_TICK_COUNT = 4;
 const AXIS_TICK_COUNT_DETAILED = 8;
 // Grid divisions - how many bands the 0-30 viewBox height/0-100 width are cut into. The detailed
-// form doubles both: there's a lot more actual screen space to resolve finer gridlines into once
-// the chart is tall and full-width (host card fullscreen, or the container metrics modal) instead
-// of sharing a row with a sibling tile.
+// form doubles both: there's more screen space to resolve finer gridlines into once the chart is
+// tall and full-width (fullscreen host card, metrics modal) instead of sharing a row.
 const H_GRID_DIVISIONS = 4;
 const H_GRID_DIVISIONS_DETAILED = 8;
 const V_GRID_DIVISIONS = 10;
 const V_GRID_DIVISIONS_DETAILED = 20;
 
-// One metric tile: label/value header, an optional corner box, the sparkline SVG (a primary line
-// plus an optional lighter secondary line sharing one peak so the two sit on a common y-axis -
-// see secondaryPaths/sharedPeak), the hover crosshair + dots, an x-axis time row, and the legend.
-// `variant` drives the spark-*-<variant> class pairs defined in style.css.
-//
-// Used by HostCard for host CPU/RAM (where the secondary series is the host total behind the
-// Docker one) and by ContainerMetricsModal for one container's CPU/RAM/Net/Block (where it's the
-// tx half of an rx/tx pair). The second series is deliberately named for its *role* rather than
-// for the host - it was `hostSamples` when this only ever drew host usage, which would read as a
-// plain lie on a Net I/O chart. The corner-box props below stay host-named because they genuinely
-// are host-total-only; the modal never passes them.
-//
-// Hover is a controlled prop rather than local state: the parent owns one shared hoverIndex and
-// passes it to every tile, so hovering any graph shows the crosshair at the same x position on
-// all of them - the whole point being to let you correlate a CPU spike with what RAM (or the
-// network) was doing at that same moment.
+// One metric tile: header, optional corner box, sparkline SVG (primary + optional secondary
+// line sharing one peak), hover crosshair, x-axis, legend. Hover is a controlled prop (parent
+// owns one shared hoverIndex) so every tile's crosshair moves together. See CLAUDE.md.
 export default {
   name: 'SparkTile',
   props: {

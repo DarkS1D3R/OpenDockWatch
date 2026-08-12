@@ -1,12 +1,9 @@
 import { MAX_ACTIVITY_EVENTS } from '../constants.js';
 import { apiGetEvents, eventsStreamUrl } from '../api.js';
 
-// The Activity tab: an alerts column (search + acknowledge) and an events column (search,
-// backed by a live SSE stream). Mounted fresh (v-if, not v-show) each time the tab is opened -
-// its own mounted()/beforeUnmount() open and close the events stream, so the root no longer
-// needs to know about "entering" or "leaving" the Activity view at all. `alerts` themselves stay
-// fetched by the root every poll, since the topbar badge (openAlertsCount) needs them even when
-// this view isn't open - only the search/filter/scroll-tracking of them lives here.
+// The Activity tab: an alerts column (search + acknowledge) and an events column (SSE-backed
+// search). Mounted fresh (v-if) each time opened, so its own mounted()/beforeUnmount() own the
+// events stream. `alerts` stay fetched by the root every poll (the topbar badge needs them too).
 export default {
   name: 'ActivityView',
   props: {

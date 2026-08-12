@@ -4,14 +4,9 @@ import { logsUrl, apiGetContainerInspect } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { decorateLines } from '../lib/logLines.js';
 
-// The right-hand detail panel for one container: status/stats rows, `docker inspect` details
-// (env/mounts/labels), start/stop/restart, and the small log preview. Mounted once per selection
-// and stays mounted while switching between containers (the root's v-if only turns on/off for
-// "no container selected" vs "some container selected") - the `container.id` watcher below is
-// what notices a same-mount switch from one container to another and resets accordingly, since a
-// plain watch on the `container` prop object itself would refire every 5s poll (the root replaces
-// its whole `containers` array each poll, so the object reference changes even when the id
-// doesn't - watching the id specifically avoids restarting the stream/inspect fetch on every poll).
+// The right-hand detail panel for one container: status/stats, `docker inspect` details,
+// start/stop/restart, and the log preview. Stays mounted across container switches; the
+// `container.id` watcher (not the whole prop, which changes reference every poll) resets it.
 export default {
   name: 'ContainerDetail',
   props: {
@@ -171,6 +166,7 @@ export default {
           <details class="inspect-section">
             <summary>Environment ({{ containerInspect.env.length }})</summary>
             <div class="inspect-list">
+              <div v-if="containerInspect.envMasked" class="muted small">Values hidden — environment values are visible to admin accounts only.</div>
               <div v-for="(line, i) in containerInspect.env" :key="i" class="inspect-line mono">{{ line }}</div>
               <div v-if="!containerInspect.env.length" class="muted small">None</div>
             </div>

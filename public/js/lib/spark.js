@@ -40,11 +40,9 @@ export function sparkPaths(slots, peak) {
   return { line, area, dot: { x: last.x, y: last.y } };
 }
 
-// One point on each of a tile's two lines at the same hovered index - null fields (rather than a
-// null point) when a series has no value there, e.g. hovering an index from before the secondary
-// series started being sampled, or on a remote host with no host-total data at all. The two are
-// named by position rather than by meaning because the caller decides what they are: host total
-// behind Docker usage on the host card, tx behind rx on the modal's Net I/O chart.
+// One point on each of a tile's two lines at the same hovered index - null fields when a series
+// has no value there (before it started sampling, or a remote host with no host-total). Named by
+// position, not meaning, since the caller decides: host total behind Docker, tx behind rx, etc.
 export function hoverPoints(idx, primarySlots, secondarySlots, peak) {
   if (idx == null) return null;
   const primary = sparkPoint(primarySlots, peak, idx);
@@ -53,12 +51,9 @@ export function hoverPoints(idx, primarySlots, secondarySlots, peak) {
   return { x: (primary || secondary).x, primary, secondary };
 }
 
-// Picks up to `count` evenly-spaced indices into a padded slots array for x-axis tick labels,
-// skipping any that land on a still-null (not-yet-populated) slot and de-duping - e.g. a
-// freshly-selected host with only a few real samples would otherwise ask for several ticks that
-// all round to the same early index. Returns indices only (not labels/x-positions), so the caller
-// decides formatting and coordinate mapping - this just answers "which slots have real data to
-// label" for a given desired tick count.
+// Picks up to `count` evenly-spaced indices into a padded slots array for x-axis ticks, skipping
+// still-null slots and de-duping - a freshly-selected host would otherwise ask for several ticks
+// rounding to the same early index. Returns indices only; the caller decides formatting/mapping.
 export function axisTickIndices(slots, count) {
   const n = slots.length;
   if (!n || count < 1) return [];

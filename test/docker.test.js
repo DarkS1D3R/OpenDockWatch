@@ -12,6 +12,7 @@ const {
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
+  maskEnvValues,
 } = require('../server/docker');
 
 test('parseByteString', async (t) => {
@@ -389,5 +390,37 @@ test('parseDiskUsageImages', async (t) => {
   await t.test('returns an empty array when there are no images', () => {
     assert.deepEqual(parseDiskUsageImages({ Images: [] }), []);
     assert.deepEqual(parseDiskUsageImages({}), []);
+  });
+});
+
+test('maskEnvValues', async (t) => {
+  await t.test('keeps the variable name and hides the value', () => {
+    assert.deepEqual(maskEnvValues(['POSTGRES_PASSWORD=hunter2']), ['POSTGRES_PASSWORD=••••••']);
+  });
+
+  // A secret with an "=" in it (base64 padding, a connection string) must not leak its tail
+  // through a naive split - only the first "=" separates the name from the value.
+  await t.test('splits on the first = only, so a value containing = is fully hidden', () => {
+    assert.deepEqual(maskEnvValues(['DATABASE_URL=postgres://u:p@h/db?ssl=true']), ['DATABASE_URL=••••••']);
+    assert.deepEqual(maskEnvValues(['KEY=YWJjZA==']), ['KEY=••••••']);
+  });
+
+  await t.test('leaves a genuinely empty value visibly empty rather than faking a secret', () => {
+    assert.deepEqual(maskEnvValues(['DEBUG=']), ['DEBUG=']);
+  });
+
+  await t.test('passes through an entry with no = at all', () => {
+    assert.deepEqual(maskEnvValues(['MALFORMED']), ['MALFORMED']);
+  });
+
+  await t.test('handles a missing or empty env list', () => {
+    assert.deepEqual(maskEnvValues([]), []);
+    assert.deepEqual(maskEnvValues(undefined), []);
+  });
+
+  await t.test('never returns the original value anywhere in its output', () => {
+    const out = maskEnvValues(['A=secret-one', 'B=secret-two', 'C=']).join('\n');
+    assert.equal(out.includes('secret-one'), false);
+    assert.equal(out.includes('secret-two'), false);
   });
 });

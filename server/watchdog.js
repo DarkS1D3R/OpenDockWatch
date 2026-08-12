@@ -1,33 +1,14 @@
 const logger = require('./logger');
 
-// Recovery, not detection. The failure this exists for is the one a restart fixes and nothing
-// else does: the process is still alive, the port still accepts connections, sqlite still
-// answers - but the poll loop has stopped turning, so every view serves data frozen at whatever
-// moment it wedged. Nothing in Docker notices that on its own. Worth being explicit about why:
-// `restart: unless-stopped` reacts to the process *exiting*, and a failing HEALTHCHECK marks a
-// container unhealthy but never restarts it - Docker has no such behavior. So the only way a
-// wedged instance recovers without a human is to notice and exit on its own, which is what the
-// self-exit below does; the restart policy then does the actual restarting.
-//
-// Two independent signals:
-//
-//   staleness - how long since metricsCollector last completed a poll of any host. See the
-//     comment on lastPollCompletedTs for why this tracks the loop rather than Docker: an
-//     unreachable daemon still completes its poll, so this cannot be tripped by a monitored host
-//     being down, only by the loop genuinely having stopped.
-//
-//   event-loop lag - how far a fixed-interval timer drifts. better-sqlite3 is synchronous, so
-//     every metric write happens on the event loop; against a slow bind-mounted volume a poll
-//     cycle's writes can block it long enough to stall the HTTP server. This is diagnostic only
-//     and never triggers the exit - a one-off spike during the hourly prune is normal, and
-//     killing the process over it would be a self-inflicted outage.
+// Recovery, not detection: the process/port/sqlite are alive but the poll loop stopped turning,
+// so views serve frozen data - Docker's restart policy only reacts to the process exiting, not
+// to this, so self-exit below is the only path back. See CLAUDE.md for the two signals used.
 const LAG_SAMPLE_MS = 1000;
 const LAG_WARN_MS = 5000;
 
-// Generous on purpose. A normal cycle is POLL_MS plus however long the docker calls take (up to
-// ~30s for an SSH host that is timing out), so anything under a minute or two would be measuring
-// slowness rather than deadlock. Unhealthy is reported well before the process acts on it, so
-// there's a window to see it in /healthz and the logs before a restart happens.
+// Generous on purpose - a normal cycle is POLL_MS plus however long docker calls take (up to
+// ~30s for a timing-out SSH host), so anything under a minute or two would measure slowness, not
+// deadlock. Unhealthy is reported well before the exit, leaving a window to see it first.
 const STALE_MS = Number(process.env.WATCHDOG_STALE_MS) || 180_000;
 const EXIT_AFTER_MS = Number(process.env.WATCHDOG_EXIT_AFTER_MS) || 600_000;
 
@@ -84,10 +65,9 @@ function createWatchdog({
     }
 
     if (t - staleSince >= EXIT_AFTER_MS) {
-      // No graceful shutdown here, deliberately: whatever is wedged is very likely the same
-      // thing a graceful path would have to await, and hanging inside the recovery is the one
-      // outcome that leaves this no better than doing nothing. sqlite is in WAL mode and
-      // recovers from an abrupt exit on its own.
+      // No graceful shutdown, deliberately: whatever is wedged is likely what a graceful path
+      // would also have to await, and hanging inside recovery is worse than doing nothing.
+      // sqlite is in WAL mode and recovers from an abrupt exit on its own.
       logger.error('watchdog.restarting', { reason: state.reason, stalledForMs: Math.round(t - staleSince) });
       exit(1);
     }

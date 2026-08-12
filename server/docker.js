@@ -3,13 +3,9 @@ const { execFile, spawn } = require('child_process');
 const CMD_TIMEOUT_MS = 10_000;
 const ALLOWED_ACTIONS = new Set(['start', 'stop', 'restart']);
 
-// The one-time cost of opening an SSH connection (TCP handshake, host key check, key/agent auth)
-// can eat well into CMD_TIMEOUT_MS on a slow or distant link - the image's ssh_config.d entry
-// keeps that connection alive for 10 minutes (ControlPersist) so it's only paid occasionally, but
-// the call that pays it needs real headroom or it reads as the host being down. checkHost is
-// metricsCollector's every-5s reachability probe, so it's the one that matters most: without
-// this, a host that's merely slow to (re)connect flaps "unreachable" instead of just being slow
-// once. Local (socket) hosts have no connection to open, so they keep the tighter default.
+// Opening an SSH connection (handshake, host key, auth) can eat well into CMD_TIMEOUT_MS on a
+// slow link; the image keeps it alive 10min (ControlPersist) so it's only paid occasionally, but
+// checkHost's every-5s reachability probe needs headroom or a slow-to-connect host "flaps".
 const SSH_CHECK_TIMEOUT_MS = 20_000;
 
 function hostArgs(host) {
@@ -20,21 +16,14 @@ function checkTimeoutMs(host) {
   return host && host.dockerHost ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
 }
 
-// execFile's own `timeout` only sends SIGTERM. A `docker` CLI blocked on a wedged daemon socket
-// (or an ssh child that has stopped reading its control channel) can sit on that signal, and
-// since the promise below only settles from execFile's callback - which waits for the process to
-// actually exit and its stdio to close - a CLI that ignores SIGTERM never settles it at all. That
-// is the shape of the leak: the caller's await never returns, the child stays resident, and every
-// subsequent poll adds another one. This is the escalation: SIGTERM first (the CLI gets a chance
-// to tear its ssh session down cleanly), SIGKILL a few seconds later if it's still alive.
+// execFile's own `timeout` only sends SIGTERM, and a `docker` CLI wedged on a dead daemon/ssh
+// socket can ignore it forever - the promise never settles, the child stays resident, and every
+// poll leaks another one. This escalates: SIGTERM first, SIGKILL a few seconds later if still alive.
 const KILL_GRACE_MS = 5000;
 
-// Nothing else bounds how many `docker` processes can be in flight at once: the collector polls
-// on its own cadence, and every browser tab adds its own request-driven calls on top. Under a
-// slow daemon those overlap instead of queueing, and the fix for a slow daemon is never "spawn
-// more clients at it". Calls past the limit wait for a slot, and give up rather than wait
-// forever - a request that fails fast frees the browser connection it was holding, which is the
-// whole point (a queued-forever request is indistinguishable from the hang this guards against).
+// Nothing else bounds concurrent `docker` processes - the collector's poll plus every browser
+// tab's requests can overlap a slow daemon instead of queueing. Calls past the limit wait for a
+// slot and give up rather than wait forever, so a failing-fast request frees its browser connection.
 const MAX_CONCURRENT = Number(process.env.DOCKER_MAX_CONCURRENT) || 12;
 const MAX_QUEUE_WAIT_MS = 15_000;
 
@@ -118,9 +107,8 @@ async function checkHost(host) {
 }
 
 // Same probe as checkHost, but lets the real error (stderr) through instead of swallowing it -
-// checkHost's plain true/false is enough for the reachability poll, but a human clicking "Test
-// connection" in Settings needs "Host key verification failed" or "Permission denied
-// (publickey)", not just "unreachable".
+// a human clicking "Test connection" in Settings needs "Host key verification failed" or
+// "Permission denied (publickey)", not just "unreachable".
 async function testHostConnection(host) {
   await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
 }
@@ -196,12 +184,9 @@ function parseMemUsedBytes(memUsageStr) {
   return parseByteString((memUsageStr || '').split('/')[0]);
 }
 
-// docker stats reports NetIO/BlockIO as cumulative totals since the container started, which
-// carries no information about "right now" - a month-old container just reads e.g. "48GB / 52GB"
-// forever. The actual signal is the rate of change, computed from the delta against the previous
-// poll's cumulative bytes for the same container, over the elapsed time between polls. A negative
-// delta means the counter reset (container restarted since the last poll) - treated as unknown
-// rather than reported as a negative rate.
+// docker stats reports NetIO/BlockIO as cumulative totals since start, which says nothing about
+// "right now" - the real signal is the rate of change since the previous poll. A negative delta
+// means the counter reset (container restarted) - treated as unknown, not a negative rate.
 function computeRate(currentBytes, prevBytes, elapsedSec) {
   if (prevBytes == null || currentBytes == null || !elapsedSec || elapsedSec <= 0) return null;
   const delta = currentBytes - prevBytes;
@@ -243,10 +228,9 @@ async function getStats(host) {
   return byId;
 }
 
-// Emits an edge for a network-sharing pair unless they're both in the same compose project -
-// that relationship is already conveyed by the group box, and drawing it again is most of the
-// hairball in a typical multi-service compose stack. Cross-project or ungrouped pairs still get
-// an edge, since that's a genuinely useful signal (e.g. two separate stacks sharing a proxy net).
+// Emits an edge for a network-sharing pair unless both are in the same compose project - that
+// relationship is already conveyed by the group box, and repeating it is most of the hairball
+// in a typical stack. Cross-project/ungrouped pairs still get one (e.g. stacks sharing a proxy net).
 function networkEdges(containers) {
   const byNetwork = new Map();
   for (const c of containers) {
@@ -273,15 +257,9 @@ function networkEdges(containers) {
   return edges;
 }
 
-// Resolves com.docker.compose.depends_on into real dependency edges. That label is a
-// comma-separated list of "service:condition:restart" triples, which is why it's fetched via a
-// dedicated `docker ps` format rather than pulled out of the general Labels string already parsed
-// by parseLabels - that field is comma-split for the *whole* labels blob, so a multi-dependency
-// depends_on value would get silently truncated to its first entry.
-//
-// dependsOnRaw is tab-separated "<containerId>\t<depends_on value>" lines, one per container
-// (value may be empty). Arrow direction: source is the dependent container, target is what it
-// depends on - matches "A depends_on B" read as an edge from A to B.
+// Resolves com.docker.compose.depends_on ("service:condition:restart" triples) into dependency
+// edges; fetched via a dedicated `docker ps` format since parseLabels comma-splits the whole
+// Labels blob and would truncate a multi-dependency value. Edge: source depends on target.
 function dependsOnEdges(containers, dependsOnRaw) {
   const byProjectService = new Map();
   for (const c of containers) {
@@ -315,18 +293,9 @@ function dependsOnEdges(containers, dependsOnRaw) {
   return edges;
 }
 
-// Resolves the opendockwatch.depends_on label into manual dependency edges - the compose-native
-// alternative to hand-maintaining edges in hosts.json's `edges` array (see manualEdges below):
-// declared right on the service that has the dependency instead of in a separate config file.
-// Same truncation hazard as com.docker.compose.depends_on above, and the same fix - fetched via
-// its own dedicated `docker ps --format` rather than pulled from the general Labels string.
-//
-// customDependsOnRaw is tab-separated "<containerId>\t<label value>" lines, one per container
-// (value may be empty). Each comma-separated entry is "target[:label]" - target resolves to a
-// same-compose-project service first (so a project's own services can reference each other by
-// their short name, exactly like native depends_on, including fanning out to every replica of a
-// scaled service), falling back to a literal container name for cross-project or non-compose
-// targets - the same targeting hosts.json's manual `edges` already supports.
+// Resolves opendockwatch.depends_on into manual dependency edges - a compose-native alternative
+// to hosts.json's `edges` array, declared on the service itself. Each entry is "target[:label]":
+// resolves to a same-project service by short name first, else a literal container name.
 function customDependsOnEdges(containers, customDependsOnRaw) {
   const byProjectService = new Map();
   for (const c of containers) {
@@ -364,16 +333,9 @@ function customDependsOnEdges(containers, customDependsOnRaw) {
   return edges;
 }
 
-// Resolves each container's mount sources for the Flow view's tree mode. Docker's `{{.Mounts}}`
-// format truncates long bind-mount source paths (and, with --no-trunc, so does the paired
-// {{.ID}} column - it comes back as the full 64-char id instead of the usual 12-char short one),
-// which is why this is fetched via its own `docker ps --no-trunc` call rather than reusing
-// listContainers's output, and why the id is sliced back to 12 chars to match it.
-//
-// raw is tab-separated "<full 64-char id>\t<mounts>" lines, one per container (mounts may be
-// empty). kind is inferred from the source string alone (Docker doesn't return mount type in this
-// format): starts with "/" -> bind; a bare 64-hex string -> Docker's own anonymous volume name;
-// anything else -> a named volume.
+// Resolves each container's mount sources for tree mode. `{{.Mounts}}` truncates long bind-mount
+// paths, so this uses its own `docker ps --no-trunc` call (hence the id sliced back to 12 chars).
+// kind is inferred from the source string: "/" prefix -> bind; 64-hex -> anon volume; else named.
 const ANON_VOLUME_RE = /^[0-9a-f]{64}$/i;
 
 function parseMountsList(raw) {
@@ -408,18 +370,9 @@ function manualEdges(containers, declared = []) {
   return edges;
 }
 
-// `snapshot` is metricsCollector's cached poll result for this host (containers + stats, already
-// fetched on its own 5s cadence) - reusing it here avoids a second, independent round of `docker
-// ps`/`docker stats` calls on every topology request, and it's the only place the rx/tx and
-// read/write rates (computed by metricsCollector from consecutive polls) are available. Falls
-// back to a fresh live fetch when there's no usable snapshot yet (e.g. right after server start).
-// The three label/mount lookups above are three more `docker ps` calls, and getTopology runs on
-// every /topology request - i.e. every 5s per browser tab sitting in Flow view, on top of the
-// collector's own poll. None of it is live data: depends_on labels and mounts are fixed at
-// container creation and cannot change without the container being recreated under a new id. So
-// the cache key is the container-id set itself, with a TTL only as a backstop - create or destroy
-// a container and the signature changes, which refetches immediately; otherwise the same answer
-// is reused instead of being re-derived from three CLI spawns a second later.
+// depends_on labels and mounts are fixed at container creation, so the cache key is the
+// container-id set itself (create/destroy changes it, refetching immediately) with a TTL only
+// as a backstop. `snapshot` reuses metricsCollector's cached poll to skip a second docker call.
 const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
@@ -489,8 +442,7 @@ async function getTopology(host, snapshot) {
 
 // `docker inspect` is the one place env vars, mounts, labels, restart policy, and created time
 // live - none of it comes back from `docker ps`/`docker stats`. Fetched on demand (container
-// selection) rather than on the metrics poll cycle: unlike CPU/mem this doesn't change from one
-// poll to the next, so there's no reason to shell out for it every 5s for every container.
+// selection), not on the poll cycle, since unlike CPU/mem it can't change between polls.
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
@@ -509,10 +461,23 @@ async function getContainerInspect(host, id) {
   };
 }
 
-// docker stop/restart send SIGTERM and wait out a 10s grace period before SIGKILL-ing a
-// container that ignores it - the same length as CMD_TIMEOUT_MS, so execFile could kill the
-// CLI and report failure a moment before the stop actually completes daemon-side. Give action
-// commands longer than the grace period so a slow-to-stop container doesn't false-report.
+// Config.Env entries are "KEY=value" and routinely hold DB passwords and API keys. Masks the
+// value while keeping the key, so a read-only viewer still sees which variables a container has
+// without the endpoint handing out every secret on every host. An empty value stays visibly empty.
+const ENV_MASK = '••••••';
+
+function maskEnvValues(env) {
+  return (env || []).map((entry) => {
+    const idx = entry.indexOf('=');
+    if (idx === -1) return entry;
+    const value = entry.slice(idx + 1);
+    return `${entry.slice(0, idx)}=${value ? ENV_MASK : ''}`;
+  });
+}
+
+// docker stop/restart wait out a 10s SIGTERM grace before SIGKILL - the same length as
+// CMD_TIMEOUT_MS, so execFile could kill the CLI and report failure a moment before the stop
+// actually completes daemon-side. Give action commands longer so a slow stop doesn't false-report.
 const CONTAINER_ACTION_TIMEOUT_MS = 30_000;
 
 async function containerAction(host, id, action) {
@@ -535,11 +500,9 @@ function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
 
-// `docker system df` walks the whole build cache, which - unlike the other commands here, all
-// polled every 5s - can genuinely take well over CMD_TIMEOUT_MS on a host with a lot of build
-// history, so it gets a longer timeout of its own. Safe to be generous here specifically: this
-// is only ever called from the 60s disk-usage poll (see metricsCollector.js's DISK_POLL_MS), not
-// the 5s container poll, so a slow response here doesn't delay anything time-sensitive.
+// `docker system df` walks the whole build cache and can take well over CMD_TIMEOUT_MS on a host
+// with a lot of build history, so it gets its own longer timeout. Safe to be generous: only the
+// 60s disk-usage poll calls this, not the 5s container poll, so it never delays anything urgent.
 const DISK_USAGE_TIMEOUT_MS = 30_000;
 
 async function getDiskUsage(host) {
@@ -558,10 +521,9 @@ async function getDiskUsage(host) {
   }));
 }
 
-// `docker system df -v`'s parsed JSON -> a clean, sorted (largest first - what you'd actually
-// want to look at when deciding what to prune) per-image list. Kept pure and separate from
-// getDiskUsageImages below so it's unit-testable without mocking child_process, same as the
-// other CLI-output parsers in this file.
+// `docker system df -v`'s parsed JSON -> a clean, largest-first (what you'd prune) per-image
+// list. Kept pure and separate from getDiskUsageImages so it's unit-testable without mocking
+// child_process, same as the other CLI-output parsers in this file.
 function parseDiskUsageImages(data) {
   const images = (data && data.Images) || [];
   return images
@@ -578,11 +540,9 @@ function parseDiskUsageImages(data) {
     .sort((a, b) => parseByteString(b.size) - parseByteString(a.size));
 }
 
-// The -v (verbose) form of the same command returns one JSON object with a per-image (and
-// per-container/volume/build-cache) breakdown instead of just the aggregate type rows above -
-// only fetched on demand (see HostCard's Images disclosure), not on the regular disk-usage poll,
-// since walking every image's shared/unique layer sizes is extra work nobody needs unless they
-// actually open the list.
+// The -v form returns a per-image breakdown instead of just the aggregate type rows above -
+// fetched on demand (HostCard's Images disclosure), not the regular disk-usage poll, since
+// walking every image's layer sizes is extra work nobody needs unless they open the list.
 async function getDiskUsageImages(host) {
   const stdout = await run([...hostArgs(host), 'system', 'df', '-v', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
   return parseDiskUsageImages(JSON.parse(stdout.trim()));
@@ -604,6 +564,7 @@ module.exports = {
   getDiskUsageImages,
   parseDiskUsageImages,
   getContainerInspect,
+  maskEnvValues,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,

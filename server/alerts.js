@@ -6,11 +6,9 @@ const hosts = require('./hosts');
 const COOLDOWN_MS = 10 * 60 * 1000;
 const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000;
 const CRASH_LOOP_THRESHOLD = 3;
-// docker stop/restart's own SIGTERM grace period is 10s (see docker.js's
-// CONTAINER_ACTION_TIMEOUT_MS comment) before it SIGKILLs and the die event fires - this has to
-// comfortably exceed that, or a container that takes the full grace period to die falls outside
-// the lookback window from the die event's ts back to the audit row written when the stop/restart
-// was requested, even though the row is now written before the action runs (see index.js).
+// docker stop/restart SIGKILLs after a 10s SIGTERM grace (docker.js's CONTAINER_ACTION_TIMEOUT_MS)
+// before the die event fires; this must exceed that or a container taking the full grace period
+// falls outside the lookback window from the die event back to the requested action's audit row.
 const MANUAL_STOP_GRACE_MS = 15000;
 
 function shouldFire(hostId, containerId, rule) {
@@ -25,18 +23,9 @@ function slackText(alert) {
   return `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}`;
 }
 
-// Route ALERT_WEBHOOK_URL to the right destination and payload shape based on
-// its scheme, apprise-style - one URL picks the service instead of a separate
-// named format per integration:
-//   discord://<webhook_id>/<webhook_token>
-//   ntfy://<server>/<topic>      e.g. ntfy://ntfy.sh/mytopic, or a self-hosted host
-//   gotify://<host>/<token>      (http)
-//   gotifys://<host>/<token>     (https)
-//   https://hooks.slack.com/...  (auto-detected)
-//   any other http(s) URL        (generic JSON POST of the alert, or the Slack
-//                                  {text} shape if format is 'slack' - useful
-//                                  for Slack-compatible endpoints, e.g.
-//                                  Mattermost, that don't live on hooks.slack.com)
+// Routes ALERT_WEBHOOK_URL to the right destination/payload shape based on its scheme,
+// apprise-style (discord://, ntfy://, gotify(s)://, or a plain http(s) URL - auto-detects
+// Slack, else generic JSON POST). See README's Alerts section for the full scheme table.
 function buildDelivery(rawUrl, alert, format) {
   const url = new URL(rawUrl);
 
@@ -87,12 +76,9 @@ function buildDelivery(rawUrl, alert, format) {
 const WEBHOOK_URL_KEY = 'alertWebhookUrl';
 const WEBHOOK_FORMAT_KEY = 'alertWebhookFormat';
 
-// The webhook can be set two ways: ALERT_WEBHOOK_URL/FORMAT in .env (requires
-// a restart to change), or from the UI (Settings, admin-only), which persists
-// to the settings table and takes effect immediately. A DB row - even one
-// holding an empty string, e.g. to deliberately disable a webhook configured
-// in .env - always wins once it exists; db.getSetting returns null only when
-// no override has ever been saved.
+// .env sets ALERT_WEBHOOK_URL/FORMAT (needs a restart); the Settings UI persists to the
+// settings table and applies immediately, overriding .env - including an intentional empty
+// string to disable a webhook .env configured. db.getSetting returns null only when never set.
 function getWebhookConfig() {
   const dbUrl = db.getSetting(WEBHOOK_URL_KEY);
   const overridden = dbUrl !== null;
@@ -113,11 +99,9 @@ function clearWebhookConfig() {
   return getWebhookConfig();
 }
 
-// Resource-threshold rules (container_cpu/container_mem/host_cpu/host_mem/docker_disk).
-// Same env-default + DB-override precedent as the webhook config above. All
-// thresholds ship disabled (0) by default - existing users shouldn't get
-// surprise webhook noise after upgrading. sustainMinutes is shared between the
-// cpu and mem rules since both are evaluated from the same 5s stats poll.
+// Resource-threshold rules, env-default + DB-override like the webhook config above. All ship
+// disabled (0) by default so existing users don't get surprise webhook noise after upgrading.
+// sustainMinutes is shared by cpu/mem since both come from the same 5s stats poll.
 const THRESHOLD_KEYS = {
   cpuThreshold: { settingKey: 'alertCpuThreshold', envVar: 'ALERT_CPU_THRESHOLD' },
   memThreshold: { settingKey: 'alertMemThreshold', envVar: 'ALERT_MEM_THRESHOLD' },
@@ -155,25 +139,14 @@ function clearThresholdConfig() {
   return getThresholdConfig();
 }
 
-// Consecutive-breach tracking, keyed by "hostId:containerId:rule". A single
-// sample over threshold is noise (image builds, cron jobs, JVM startup) - the
-// rule only fires once the breach has been continuous for sustainMs. Storing
-// the timestamp of the *first* breaching sample (rather than a sample count)
-// means this is independent of the poll interval and trivially testable with
-// synthetic timestamps. Resets the moment a sample dips back under threshold,
-// which doubles as hysteresis. Mirrored into the alert_breaches table (see db.js) on every
-// start/clear so a restart mid-breach resumes counting from the real first-breach time instead of
-// silently forgetting it - exactly the moment (a deploy or crash) a real incident is most likely
-// to coincide with. The Map stays the source of truth for the hot path (every 5s poll sample reads
-// it synchronously, no I/O); only the infrequent start/clear transitions touch sqlite.
+// Consecutive-breach tracking keyed "hostId:containerId:rule": fires once a breach is sustained
+// for sustainMs (a single over-threshold sample is noise), resets on dipping under threshold
+// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see CLAUDE.md.
 const breachStarts = new Map();
 
-// Restores breachStarts from the last time the process was up - called once at boot (see
-// index.js), not at require time, so requiring this module (as every test file does) never
-// touches sqlite on its own. Drops rows for a host no longer in config/hosts.json outright (that
-// host's own removeHost/forgetHost can never run for it again, since it was never re-added to
-// begin with) - per-container staleness within a host that's still configured is handled anyway,
-// within one poll interval, by the retainContainers call every pollHost cycle already makes.
+// Restores breachStarts from before the last restart - called once at boot (index.js), not at
+// require time, so requiring this module (every test does) never touches sqlite. Drops rows for
+// hosts no longer configured; per-container staleness is handled by retainContainers each poll.
 function loadBreachState() {
   const validHostIds = new Set(hosts.loadHosts().map((h) => h.id));
   for (const row of db.getAllBreaches()) {
@@ -200,19 +173,14 @@ function checkSustained(key, breached, sustainMs, ts) {
   return ts - start >= sustainMs;
 }
 
-// Node's fetch has no default timeout, and notify() below is deliberately fire-and-forget - so a
-// webhook host that accepts the connection and then never answers would leave a request pending
-// for the life of the process, one more for every alert that fires. TimeoutError is translated
-// here because this same path backs Settings' "Test webhook" button, where "The operation was
-// aborted due to timeout" says considerably less than naming the timeout.
+// fetch has no default timeout and notify() is fire-and-forget, so a webhook host that accepts
+// the connection and never answers would hang a request for the process's life. TimeoutError is
+// translated to a named message since this path also backs Settings' "Test webhook" button.
 const WEBHOOK_TIMEOUT_MS = 10_000;
 
-// Nothing in checkSustained ever removes a counter once its subject is gone - a container
-// deleted mid-breach, or a host dropped from Settings - so left alone the map keeps one entry
-// per (container, rule) that ever breached, for the life of the process. Both of these are
-// driven from metricsCollector, the only thing that sees a container stop being listed or a
-// host being removed. Host-level counters (`<hostId>:host:<rule>`) survive retainContainers,
-// which only ever considers per-container keys.
+// checkSustained never removes a counter once its subject is gone, so left alone breachStarts
+// keeps one entry per (container, rule) that ever breached for the process's life. Called from
+// metricsCollector, the only thing that sees a container disappear; host-level counters survive.
 function retainContainers(hostId, containerIds) {
   const keep = new Set(containerIds);
   for (const key of breachStarts.keys()) {
@@ -253,11 +221,9 @@ async function deliverWebhook(rawUrl, alert, format) {
   }
 }
 
-// The first delivery attempt, made synchronously when the alert fires - still fire-and-forget for
-// latency's sake (the caller doesn't await this), but no longer forget-forever on failure: a
-// failed attempt is recorded (webhook_attempts) so retryFailedWebhooks can pick it back up, rather
-// than the only trace being a log line. alert.id is 0 for sendTestAlert's synthetic alert, which
-// intentionally bypasses this bookkeeping entirely (nothing to retry - it isn't a real event).
+// The first delivery attempt, fired synchronously (caller doesn't await) but no longer
+// forget-forever on failure: a failed attempt is recorded so retryFailedWebhooks can retry it.
+// alert.id is 0 for sendTestAlert's synthetic alert, which intentionally skips this bookkeeping.
 async function notify(alert) {
   const { url: rawUrl, format } = getWebhookConfig();
   if (!rawUrl) return;
@@ -272,10 +238,9 @@ async function notify(alert) {
   }
 }
 
-// A webhook host down for the exact window an alert fires in (a flaky ntfy/Discord/Slack endpoint,
-// often correlated with the same network blip the alert itself is about) used to mean that
-// notification was gone for good - notify() above only ever tried once. This sweep picks up
-// anything notify() (or a previous sweep) recorded as attempted-but-undelivered and tries again.
+// A webhook host down for the exact window an alert fires (a flaky endpoint, often correlated
+// with the alert's own network blip) used to mean that notification was gone for good - this
+// sweep retries anything notify() (or a prior sweep) recorded as attempted-but-undelivered.
 const WEBHOOK_MAX_ATTEMPTS = 5;
 // Past this age, retrying is pointless - by the time it'd be delivered the information is stale
 // anyway - and it bounds how big a backlog a webhook that's been down for hours can hand back at
@@ -368,10 +333,9 @@ function handleEvent(event) {
 
   if (action === 'die') {
     const exitCode = raw && raw.Actor && raw.Actor.Attributes ? raw.Actor.Attributes.exitCode : undefined;
-    // parseInt of a present-but-garbled attribute (rather than a genuinely missing one, already
-    // handled by the `: 0` default) is NaN, and NaN !== 0 is true - without this, an unparsable
-    // exit code would still fire but read as "exited with code NaN" instead of a message that
-    // actually describes what happened.
+    // parseInt of a present-but-garbled exit code is NaN, not caught by the `: 0` default (which
+    // only covers a genuinely missing attribute); without this it would still fire but read as
+    // "exited with code NaN" instead of a message that actually describes what happened.
     const parsed = exitCode !== undefined ? parseInt(exitCode, 10) : 0;
     const code = Number.isNaN(parsed) ? null : parsed;
     if (code !== 0) {
@@ -436,23 +400,17 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   }
 }
 
-// Called once per running container on every stats poll (~5s). cpuPerc is raw
-// docker-stats CPU% (per-core cumulative, so a container using 4 cores fully
-// reads 400% - matches what the UI already shows, so the threshold isn't
-// normalized). memPerc is docker's MemPerc, which is computed against the
-// container's own memory limit - containers with no limit set read low against
-// host total and rarely trip this, which in practice focuses the rule on
-// containers that have limits, i.e. where mem pressure actually OOMKills.
+// Called once per running container on every stats poll (~5s). cpuPerc is raw docker-stats CPU%
+// (per-core cumulative, so 4 cores fully used reads 400%, matching what the UI shows). memPerc is
+// docker's MemPerc against the container's own memory limit - unlimited containers rarely trip it.
 function handleSample({ hostId, containerId, containerName, cpuPerc, memPerc, ts, alertsDisabled }) {
   if (alertsDisabled) return;
   const cfg = getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
 
-  // cfg.xThreshold > 0 is folded into "breached" itself, rather than skipping checkSustained
-  // entirely while the rule is disabled - a rule switched off mid-breach still has to clear its
-  // own persisted alert_breaches row via checkSustained's normal !breached path, or that row (now
-  // that breaches survive restarts - see loadBreachState) would sit there forever instead of
-  // self-healing on the next restart like it used to when this state was in-memory only.
+  // Folded into "breached" itself rather than skipping checkSustained while disabled - a rule
+  // switched off mid-breach still needs to clear its own persisted alert_breaches row via
+  // checkSustained's !breached path, or it would sit there forever instead of self-healing.
   const cpuBreached = cfg.cpuThreshold > 0 && cpuPerc >= cfg.cpuThreshold;
   if (checkSustained(`${hostId}:${containerId}:container_cpu`, cpuBreached, sustainMs, ts)) {
     fire({
@@ -512,12 +470,9 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
   }
 }
 
-// Called once per host per disk-usage poll (~60s). `docker system df` reports
-// Docker's own footprint (images/containers/volumes/build cache), not host
-// filesystem free space - Docker doesn't expose that - so this is honestly a
-// "Docker is using more than X GB, consider pruning" reminder rather than a
-// disk-full alert. Already coarse at a 60s poll interval, so no sustain window;
-// the existing 10-minute cooldown is enough to keep it from spamming.
+// Called once per host per disk-usage poll (~60s). `docker system df` reports Docker's own
+// footprint, not host filesystem free space (Docker doesn't expose that) - so this is a "Docker
+// is using more than X GB" reminder, not a disk-full alert. No sustain window; cooldown suffices.
 function handleDiskUsage({ hostId, hostName, rows }) {
   const cfg = getThresholdConfig();
   if (!(cfg.diskThresholdGb > 0)) return;

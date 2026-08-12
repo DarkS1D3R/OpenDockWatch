@@ -5,22 +5,8 @@ import { exportSvg } from '../graph/svgExport.js';
 import { createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from '../graph.js';
 
 // The Flow view: the cytoscape instance, graph/tree mode switching, edge/state filters,
-// fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show (not
-// v-if) at the root, same as ContainerList - unlike the log/detail/settings/activity panels,
-// rebuilding a cytoscape graph from scratch on every tab switch would be wasteful, especially for
-// a host with many compose projects, so this component watches its hostId/topology props instead
-// of remounting to pick up a host switch or a fresh poll.
-//
-// `selectedContainerId` is a two-way relationship with the root: a tap on a real container node
-// emits 'select' (the root owns the toggle-on-reselect semantics, shared with ContainerList's row
-// clicks); the root passing a new id back down is what this component's own watcher uses to sync
-// cy's `.selected` class and recompute fading. A tapped tree-mode pill (proj:/net:/mount: id) is
-// NOT a real container - routing it into selectedContainerId would trip ContainerDetail's watcher
-// into fetching docker inspect for a fake id, so it's filtered out here and kept as fully local
-// state, used only for fading and the info bar.
-//
-// `fullscreen` is the one other bit of state the root still needs directly (v-model) - it hides
-// the host card and other panels, which is the root's layout to control.
+// fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show like
+// ContainerList. See CLAUDE.md for the pillSelection split and the root-owned fullscreen v-model.
 export default {
   name: 'FlowView',
   props: {
@@ -183,10 +169,9 @@ export default {
         }
         return;
       }
-      // A cross-project network edge (see aggregateNetworkEdges in graph.js) points at a
-      // "grp:<project>" id instead of a container id - resolve that back to a plain project name
-      // rather than falling through to the raw id, same as showPillInfo does for tree mode's own
-      // project pills.
+      // A cross-project network edge (aggregateNetworkEdges in graph.js) points at a
+      // "grp:<project>" id instead of a container id - resolve that back to a plain project
+      // name rather than the raw id, same as showPillInfo does for tree mode's own project pills.
       const nameOf = (id) => (id.startsWith('grp:') ? id.slice('grp:'.length) : this.topology.nodes.find((n) => n.id === id)?.name || id);
       const from = nameOf(edgeData.source);
       const to = nameOf(edgeData.target);

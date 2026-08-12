@@ -14,15 +14,8 @@ import {
 } from '../api.js';
 
 // The Settings panel: webhook config, alert thresholds, and host management. Mounted fresh
-// (v-if) each time it's opened - mounted() does the three config fetches openSettings() used to
-// do directly. Emits 'hosts-changed' after add/edit/remove so the root refreshes the host
-// selector dropdown, since that list lives in the root (it's used well beyond this panel).
-//
-// Every save/clear/add/edit/remove action follows the same saving-flag/error/status shape;
-// runSection(section, savingField, fn) collapses all of them to a one-line body. The saving flag
-// is a separate parameter rather than derived from `section` because "Send test alert" has its
-// own independent loading flag (webhookTesting) from "Save"/"Clear override" (webhookSaving) -
-// so clicking one doesn't disable the other.
+// (v-if); emits 'hosts-changed' after add/edit/remove so the root refreshes its host selector.
+// runSection(section, savingField, fn) collapses the shared saving-flag/error/status shape.
 export default {
   name: 'SettingsPanel',
   emits: ['close', 'hosts-changed'],

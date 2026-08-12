@@ -1,24 +1,8 @@
 import { detectLogLevel, stripAnsi, highlightLine, parseLineTsMs } from '../format.js';
 
-// Per-line work for the log views, split into the part that can be done once and the part that
-// genuinely depends on the current filter.
-//
-// The reason this exists: LogViewer's `filteredLines` used to derive a line's level, timestamp and
-// highlighted HTML on every recompute, and a recompute happens every time a line arrives - so a
-// pane holding MAX_LOG_LINES re-derived all of it for 3000 lines several times a second. Measured
-// against the real format.js at 3000 lines: highlightLine 2.32ms, parseLineTsMs 0.99ms,
-// detectLogLevel(stripAnsi()) 0.55ms, ~4.4ms per recompute all told - which four panes streaming
-// side by side turns into ~17.7ms a frame, past the 16.7ms a 60fps frame has to spend. None of the
-// three depends on the filter, and none of them can change for the life of a line, so they belong
-// at append time instead: decorateLine pays for a line once, when it arrives.
-//
-// ContainerDetail had a worse version of the same problem - it called highlightLine from a *method*
-// in its template, so the work re-ran on every render of the component, including the one the 5s
-// stats poll triggers, whether or not a single log line had arrived.
-//
-// Pure and dependency-free (format.js is itself pure), so it's unit-tested directly rather than
-// only exercised through a browser - see CLAUDE.md on preferring public/js/lib/ for logic pulled
-// out of components.
+// Per-line work for the log views, split into the part done once (decorateLine, at append) and
+// the part that depends on the current filter (selectLines). See CLAUDE.md for the perf numbers
+// behind why this exists - the ContainerDetail regression that made it worth fixing everywhere.
 
 // `baseHtml` is the no-filter rendering, which is what the overwhelming majority of renders want:
 // you type a filter occasionally, you watch logs stream constantly.
@@ -36,17 +20,9 @@ export function decorateLines(lines) {
   return lines.map(decorateLine);
 }
 
-// Filter + render, over lines already through decorateLine.
-//
-// With no filter text every surviving line reuses its cached baseHtml and nothing is recomputed.
-// With a filter, highlightLine has to run again (the <mark> spans depend on the search term) - but
-// only for the lines that actually matched, which is the small set by definition. `levels` is the
-// level→boolean map the viewer's level toggles produce; a line whose level was never detected
-// (null) is always kept, since there's no toggle it could belong to.
-//
-// An invalid regex (testRegex null while regexMode is on) deliberately matches everything rather
-// than nothing - the viewer shows an "Invalid regex" warning next to the input, and blanking the
-// pane while someone is halfway through typing a pattern would be worse than leaving it be.
+// Filter + render over lines already through decorateLine. With no filter, every line reuses its
+// cached baseHtml; with one, highlightLine reruns only for matches. A line whose level was never
+// detected is always kept. An invalid regex matches everything (not nothing) so a half-typed pattern doesn't blank the pane.
 export function selectLines(lines, { levels = null, filterText = '', regexMode = false, testRegex = null } = {}) {
   const filtering = filterText.length > 0;
   const filterLower = filterText.toLowerCase();
@@ -66,4 +42,25 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
     });
   }
   return out;
+}
+
+// The Log Viewer's search cursor is a line *id*, never a position. A pane tailing at
+// MAX_LOG_LINES trims from the front, so every drop shifts an index by one and it silently comes
+// to name a different line - the highlight walks the hit list on its own. See CLAUDE.md.
+export function hitIndexFor(lines, activeId) {
+  if (!lines.length) return -1;
+  if (activeId == null) return 0;
+  const i = lines.findIndex((l) => l.id === activeId);
+  // The parked-on line aged out of the buffer or was filtered away - fall back to the first hit,
+  // which is at least somewhere the user can see, rather than to whatever now sits at its index.
+  return i === -1 ? 0 : i;
+}
+
+// Steps the cursor by delta with wraparound, returning the newly selected line id (null when
+// there are no hits to move between). Reads the current position through hitIndexFor, so stepping
+// off a hit that just aged out continues from the fallback rather than from a stale index.
+export function stepHitId(lines, activeId, delta) {
+  if (!lines.length) return null;
+  const next = (hitIndexFor(lines, activeId) + delta + lines.length) % lines.length;
+  return lines[next].id;
 }

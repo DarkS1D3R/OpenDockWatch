@@ -42,13 +42,17 @@ function isValidHostId(id) {
 
 // A blank dockerHost means "local socket", which is always valid - only a non-blank value needs
 // to actually be a well-formed ssh:// URL (the only remote transport the docker CLI supports here).
+// The leading-dash refusal is argv-injection defence, same reasoning as index.js's CONTAINER_ID_RE.
 function isValidDockerHostUrl(url) {
   if (!url) return true;
+  let parsed;
   try {
-    return new URL(url).protocol === 'ssh:';
+    parsed = new URL(url);
   } catch {
     return false;
   }
+  if (parsed.protocol !== 'ssh:' || !parsed.hostname) return false;
+  return !parsed.hostname.startsWith('-') && !parsed.username.startsWith('-');
 }
 
 // Two hosts both pointing at the local socket would just monitor the same daemon twice under
@@ -58,11 +62,9 @@ function hasLocalHost(hosts, excludeId = null) {
   return hosts.some((h) => !h.dockerHost && h.id !== excludeId);
 }
 
-// Invalidate on any change under config/ - covers editing hosts.json in place
-// and hosts.json being created/removed (which switches the active file) -
-// so config changes apply without restarting the process. unref() so this
-// background watcher alone doesn't keep the process (or a test run
-// requiring this module) alive.
+// Invalidate on any change under config/ - covers editing hosts.json in place and it being
+// created/removed (which switches the active file) - so config changes apply live. unref() so
+// this background watcher alone doesn't keep the process (or a test requiring this module) alive.
 try {
   fs.watch(CONFIG_DIR, () => {
     cache = null;

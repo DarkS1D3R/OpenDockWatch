@@ -65,10 +65,9 @@ const BYTE_UNITS = [
   [1e3, 'kB'],
 ];
 
-// Auto-scaling counterpart to formatGB, for figures that aren't reliably host-sized. A container
-// using 412 MB reads as "0.4 GB" through formatGB, which throws away the digits that matter; host
-// totals are always GB-scale so that function stays as it is rather than changing what the host
-// card shows. Same unit table shape as formatRate below.
+// Auto-scaling counterpart to formatGB, for figures that aren't reliably host-sized - a
+// container using 412 MB reads as "0.4 GB" through formatGB, losing the digits that matter.
+// Host totals stay GB-scale via formatGB; same unit table shape as formatRate below.
 export function formatBytes(bytes) {
   if (bytes == null) return '—';
   for (const [threshold, unit] of BYTE_UNITS) {
@@ -83,10 +82,9 @@ const RATE_UNITS = [
   [1e3, 'kB/s'],
 ];
 
-// bytesPerSec is null when the server has no prior poll to diff against yet (just started, the
-// container was just restarted, or a single docker CLI call hiccuped and skipped a poll) - shown
-// as a flat 0 B/s rather than switching between that and a "—" placeholder every time a poll
-// happens to come back without one, which reads as a flicker rather than useful information.
+// bytesPerSec is null with no prior poll to diff against yet (just started, restarted, or a
+// hiccuped poll) - shown as a flat 0 B/s rather than flickering between that and a "—"
+// placeholder every time a poll happens to come back without one.
 export function formatRate(bytesPerSec) {
   if (bytesPerSec == null) return '0 B/s';
   for (const [threshold, unit] of RATE_UNITS) {
@@ -99,14 +97,9 @@ export function formatRatePair(a, b) {
   return `${formatRate(a)} / ${formatRate(b)}`;
 }
 
-// Docker's Ports string looks like "0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp" - only the
-// "->" entries are actually published to the host; the rest are just exposed. IPv4/IPv6 both
-// publish the same host:container pair, hence the dedup. Returns every mapping in docker run's
-// own "host:container" notation, e.g. "8080:80, 9090:90" - showing only the host side (as this
-// used to) reads as the container's own port rather than what it's mapped to, which is wrong
-// whenever they differ and ambiguous even when they happen to match. Not truncated - callers
-// that need to fit a fixed space (graph.js's node badge) wrap it themselves instead of losing
-// mappings to an ellipsis.
+// Docker's Ports string ("0.0.0.0:8080->80/tcp, :::8080->80/tcp, 443/tcp") - only "->" entries
+// are published; IPv4/IPv6 dedup to one. Returns each as docker run's "host:container" notation
+// (e.g. "8080:80") since showing only the host side is wrong whenever they differ. Not truncated.
 export function parsePublishedPorts(portsStr) {
   if (!portsStr) return '';
   const mappings = [...new Set([...portsStr.matchAll(/:(\d+)->(\d+)\/\w+/g)].map((m) => `${m[1]}:${m[2]}`))];
@@ -149,11 +142,9 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Many containers (e.g. Java apps logging to a color-aware console) emit raw ANSI SGR
-// escapes like "\x1b[34mINFO\x1b[0;39m" - fine in a real terminal, but shown as literal
-// garbage `[34m...[0;39m` text once docker logs pipes them through a non-terminal reader.
-// Maps the common 8/16-color foreground codes; anything else (background, cursor moves,
-// etc.) is simply dropped since log output never legitimately needs it.
+// Many containers (color-aware console apps) emit raw ANSI SGR escapes like "\x1b[34mINFO" -
+// fine in a terminal, garbage once piped through a non-terminal reader. Maps the common 8/16-color
+// foreground codes; anything else (background, cursor moves) is simply dropped.
 const ANSI_COLOR_MAP = {
   30: '#6e7681',
   31: '#f85149',
@@ -178,10 +169,9 @@ const ANSI_RE = /\x1b\[([0-9;]*)m/g;
 // eslint-disable-next-line no-control-regex
 const ANSI_STRIP_RE = /\x1b\[[0-9;]*m/g;
 
-// Plain-text version of a line with ANSI codes removed - needed anywhere a line is
-// matched against a word-boundary regex (detectLogLevel's \b*), since e.g. "\x1b[34mINFO"
-// has a word character ("m") sitting directly against "INFO" with no boundary between
-// them, silently breaking \b there.
+// Plain-text version with ANSI codes removed - needed wherever a line is matched against a
+// word-boundary regex (detectLogLevel's \b), since e.g. "\x1b[34mINFO" has "m" sitting directly
+// against "INFO" with no boundary, silently breaking \b there.
 export function stripAnsi(str) {
   return str.includes('\x1b[') ? str.replace(ANSI_STRIP_RE, '') : str;
 }
@@ -218,10 +208,8 @@ export function parseAnsiSegments(line) {
 }
 
 // `docker logs --timestamps` prepends a full-precision RFC3339Nano timestamp
-// ("2026-07-10T17:03:33.492059335Z") to every line. Trimmed to HH:MM:SS.mmm - still
-// sortable and precise to the millisecond, without dwarfing the log message itself
-// (many apps, like the one in the example this was built against, already log their
-// own timestamp too).
+// ("2026-07-10T17:03:33.492059335Z") to every line, trimmed to HH:MM:SS.mmm - still sortable
+// and precise to the millisecond, without dwarfing the log message (many apps log their own too).
 const DOCKER_TS_RE = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})\.(\d{3})\d*Z /;
 
 export function splitDockerTimestamp(line) {
@@ -240,12 +228,9 @@ export function parseLineTsMs(line) {
   return m ? Date.parse(m[1] + 'Z') : null;
 }
 
-// Escapes the line for safe innerHTML use, renders ANSI color codes as <span>s, and
-// wraps case-insensitive matches of `filterText` in <mark> so v-html can render the
-// highlight. When `isRegex` is set, `filterText` is compiled as a regex instead of
-// matched literally; an invalid pattern just falls back to no highlighting
-// (filteredLogViewerLines already leaves unfiltered lines visible in that case, so this
-// keeps highlighting consistent with that).
+// Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps
+// case-insensitive `filterText` matches in <mark> for v-html. isRegex compiles filterText as a
+// regex instead of literal; an invalid pattern falls back to no highlighting.
 export function highlightLine(line, filterText, isRegex = false) {
   const { ts, rest } = splitDockerTimestamp(line);
   const tsHtml = ts ? `<span class="log-ts">${ts}</span>` : '';

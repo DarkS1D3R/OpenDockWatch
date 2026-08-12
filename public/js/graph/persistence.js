@@ -1,7 +1,6 @@
-// Per-host node positions (from dragging) and camera (zoom/pan) - kept in localStorage so
-// a manually-arranged layout survives both a page reload and the next poll cycle's
-// structure-changed re-layout (a container starting/stopping elsewhere in the topology
-// would otherwise wipe every dragged position, since dagre lays the whole graph out fresh).
+// Per-host node positions (from dragging) and camera (zoom/pan) - kept in localStorage so a
+// manually-arranged layout survives a reload and the next poll's structure-changed re-layout
+// (dagre lays the whole graph out fresh, which would otherwise wipe every dragged position).
 const POSITIONS_KEY_PREFIX = 'odw:flow:positions:';
 const VIEWPORT_KEY_PREFIX = 'odw:flow:viewport:';
 const COLLAPSED_KEY_PREFIX = 'odw:flow:collapsed:';

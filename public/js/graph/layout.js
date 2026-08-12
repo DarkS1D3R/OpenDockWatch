@@ -3,15 +3,9 @@ import { applySavedPositions, loadViewport, clearPositions, clearViewport } from
 import { COMPACT_ZOOM_THRESHOLD } from './style.js';
 
 const LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 30, rankSep: 90 };
-// Tree mode's mount pills can grow several lines tall (wrapped bind-mount paths) - graph mode's
-// nodeSep is tuned for its fixed-height container/group boxes and packs siblings too tightly once
-// pill heights vary. Extra room here also gives taxi-routed edges (edge-tree-proj/-mount) more
-// space to turn cleanly instead of elbowing through a tightly-packed neighbor.
-// Mount/network pills have no edges except the one from their container, so dagre's automatic
-// ranking would otherwise put shared mounts, unshared mounts, and networks all in the same
-// column right after it (nothing forces them apart). cytoscape-dagre's minLen hook stretches
-// an edge's minimum rank distance per-edge, which is what actually produces the desired
-// left-to-right order: container -> shared mounts -> unshared mounts -> networks.
+// Tree mode's taller mount pills need more nodeSep than graph mode's fixed-height boxes.
+// treeMinLen forces left-to-right order (container -> shared mounts -> unshared -> networks)
+// since those pills have no edges of their own for dagre to rank by otherwise.
 function treeMinLen(edge) {
   if (edge.hasClass('edge-tree-mount')) return edge.target().data('shared') ? 1 : 2;
   if (edge.hasClass('edge-tree-net')) return 3;
@@ -29,14 +23,9 @@ const NODE_GAP = 16;
 // obstacle set (resolveNodeOverlap) and the full sweep (resolveAllOverlaps) can't drift apart.
 const OVERLAP_NODE_SELECTOR = '.running, .stopped, .group, .proj, .net, .mount';
 
-// A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against on
-// its own - semantic zoom shrinks it to COMPACT_HEIGHT while zoomed out, and two nodes that are
-// just far enough apart while compact can end up overlapping once they grow back to full size on
-// zoom-in. Always reserving full-size spacing here means compact is purely a shrink into room
-// that was already there, never a size change that needs new room. A compound (expanded) group
-// has no such fixed size to fall back on - its box is inherently the union of whatever its
-// children currently render at, so that one's fine to read live. Tree mode's pills aren't
-// touched by semantic zoom at all, so their current width/height already is their real size.
+// A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against -
+// semantic zoom shrinks it while zoomed out, so nodes just far enough apart while compact can
+// overlap once full-size again. Reserves full-size spacing always; expanded groups/pills read live.
 function effectiveBoundingBox(node) {
   if (node.isParent()) return node.boundingBox();
   const pos = node.position();
@@ -49,13 +38,9 @@ function effectiveBoundingBox(node) {
   return { x1: pos.x - NODE_WIDTH / 2, x2: pos.x + NODE_WIDTH / 2, y1: pos.y - h / 2, y2: pos.y + h / 2 };
 }
 
-// Blocks node boxes from being dragged on top of each other - with the html-label overlay
-// carrying all the real content (name, icon, metric bars), an overlapping pair renders as
-// unreadable stacked garbage rather than just a cosmetic overlap. Pushes `node` out along
-// whichever axis needs the least movement to clear each obstacle. A node's own ancestors/
-// descendants are excluded from the obstacle set - a leaf is always inside its parent group's
-// bounding box by definition, and dragging a group carries its children along with it, so
-// neither should register as a "collision" against the thing it's structurally part of.
+// Blocks node boxes from being dragged on top of each other - the html-label overlay carries
+// all real content, so an overlap renders as unreadable stacked garbage. Pushes `node` out along
+// whichever axis needs least movement. Ancestors/descendants excluded: they're structurally part of it, not a collision.
 export function resolveNodeOverlap(node) {
   const cy = node.cy();
   const obstacles = cy.nodes(OVERLAP_NODE_SELECTOR).not(node).not(node.ancestors()).not(node.descendants());
@@ -83,12 +68,9 @@ function resolveAllOverlaps(cy) {
   cy.nodes(OVERLAP_NODE_SELECTOR).forEach((node) => resolveNodeOverlap(node));
 }
 
-// Compose groups with many members and no internal edges otherwise get laid out as one tall
-// single-file column (dagre has nothing to rank sibling containers by). Re-flow those into a
-// fixed-column grid after layout so tall groups stay compact. Groups that DO have internal edges
-// (depends_on relationships) are left to dagre's own layout - it has real topology to route
-// around now, and overriding its positions with a naive grid ignores that and produces edges that
-// cut diagonally across unrelated node boxes.
+// Compose groups with many members and no internal edges lay out as one tall single-file column
+// (dagre has nothing to rank siblings by) - re-flowed into a fixed-column grid after layout.
+// Groups WITH internal depends_on edges are left to dagre, which has real topology to route around.
 function arrangeGroupsInColumns(cy) {
   cy.nodes('.group').forEach((group) => {
     const children = group.children();
@@ -111,47 +93,26 @@ function arrangeGroupsInColumns(cy) {
 }
 
 // Flips the compact rendering flag to match the current zoom - called on every 'viewport' event
-// (not just the debounced save) so it feels like a direct consequence of zooming, not a delayed
-// side effect. Mirrors the 'faded' pattern: cytoscape-node-html-label re-renders its overlay off
-// node data(), so setting it here is what makes the template below pick compact vs full up.
+// (not the debounced save) so it feels like a direct consequence, not a delayed side effect.
+// Mirrors 'faded': node-html-label re-renders off node data(), so this drives compact vs full.
 export function updateCompactFlag(cy) {
   const compact = cy.zoom() < COMPACT_ZOOM_THRESHOLD;
   const changed = cy.nodes('.running, .stopped, .cy-expand-collapse-collapsed-node').filter((n) => n.data('compact') !== compact);
   if (!changed.length) return;
   changed.data('compact', compact);
-  // Height here comes from a compact-dependent style mapper, not a position change - cytoscape
-  // only wires its compound bounding-box cache invalidation up to the position setter, so a
-  // compose group's rendered outline is left sized to the stale (compact) bounds once its
-  // children grow back to full size on zoom-in, until something else (e.g. selecting a node)
-  // happens to force a recompute. Without this, children can render outside their own group box.
+  // Height comes from a compact-dependent style mapper, not a position change - cytoscape only
+  // wires bounding-box cache invalidation to the position setter, so a group's outline stays
+  // sized to stale compact bounds after children grow back, until something forces a recompute.
   changed.dirtyCompoundBoundsCache();
-  // dirtyCompoundBoundsCache only covers compound (parent) bounding boxes - it does nothing for
-  // a plain leaf node's own rendered box, which is exactly what every tree-mode container is (no
-  // compound groups there). Without an explicit style recompute, an edge routed to/from a node
-  // whose height just changed can keep using its previous box to route against, silently
-  // rendering a zero/near-zero-length (so invisible) segment until *something else* forces a
-  // recompute - reproduced by zooming across the compact threshold and back. cy.style().update()
-  // is cytoscape's own documented way to force every function-valued style (like this height
-  // mapper) to be recomputed and repainted.
+  // dirtyCompoundBoundsCache only covers compound (parent) boxes, not a plain leaf's own box -
+  // every tree-mode container. Without a style recompute, an edge to a just-resized node can
+  // route against its stale box, rendering invisible until something else forces a recompute.
   cy.style().update();
 }
 
-// Runs a fresh dagre pass, then re-flows tall groups into columns, then re-applies any
-// positions the user has dragged nodes to (dagre lays out the whole graph from scratch,
-// so without this a container starting/stopping elsewhere would silently undo every drag).
-// The camera is restored from the last saved zoom/pan instead of fitting whenever one
-// exists - only a host with no saved viewport yet (or `fit: false`) gets auto-fit.
-// layoutstop fires synchronously for a non-animated layout like this, so this stays
-// synchronous end-to-end.
-//
-// Forces every node out of compact mode before dagre runs: a relayout triggered while zoomed
-// out (a container starting/stopping, say) would otherwise have dagre space everything for the
-// small compact boxes, and zooming back in later - nodes growing back to full size in place,
-// with only compact-sized room reserved between them - is exactly how a container ends up
-// visibly sitting on top of a neighboring group's box. compact is restored (via
-// updateCompactFlag, reading the real current zoom) only after the final viewport/zoom for this
-// pass is settled - not before, or it'd be judged against whatever zoom happened to be active
-// before a fit-to-all changes it moments later.
+// Runs a fresh dagre pass, re-flows tall groups, re-applies dragged positions (dagre resets
+// everything each time) and restores the saved camera, or fits with none saved. Forces nodes out
+// of compact mode first so a relayout while zoomed out doesn't reserve only compact-sized room.
 export function runLayout(cy, { fit, hostId }) {
   const mode = cy.scratch('_odw_mode') || 'graph';
   cy.nodes().data('compact', false);
@@ -171,10 +132,9 @@ export function runLayout(cy, { fit, hostId }) {
   layout.run();
 }
 
-// "Reset view" - clears any dragged positions and saved camera for the current mode+host, then
-// reruns dagre fresh and fits. Fit (the toolbar's other button) only moves the camera over the
-// existing arrangement; this also undoes manual dragging, for when a layout's been dragged into
-// a tangle and starting over is easier than untangling it by hand.
+// "Reset view" - clears dragged positions and saved camera for the current mode+host, then
+// reruns dagre and fits. Fit (the toolbar's other button) only moves the camera over the existing
+// arrangement; this also undoes manual dragging, for when a layout's tangled beyond untangling by hand.
 export function resetView(cy, hostId) {
   if (!cy) return;
   const mode = cy.scratch('_odw_mode') || 'graph';

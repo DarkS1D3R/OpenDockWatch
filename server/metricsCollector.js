@@ -22,12 +22,9 @@ const hostStates = new Map(); // hostId -> { pollState, diskState } - lets addHo
 const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
 const globalTimers = [];
 
-// When the last poll of *any* host finished. This is the liveness signal the watchdog reads, and
-// it's deliberately about the loop rather than about Docker: pollHost completes normally for an
-// unreachable host too (checkHost returns false, it records that and returns), so this only goes
-// stale if the poll loop itself has stopped turning - a wedged event loop, a promise that never
-// settles - never merely because a monitored daemon is down. That distinction is what makes it
-// safe to gate container health on, per the Dockerfile HEALTHCHECK's note about remote hosts.
+// When the last poll of *any* host finished - the liveness signal watchdog reads. Deliberately
+// about the loop, not Docker: pollHost completes normally even for an unreachable host, so this
+// only goes stale if the loop itself stopped turning, never just because a daemon is down.
 let lastPollCompletedTs = Date.now();
 
 function getLastPollCompletedTs() {
@@ -62,17 +59,14 @@ async function pollHost(host) {
   const reachable = await checkHost(host);
   alerts.handleHostReachability(host.id, host.name || host.id, reachable, prev ? prev.reachable : true);
 
-  // Sampled here (rather than inside the reachable/hostInfo block below) since it doesn't touch
-  // Docker at all - null for a remote host, see hostUsage.js. Persisted into the same
-  // host_metrics row as the Docker cpuPercent/memUsedBytes below so the frontend can pull both
-  // out of one history fetch and the host-total sparkline gets the exact same server-persisted,
-  // survives-a-refresh behavior the Docker one already has - no separate client-side buffer.
+  // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
+  // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
+  // row as the Docker cpuPercent/memUsedBytes so one history fetch covers both, server-persisted.
   const localSystemUsage = host.dockerHost ? null : sampleLocalSystemUsage(host.id);
 
-  // Keep serving the previous poll's containers/stats/hostInfo until the fresh values below are
-  // ready, rather than clearing them up front - the docker calls below can take a noticeable
-  // fraction of a poll interval, and a GET /stats landing in that window would otherwise see an
-  // empty stats map for every container (rendered client-side as a flash of "-" on every refresh).
+  // Keep serving the previous poll's containers/stats/hostInfo until fresh values are ready,
+  // rather than clearing them up front - the docker calls below take a noticeable fraction of a
+  // poll interval, and a request landing in that window would otherwise flash "-" for every row.
   const keepPrev = reachable && prev;
   const snapshot = {
     containers: keepPrev ? prev.containers : [],
@@ -97,6 +91,11 @@ async function pollHost(host) {
     const elapsedSec = prev && prev.statsTs ? (ts - prev.statsTs) / 1000 : null;
     let cpuSum = 0;
     let memSum = 0;
+    // Collected first, then written in one transaction and only then alerted on. Inserting per
+    // container cost a commit (and an fsync) each; alerting per container mid-loop would have put
+    // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
+    const samples = [];
+    const alertSamples = [];
     for (const c of containers) {
       if (c.state !== 'running') continue;
       const s = stats[c.id];
@@ -107,7 +106,7 @@ async function pollHost(host) {
       const memPerc = parseFloat(s.memPerc) || 0;
       cpuSum += cpuPerc;
       const memUsedBytes = Math.round(parseMemUsedBytes(s.memUsage));
-      db.insertContainerMetric({
+      samples.push({
         hostId: host.id,
         containerId: c.id,
         ts,
@@ -120,7 +119,7 @@ async function pollHost(host) {
         blockWriteBytes: Math.round(s.blockWriteBytes || 0),
       });
       memSum += memUsedBytes;
-      alerts.handleSample({
+      alertSamples.push({
         hostId: host.id,
         containerId: c.id,
         containerName: c.name,
@@ -130,6 +129,9 @@ async function pollHost(host) {
         alertsDisabled: c.alertsDisabled,
       });
     }
+
+    db.insertContainerMetrics(samples);
+    for (const sample of alertSamples) alerts.handleSample(sample);
 
     // Containers that have gone away since the last poll can't dip back under threshold to
     // clear their own breach counters, so they're dropped here instead.
@@ -178,10 +180,9 @@ function scheduleHostPolling(host, pollState) {
     try {
       await pollHost(host);
     } catch (err) {
-      // pollHost catches its own docker failures, so reaching here means something outside that
-      // block threw (a db or alerts error). Swallowing it *here* rather than letting it escape a
-      // setTimeout callback matters: an unhandled rejection out of a timer is a process-level
-      // crash, and one bad sample must not take monitoring down for every host.
+      // pollHost catches its own docker failures, so reaching here means a db/alerts error threw.
+      // Swallowing it here matters: an unhandled rejection out of a setTimeout callback is a
+      // process-level crash, and one bad sample must not take monitoring down for every host.
       logger.error('metrics.tick.failed', { host: host.id, error: err.message });
     } finally {
       lastPollCompletedTs = Date.now();
@@ -191,11 +192,9 @@ function scheduleHostPolling(host, pollState) {
   pollState.timer = setTimeout(tick, POLL_MS);
 }
 
-// `docker system df` gets DISK_USAGE_TIMEOUT_MS (30s) to walk the build cache, on a 60s interval -
-// close enough that a setInterval could fire the next sweep while the previous one is still
-// running on a host with a lot of build history, stacking two of the heaviest calls this makes.
-// Chained the same way as the container poll: the gap is measured from when the last one
-// finished, so they can never overlap however slow the daemon gets.
+// `docker system df` gets 30s to walk the build cache on a 60s interval - close enough that a
+// setInterval could fire the next sweep while the previous one is still running. Chained like
+// the container poll instead: the gap is measured from when the last one finished, never overlapping.
 function scheduleDiskPolling(host, diskState) {
   const tick = async () => {
     if (diskState.stopped) return;
@@ -216,11 +215,9 @@ function addHost(host) {
   const pollState = { stopped: false, timer: null };
   const diskState = { stopped: false, timer: null };
   hostStates.set(host.id, { pollState, diskState });
-  // pollDiskUsage reads the snapshot pollHost writes (specifically snapshot.reachable, set only
-  // after checkHost resolves) - firing both in parallel here meant this first call almost always
-  // found no snapshot yet and early-returned, leaving diskUsage empty until the next
-  // DISK_POLL_MS tick (60s later). pollHost never rejects (it catches its own errors), so this
-  // chain needs no .catch of its own.
+  // pollDiskUsage reads the snapshot pollHost writes (snapshot.reachable, set after checkHost
+  // resolves) - firing both in parallel left diskUsage empty until the next 60s tick, since the
+  // first call found no snapshot yet. pollHost never rejects, so this chain needs no .catch.
   pollHost(host)
     .then(() => pollDiskUsage(host))
     .catch((err) => logger.error('metrics.initial_poll.failed', { host: host.id, error: err.message }))

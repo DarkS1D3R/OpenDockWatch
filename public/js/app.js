@@ -113,16 +113,9 @@ createApp({
     openAlertsCount() {
       return this.alerts.filter((a) => !a.acknowledged).length;
     },
-    // The detail panel carries a live log-preview EventSource, and a browser only allows about six
-    // connections per origin over HTTP/1.1 - which the Logs tab can claim four of on its own. So a
-    // log stream only runs in the views its component is actually part of: the panel (and the
-    // bottom Log Viewer that its button opens) belong to List and Flow, the Logs tab owns its
-    // panes, Activity owns its event stream. Worst case is then four, leaving two connections for
-    // the poll loop instead of none.
-    //
-    // Note this gates the panel's *rendering*, not `selectedContainerId` - the selection itself
-    // survives a trip through the Logs tab, so Flow's blast-radius highlight and the panel's own
-    // contents come back exactly as they were.
+    // A browser allows ~6 connections per origin over HTTP/1.1, so a log-preview stream only
+    // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see CLAUDE.md.
+    // Gates the panel's *rendering* only; selectedContainerId itself survives a Logs tab trip.
     detailPanelVisible() {
       return !!this.selectedContainer && (this.view === 'list' || this.view === 'flow');
     },
@@ -143,10 +136,9 @@ createApp({
     },
   },
   watch: {
-    // Preview-stream/inspect state lives entirely in ContainerDetail (keyed off its own
-    // container.id watcher) and the Flow view's cy selection sync lives entirely in FlowView
-    // (keyed off its own selectedContainerId prop watcher) - this only needs to close the
-    // (sibling) log viewer.
+    // Preview-stream/inspect state lives in ContainerDetail (its own container.id watcher) and
+    // Flow's cy selection sync lives in FlowView (its own selectedContainerId prop watcher) -
+    // this only needs to close the sibling log viewer.
     selectedContainerId() {
       this.closeLogViewer();
     },
@@ -190,12 +182,9 @@ createApp({
       this.fetchDiskUsage();
       this.startPolling();
     },
-    // Chained, never setInterval. refresh() awaits five or six requests in sequence, so on a slow
-    // host one cycle can outlast POLL_MS - and an interval doesn't care, it just starts another.
-    // Cycles then overlap and stack, each holding connections the browser only has about six of,
-    // until the tab has none left and can't issue any request at all. That state doesn't resolve
-    // when the server does, which is why the container ends up being restarted. Measuring the gap
-    // from when the previous cycle *finished* makes overlap structurally impossible.
+    // Chained, never setInterval: refresh() awaits several requests, so a cycle can outlast
+    // POLL_MS on a slow host, and an interval would stack another regardless, exhausting the
+    // browser's ~6 connections. Measuring the gap from the previous cycle's finish prevents overlap.
     startPolling() {
       this.stopPolling();
       this.pollStopped = false;
@@ -333,11 +322,9 @@ createApp({
     async setView(v) {
       this.view = v;
       if (v !== 'flow') this.flowFullscreen = false;
-      // The bottom Log Viewer belongs to the views that can open it (List and Flow, via the detail
-      // panel's button). Closing it on the way into a view that can't is what actually releases its
-      // connection - logViewerOpen is a v-if, so this unmounts it and stops the stream. It stays
-      // closed on the way back rather than reappearing, since by then it's not what you were
-      // looking at. See detailPanelVisible for the budget this is protecting.
+      // The bottom Log Viewer belongs to List/Flow (via the detail panel's button). Closing it
+      // on the way into a view that can't open it releases its connection - logViewerOpen is a
+      // v-if, so this unmounts and stops the stream. See detailPanelVisible for the budget.
       if (v === 'logs' || v === 'activity') this.closeLogViewer();
       if (v === 'flow') await this.fetchTopology();
     },

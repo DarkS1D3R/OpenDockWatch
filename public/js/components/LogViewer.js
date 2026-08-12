@@ -2,42 +2,11 @@ import { MAX_LOG_LINES } from '../constants.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs } from '../lib/logSync.js';
-import { decorateLines, selectLines } from '../lib/logLines.js';
+import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
-// log body. Mounted fresh by the root each time "Logs" is opened for a container (v-if, not
-// v-show) - its own mounted()/beforeUnmount() start and stop the stream, so the root no longer
-// needs to orchestrate that. `fullscreen` is the one bit of state the root still needs to know
-// about directly (v-model) - it hides the host card and other panels, which is the root's layout
-// to control, not this component's.
-//
-// `embedded` is the other mode this renders in: the Logs tab (LogsView) mounts one of these per
-// selected container inside its own right-hand pane instead of the root's overlay slot. There's
-// no "fullscreen" in that context (the pane already fills the tab), so that button is hidden and
-// the panel fills its parent's height via CSS instead of the fullscreen vh-calc. `multiPane` is
-// independent of `embedded` - LogsView only sets it once 2+ panes are open side by side, so a
-// single embedded pane still has no close/sync/main controls (picking a different row is the
-// close equivalent, and sync is meaningless with nothing else to sync with).
-//
-// `scroll-sync` is the other half of LogsView's multi-pane sync: emitted with { containerId,
-// tsMs } - this pane's own id and the epoch-ms timestamp of whichever line is now at the top of
-// the viewport - whenever the *user* scrolls (not when `scrollToTimestamp` moves this pane in
-// response to another one's sync event - `_programmatic` guards that). LogsView listens on every
-// open pane and calls `scrollToTimestamp` on every *other* one - not the sender itself, which
-// would otherwise re-snap its own scrollTop to the nearest line boundary every frame and fight a
-// continuous scroll gesture (most visible on whichever pane has the most lines to scroll through).
-//
-// `syncEnabled` (default true) is LogsView's per-pane opt-out - a pane with it off neither emits
-// scroll-sync (guarded in onScroll below) nor gets moved by scrollToTimestamp (LogsView skips it,
-// but scrollToTimestamp also refuses to move a disabled pane on its own, so this component stays
-// correct even called directly). `isMain` is purely a display flag - LogsView is the one that
-// decides a designated pane's scrolling is the only thing that drives the rest; this component
-// just renders the star and emits `set-main` when it's clicked.
-//
-// `wrap` (default true) follows the same embedded/standalone split as fullscreen: standalone owns
-// it via its own header toggle (v-model), embedded has no toggle of its own at all since LogsView
-// puts one toggle at the top of its container list that governs every open pane at once, rather
-// than repeating it in each pane's already-crowded header.
+// log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
+// controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
   props: {
@@ -50,11 +19,14 @@ export default {
     multiPane: { type: Boolean, default: false },
     syncEnabled: { type: Boolean, default: true },
     isMain: { type: Boolean, default: false },
-    // Whether long lines wrap (word-break) or run off the side with a horizontal scrollbar.
-    // Standalone (!embedded) owns this itself via its own header toggle (v-model, same shape as
-    // fullscreen). Embedded panes never render that toggle - LogsView has exactly one wrap toggle
-    // for the whole tab instead of one per pane, so it just feeds this prop straight down.
+    // Whether long lines wrap or run off the side with a horizontal scrollbar. Standalone owns
+    // this via its own header toggle (v-model); embedded panes never render that toggle - LogsView
+    // has one wrap toggle for the whole tab and feeds this prop straight down instead.
     wrap: { type: Boolean, default: true },
+    // A timestamp to scroll to once this pane's first real burst of lines has loaded, instead of
+    // live-tailing at the bottom - LogsView sets this when opening a pane into an already-scrolled
+    // group. Read once at mount, in startStream; a later prop change doesn't re-trigger it.
+    joinAtTsMs: { type: Number, default: null },
   },
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
@@ -71,13 +43,14 @@ export default {
       // container that has simply gone quiet.
       suspended: false,
       showTimestamps: true,
-      // The narrow-pane fallback for the level toggle - a dropdown menu instead of four buttons
-      // wide enough to clutter a half- or quarter-width pane. Which one is actually visible is a
-      // CSS container-query call (log-panel's own width, not the viewport's - what matters is how
-      // much room *this pane* has, same reasoning as the search input's collapse-on-focus below),
-      // but the open/closed state itself still needs to exist even when the compact version isn't
-      // currently shown.
+      // The narrow-pane fallback for the level toggle - a dropdown instead of four buttons wide
+      // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
+      // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
+      // Which matching line the search-hits box is parked on, held as that line's id rather than
+      // its position - the buffer trims from the front while tailing, so a position stops meaning
+      // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
+      activeMatchId: null,
     };
   },
   computed: {
@@ -105,11 +78,31 @@ export default {
         testRegex: this.testRegex,
       });
     },
+    searchActive() {
+      return !!this.filter.trim() && !this.regexError;
+    },
+    // Resolves the id back to a position on every render, so the highlight follows its line as the
+    // list shifts underneath it (append, trim, level toggle) instead of staying put while the
+    // lines move past. Computed, so the lookup runs once per render pass and not once per line.
+    activeHitIndex() {
+      return hitIndexFor(this.filteredLines, this.activeMatchId);
+    },
   },
   created() {
     this._stream = null;
     this._programmatic = false;
     this._syncRaf = null;
+    this._pendingJoinTsMs = null;
+  },
+  watch: {
+    // A new search term (or flipping regex mode) is a new hit list, so the cursor goes back to the
+    // first of them rather than staying on a line that may not even match any more.
+    filter() {
+      this.resetMatchCursor();
+    },
+    regexMode() {
+      this.resetMatchCursor();
+    },
   },
   mounted() {
     this.startStream();
@@ -136,9 +129,13 @@ export default {
       if (this._stream) this._stream.stop();
       this.lines = [];
       this.atBottom = true;
+      // logStream restarts line ids from 0 for a new source, so a cursor held across one would
+      // point at whatever unrelated line inherits that id. Same reason in onReset below.
+      this.activeMatchId = null;
       // A fresh stream is never suspended - the flag would otherwise survive from the stream this
       // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
       this.suspended = false;
+      this._pendingJoinTsMs = this.joinAtTsMs;
       this._stream = createLogStream({
         url: logsUrl(this.hostId, this.containerId, this.tail),
         onFlush: (lines) => this.appendLines(lines),
@@ -150,6 +147,7 @@ export default {
         onReset: () => {
           this.lines = [];
           this.atBottom = true;
+          this.activeMatchId = null;
         },
         onSuspendChange: (suspended) => {
           this.suspended = suspended;
@@ -161,6 +159,15 @@ export default {
       for (const line of decorateLines(lines)) this.lines.push(line);
       if (this.lines.length > MAX_LOG_LINES) {
         this.lines.splice(0, this.lines.length - MAX_LOG_LINES);
+      }
+      // First real content since a pending join was requested - honor it instead of the normal
+      // tail-to-bottom behavior below, then never again for this stream (one-shot).
+      if (this._pendingJoinTsMs != null) {
+        const tsMs = this._pendingJoinTsMs;
+        this._pendingJoinTsMs = null;
+        this.atBottom = false;
+        this.$nextTick(() => this.scrollToTimestamp(tsMs));
+        return;
       }
       if (this.atBottom) {
         this.$nextTick(() => {
@@ -187,11 +194,9 @@ export default {
     onScroll() {
       const el = this.$refs.logView;
       if (el) this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-      // A sync-driven scroll (scrollToTimestamp, called from LogsView in response to a *different*
-      // pane's user scroll) shouldn't itself broadcast - every pane doing that would ping-pong
-      // forever. rAF-throttled the same way logStream.js throttles its own flush, since a real drag
-      // scroll fires this dozens of times a frame otherwise. A pane with sync turned off doesn't
-      // broadcast at all - scrolling it is meant to be a private, independent action.
+      // A sync-driven scroll (scrollToTimestamp) shouldn't itself broadcast, or every pane would
+      // ping-pong forever. rAF-throttled like logStream.js's own flush, since a real drag scroll
+      // fires this dozens of times a frame. A pane with sync off never broadcasts at all.
       if (this._programmatic || this._syncRaf || !this.syncEnabled) return;
       this._syncRaf = requestAnimationFrame(() => {
         this._syncRaf = null;
@@ -236,6 +241,40 @@ export default {
       requestAnimationFrame(() => {
         this._programmatic = false;
       });
+    },
+    resetMatchCursor() {
+      this.activeMatchId = null;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    nextMatch() {
+      this.moveMatch(1);
+    },
+    prevMatch() {
+      this.moveMatch(-1);
+    },
+    moveMatch(delta) {
+      const id = stepHitId(this.filteredLines, this.activeMatchId, delta);
+      if (id == null) return;
+      this.activeMatchId = id;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    // Line-granularity, not per-occurrence: filteredLines' divs are the only stable scroll targets,
+    // and centering on the matching line is enough to read which term hit without indexing marks.
+    scrollToActiveMatch() {
+      const el = this.$refs.logView;
+      const child = el && this.activeHitIndex >= 0 ? el.children[this.activeHitIndex] : null;
+      if (!child) return;
+      this._programmatic = true;
+      child.scrollIntoView({ block: 'center' });
+      requestAnimationFrame(() => {
+        this._programmatic = false;
+      });
+    },
+    onFilterKeydown(e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (e.shiftKey) this.prevMatch();
+      else this.nextMatch();
     },
     scrollToBottom() {
       this.atBottom = true;
@@ -302,6 +341,7 @@ export default {
               <input
                 type="text"
                 v-model="filter"
+                @keydown="onFilterKeydown"
                 :placeholder="regexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
                 :class="{ 'filter-invalid': regexError }"
               />
@@ -316,7 +356,11 @@ export default {
               .*
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
-            <span v-else-if="filter" class="filter-count-text">{{ filteredLines.length }} / {{ lines.length }}</span>
+            <div v-else-if="searchActive" class="search-hits-box">
+              <button class="search-hits-btn" @click="prevMatch" :disabled="!filteredLines.length" title="Previous match (Shift+Enter)">▲</button>
+              <span class="search-hits-count">{{ filteredLines.length ? activeHitIndex + 1 : 0 }} / {{ filteredLines.length }}</span>
+              <button class="search-hits-btn" @click="nextMatch" :disabled="!filteredLines.length" title="Next match (Enter)">▼</button>
+            </div>
           </div>
           <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
             <option :value="100">Last 100 lines</option>
@@ -372,7 +416,7 @@ export default {
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="(line, idx) in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && idx === activeHitIndex }" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
     </div>
