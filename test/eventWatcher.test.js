@@ -35,10 +35,21 @@ test('parseEventLine', async (t) => {
       hostId: 'local',
       containerId: 'abcdef012345',
       containerName: 'web',
+      composeProject: null,
       action: 'start',
       ts: 1700000000 * 1000,
       raw,
     });
+  });
+
+  await t.test('extracts composeProject from Actor.Attributes', () => {
+    const raw = {
+      Type: 'container',
+      Action: 'start',
+      Actor: { ID: 'abcdef0123456789', Attributes: { name: 'web', 'com.docker.compose.project': 'billing' } },
+      time: 1700000000,
+    };
+    assert.equal(parseEventLine(JSON.stringify(raw), host).composeProject, 'billing');
   });
 
   await t.test('ignores non-container events', () => {

@@ -132,6 +132,33 @@ test('security headers are set on every response', async (t) => {
   });
 });
 
+// A NaN bound into `WHERE id = ?` matches no row and reports success, so an unvalidated id makes
+// the API answer 200 to a request that did nothing at all - same class as intParam's guard.
+test('container-rules routes reject an unusable id rather than no-op with a 200', async (t) => {
+  const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+  const body = { matchType: 'name', matchValue: 'x' };
+
+  await t.test('400s on a non-numeric id', async () => {
+    assert.equal((await agent.delete('/api/settings/container-rules/abc')).status, 400);
+    assert.equal((await agent.put('/api/settings/container-rules/abc').send(body)).status, 400);
+  });
+
+  await t.test('404s on a well-formed id that no rule has', async () => {
+    assert.equal((await agent.delete('/api/settings/container-rules/999999')).status, 404);
+    assert.equal((await agent.put('/api/settings/container-rules/999999').send(body)).status, 404);
+  });
+
+  await t.test('still round-trips a real rule through add, update and delete', async () => {
+    const added = await agent.post('/api/settings/container-rules').send(body);
+    assert.equal(added.status, 200);
+    const id = added.body[added.body.length - 1].id;
+    assert.equal((await agent.put(`/api/settings/container-rules/${id}`).send({ ...body, cpuThreshold: 150 })).status, 200);
+    const updated = (await agent.get('/api/settings/container-rules')).body.find((r) => r.id === id);
+    assert.equal(updated.cpuThreshold, 150, 'a CPU threshold over 100 is valid - docker CPU% is per-core cumulative');
+    assert.equal((await agent.delete(`/api/settings/container-rules/${id}`)).status, 200);
+  });
+});
+
 test('GET /metrics', async (t) => {
   const original = process.env.METRICS_TOKEN;
   t.after(() => {

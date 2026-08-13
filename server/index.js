@@ -629,6 +629,103 @@ api.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (req, 
   }
 });
 
+// Per-container/name/compose-project alert overrides - first-match-wins ordered list, same
+// admin-only shape as the webhook/threshold/host settings above. See alerts.js's resolveContainerConfig.
+const EVENT_RULE_NAMES = new Set(['container_crashed', 'crash_loop', 'unhealthy']);
+const MATCH_TYPES = new Set(['name', 'composeProject']);
+
+// Same reasoning as intParam/requireContainerId: nothing off the URL reaches sqlite unchecked.
+// Returns null for anything that isn't a positive integer rowid, so the route can 400 rather than
+// bind a NaN that quietly matches no row and reports success.
+function ruleIdParam(raw) {
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function validateContainerRuleBody(body, hosts) {
+  const { hostId, matchType, matchValue, cpuThreshold, memThreshold, sustainMinutes, mutedRules } = body;
+  if (hostId && !hosts.some((h) => h.id === hostId)) return 'unknown hostId';
+  if (!MATCH_TYPES.has(matchType)) return 'matchType must be "name" or "composeProject"';
+  if (!matchValue || typeof matchValue !== 'string' || !matchValue.trim()) return 'matchValue is required';
+  for (const [field, val] of [
+    ['cpuThreshold', cpuThreshold],
+    ['memThreshold', memThreshold],
+    ['sustainMinutes', sustainMinutes],
+  ]) {
+    if (val !== null && val !== undefined && val !== '' && (!Number.isFinite(Number(val)) || Number(val) < 0)) {
+      return `${field} must be a non-negative number, or blank to inherit the global default`;
+    }
+  }
+  if (mutedRules !== undefined && (!Array.isArray(mutedRules) || mutedRules.some((r) => !EVENT_RULE_NAMES.has(r)))) {
+    return 'mutedRules must be an array of container_crashed/crash_loop/unhealthy';
+  }
+  return null;
+}
+
+function normalizeContainerRuleBody(body) {
+  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+  return {
+    hostId: body.hostId || null,
+    matchType: body.matchType,
+    matchValue: body.matchValue.trim(),
+    cpuThreshold: num(body.cpuThreshold),
+    memThreshold: num(body.memThreshold),
+    sustainMinutes: num(body.sustainMinutes),
+    mutedRules: body.mutedRules || [],
+  };
+}
+
+api.get('/settings/container-rules', requireAdmin, (req, res) => {
+  res.json(db.getContainerAlertRules());
+});
+
+// Registered before the /:id routes below - :id would otherwise match the literal string
+// "reorder" too, since Express matches route patterns in registration order.
+api.put('/settings/container-rules/reorder', requireAdmin, (req, res) => {
+  const { orderedIds } = req.body || {};
+  const existing = db.getContainerAlertRules();
+  const existingIds = new Set(existing.map((r) => r.id));
+  const valid =
+    Array.isArray(orderedIds) &&
+    orderedIds.length === existing.length &&
+    orderedIds.every((id) => existingIds.has(id)) &&
+    new Set(orderedIds).size === orderedIds.length;
+  if (!valid) return res.status(400).json({ error: 'orderedIds must list every existing rule id exactly once' });
+  db.reorderContainerAlertRules(orderedIds);
+  logger.info('settings.container_rules.reorder', { user: req.session.username });
+  res.json(db.getContainerAlertRules());
+});
+
+api.post('/settings/container-rules', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const err = validateContainerRuleBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  db.insertContainerAlertRule(normalizeContainerRuleBody(body));
+  logger.info('settings.container_rules.add', { user: req.session.username, matchType: body.matchType, matchValue: body.matchValue });
+  res.json(db.getContainerAlertRules());
+});
+
+api.put('/settings/container-rules/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid rule id' });
+  const body = req.body || {};
+  const err = validateContainerRuleBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  if (!db.updateContainerAlertRule(id, normalizeContainerRuleBody(body))) {
+    return res.status(404).json({ error: 'no such rule' });
+  }
+  logger.info('settings.container_rules.update', { user: req.session.username, id });
+  res.json(db.getContainerAlertRules());
+});
+
+api.delete('/settings/container-rules/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid rule id' });
+  if (!db.deleteContainerAlertRule(id)) return res.status(404).json({ error: 'no such rule' });
+  logger.info('settings.container_rules.remove', { user: req.session.username, id });
+  res.json(db.getContainerAlertRules());
+});
+
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, requireContainerId, async (req, res) => {
   const host = req.host;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);

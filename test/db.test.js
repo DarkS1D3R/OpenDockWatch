@@ -90,3 +90,67 @@ test('insertContainerMetrics', async (t) => {
     assert.equal(rows[0].cpuPerc, 15, 'bucket should average the two cpu samples');
   });
 });
+
+test('container_alert_rules CRUD', async (t) => {
+  await t.test('insertContainerAlertRule assigns increasing sort_order, returned in order by getContainerAlertRules', () => {
+    const a = db.insertContainerAlertRule({ matchType: 'name', matchValue: 'redis' });
+    const b = db.insertContainerAlertRule({ matchType: 'composeProject', matchValue: 'billing', hostId: 'h1' });
+    const ids = db.getContainerAlertRules().map((r) => r.id);
+    assert.ok(ids.indexOf(a) < ids.indexOf(b));
+  });
+
+  await t.test('round-trips nullable overrides and mutedRules', () => {
+    const id = db.insertContainerAlertRule({
+      matchType: 'name',
+      matchValue: 'web',
+      cpuThreshold: 80,
+      memThreshold: null,
+      sustainMinutes: 2,
+      mutedRules: ['crash_loop', 'unhealthy'],
+    });
+    const rule = db.getContainerAlertRules().find((r) => r.id === id);
+    assert.equal(rule.cpuThreshold, 80);
+    assert.equal(rule.memThreshold, null);
+    assert.equal(rule.sustainMinutes, 2);
+    assert.deepEqual(rule.mutedRules, ['crash_loop', 'unhealthy']);
+    assert.equal(rule.hostId, null);
+  });
+
+  await t.test('updateContainerAlertRule overwrites fields without changing sort_order', () => {
+    const id = db.insertContainerAlertRule({ matchType: 'name', matchValue: 'orig' });
+    const before = db.getContainerAlertRules().find((r) => r.id === id);
+    db.updateContainerAlertRule(id, { matchType: 'composeProject', matchValue: 'updated', cpuThreshold: 55, mutedRules: ['unhealthy'] });
+    const after = db.getContainerAlertRules().find((r) => r.id === id);
+    assert.equal(after.matchType, 'composeProject');
+    assert.equal(after.matchValue, 'updated');
+    assert.equal(after.cpuThreshold, 55);
+    assert.deepEqual(after.mutedRules, ['unhealthy']);
+    assert.equal(after.sortOrder, before.sortOrder);
+  });
+
+  await t.test('deleteContainerAlertRule removes the row', () => {
+    const id = db.insertContainerAlertRule({ matchType: 'name', matchValue: 'temp' });
+    assert.equal(db.deleteContainerAlertRule(id), true);
+    assert.equal(
+      db.getContainerAlertRules().some((r) => r.id === id),
+      false
+    );
+  });
+
+  await t.test('update/delete report false for an id that no longer exists, so a route can 404', () => {
+    const id = db.insertContainerAlertRule({ matchType: 'name', matchValue: 'gone' });
+    db.deleteContainerAlertRule(id);
+    assert.equal(db.deleteContainerAlertRule(id), false);
+    assert.equal(db.updateContainerAlertRule(id, { matchType: 'name', matchValue: 'gone' }), false);
+  });
+
+  await t.test('reorderContainerAlertRules rewrites sort_order to match the given id list', () => {
+    db.insertContainerAlertRule({ matchType: 'name', matchValue: 'order-x' });
+    db.insertContainerAlertRule({ matchType: 'name', matchValue: 'order-y' });
+    const before = db.getContainerAlertRules().map((r) => r.id);
+    const reordered = [...before].reverse();
+    db.reorderContainerAlertRules(reordered);
+    const after = db.getContainerAlertRules().map((r) => r.id);
+    assert.deepEqual(after, reordered);
+  });
+});

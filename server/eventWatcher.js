@@ -33,6 +33,9 @@ function parseEventLine(line, host) {
     hostId: host.id,
     containerId: id ? id.slice(0, 12) : null,
     containerName: attrs.name || null,
+    // docker events' Actor.Attributes carries the full label set (same source docker.js's
+    // listContainers reads composeProject from) alongside name/exitCode/signal - free, no extra call.
+    composeProject: attrs['com.docker.compose.project'] || null,
     action: raw.Action,
     ts: raw.time ? raw.time * 1000 : Date.now(),
     raw,

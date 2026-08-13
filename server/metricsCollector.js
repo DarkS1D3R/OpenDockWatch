@@ -127,11 +127,16 @@ async function pollHost(host) {
         memPerc,
         ts,
         alertsDisabled: c.alertsDisabled,
+        composeProject: c.composeProject,
       });
     }
 
     db.insertContainerMetrics(samples);
-    for (const sample of alertSamples) alerts.handleSample(sample);
+    // One settings+rules read for the whole poll rather than one per container - resolved lazily so
+    // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
+    const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);
+    const alertCtx = anyAlerting ? alerts.alertContext() : null;
+    for (const sample of alertSamples) alerts.handleSample(sample, alertCtx);
 
     // Containers that have gone away since the last poll can't dip back under threshold to
     // clear their own breach counters, so they're dropped here instead.

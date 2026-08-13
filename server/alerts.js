@@ -139,6 +139,61 @@ function clearThresholdConfig() {
   return getThresholdConfig();
 }
 
+// Ordered walk, first host+matcher match wins *in full* for that container - not merged
+// field-by-field across multiple candidate rules. composeProject matches exactly (it's a fixed
+// label value); name matches by case-insensitive substring, same as every other filter in this
+// app (List/Logs/Activity search boxes).
+function findMatchingRule(rules, hostId, containerName, composeProject) {
+  for (const rule of rules) {
+    if (rule.hostId && rule.hostId !== hostId) continue;
+    if (rule.matchType === 'name') {
+      if (containerName && containerName.toLowerCase().includes(rule.matchValue.toLowerCase())) return rule;
+    } else if (composeProject && composeProject.toLowerCase() === rule.matchValue.toLowerCase()) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+// The settings+rules reads resolveContainerConfig needs, hoisted so a caller with many containers
+// pays them once instead of per container - metricsCollector.pollHost does exactly that, since at
+// 200 containers and 10 rules the per-container read cost ~6ms of event-loop time every 5s.
+function alertContext() {
+  return { global: getThresholdConfig(), rules: db.getContainerAlertRules() };
+}
+
+// The effective per-container config: the global threshold config, with any fields the matched
+// rule sets overriding it (a rule's own null field still inherits the global value), plus which
+// event rules are muted for this container. No matching rule (the common case) returns the global
+// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see CLAUDE.md.
+function resolveContainerConfig({ hostId, containerName, composeProject }, ctx) {
+  const { global, rules } = ctx || alertContext();
+  const rule = findMatchingRule(rules, hostId, containerName, composeProject);
+  if (!rule) return { ...global, mutedEventRules: new Set(), matchedRuleId: null };
+  return {
+    ...global,
+    cpuThreshold: rule.cpuThreshold ?? global.cpuThreshold,
+    memThreshold: rule.memThreshold ?? global.memThreshold,
+    sustainMinutes: rule.sustainMinutes ?? global.sustainMinutes,
+    mutedEventRules: new Set(rule.mutedRules),
+    matchedRuleId: rule.id,
+  };
+}
+
+// Logs the suppression as it reports it: a fired alert always leaves an alert.fired line, so
+// without this a muted one is the only outcome with no trace at all to answer "why no alert?".
+function mutedByRule(eventRule, { hostId, containerId, containerName, composeProject }) {
+  const cfg = resolveContainerConfig({ hostId, containerName, composeProject });
+  if (!cfg.mutedEventRules.has(eventRule)) return false;
+  logger.info('alert.muted', {
+    host: hostId,
+    container: containerName || containerId,
+    rule: eventRule,
+    ruleId: cfg.matchedRuleId,
+  });
+  return true;
+}
+
 // Consecutive-breach tracking keyed "hostId:containerId:rule": fires once a breach is sustained
 // for sustainMs (a single over-threshold sample is noise), resets on dipping under threshold
 // (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see CLAUDE.md.
@@ -329,6 +384,7 @@ function fire({ hostId, containerId, containerName, rule, severity, message }) {
 }
 
 function handleEvent(event) {
+  // composeProject isn't destructured here - mutedByRule reads it (and the ids) off `event` itself.
   const { hostId, containerId, containerName, action, ts, raw } = event;
 
   if (action === 'die') {
@@ -340,7 +396,9 @@ function handleEvent(event) {
     const code = Number.isNaN(parsed) ? null : parsed;
     if (code !== 0) {
       const recentManualStop = db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0;
-      if (!recentManualStop) {
+      // mutedByRule only runs in this already-narrow, about-to-fire path - not once per
+      // docker-events line - so this is at most one extra rules-table read per real crash.
+      if (!recentManualStop && !mutedByRule('container_crashed', event)) {
         fire({
           hostId,
           containerId,
@@ -360,7 +418,7 @@ function handleEvent(event) {
     // times) so a burst of manual actions doesn't read as a crash loop.
     const manualCount = db.countManualStartsSince(hostId, containerId, sinceTs);
     const autoCount = count - manualCount;
-    if (autoCount >= CRASH_LOOP_THRESHOLD) {
+    if (autoCount >= CRASH_LOOP_THRESHOLD && !mutedByRule('crash_loop', event)) {
       fire({
         hostId,
         containerId,
@@ -375,7 +433,7 @@ function handleEvent(event) {
     }
   }
 
-  if (action === 'health_status: unhealthy') {
+  if (action === 'health_status: unhealthy' && !mutedByRule('unhealthy', event)) {
     fire({
       hostId,
       containerId,
@@ -400,12 +458,14 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   }
 }
 
-// Called once per running container on every stats poll (~5s). cpuPerc is raw docker-stats CPU%
-// (per-core cumulative, so 4 cores fully used reads 400%, matching what the UI shows). memPerc is
-// docker's MemPerc against the container's own memory limit - unlimited containers rarely trip it.
-function handleSample({ hostId, containerId, containerName, cpuPerc, memPerc, ts, alertsDisabled }) {
+// Called once per running container on every stats poll (~5s), with `ctx` one alertContext() shared
+// by the whole poll. cpuPerc is raw docker-stats CPU% (per-core cumulative, so 4 cores fully used
+// reads 400%, matching the UI); memPerc is MemPerc against the container's own limit.
+function handleSample({ hostId, containerId, containerName, composeProject, cpuPerc, memPerc, ts, alertsDisabled }, ctx) {
+  // Unconditional, before any rules-table read - zero DB cost for a container opted out via the
+  // label, same as today. See CLAUDE.md for why this stays separate from container_alert_rules.
   if (alertsDisabled) return;
-  const cfg = getThresholdConfig();
+  const cfg = resolveContainerConfig({ hostId, containerName, composeProject }, ctx);
   const sustainMs = cfg.sustainMinutes * 60_000;
 
   // Folded into "breached" itself rather than skipping checkSustained while disabled - a rule
@@ -505,6 +565,8 @@ module.exports = {
   getThresholdConfig,
   setThresholdConfig,
   clearThresholdConfig,
+  alertContext,
+  resolveContainerConfig,
   sendTestAlert,
   loadBreachState,
   retryFailedWebhooks,

@@ -176,6 +176,7 @@ Some caveats worth knowing:
 - Mem % is `docker stats` MemPerc, computed against a container's own memory limit. A container with no limit set reads low against host total and rarely trips `container_mem` — in practice this focuses the rule on containers that do have limits, which is where memory pressure actually OOMKills.
 - `docker_disk` is Docker's own footprint (images, containers, volumes, build cache) — Docker doesn't report host filesystem free space, so this can't be a true "disk almost full" alert. Treat it as a prune reminder.
 - Skip threshold alerts for a single container entirely with the `opendockwatch.alerts=off` label (`docker run --label opendockwatch.alerts=off ...` or the equivalent in a compose file).
+- Beyond that blanket label, admins can define per-container/name/compose-project alert rules from the Settings panel's **Container Rules** tab: an ordered list matched by container name (substring, case-insensitive) or an exact compose project, optionally scoped to one host, overriding the CPU/mem/sustain thresholds and/or muting individual event rules (`container_crashed`/`crash_loop`/`unhealthy`) for matched containers. The first matching rule wins in full — rules aren't merged together — and anything a matched rule leaves blank still inherits the global threshold above. No glob/regex matching. A muted event rule logs an `alert.muted` line instead of firing, so the Log Viewer still shows that something was suppressed and which rule did it.
 
 Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification on any of the rules above. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
 
@@ -187,7 +188,7 @@ Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification on any of the 
 | Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
 | Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
 
-Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a panel to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured.
+Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (Webhook / Thresholds / Container Rules / Hosts) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured.
 
 ## Notes
 

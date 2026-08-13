@@ -1104,6 +1104,11 @@ table.containers td:nth-child(7) {
 .detail-body {
   padding: 14px 16px;
 }
+/* .view-toggle carries no outer margin of its own (the topbar positions it via flex gap instead) -
+   needed here since it sits directly between .detail-header and .detail-body's own padding. */
+.settings-tabs {
+  margin: 12px 16px 0;
+}
 .detail-row {
   display: flex;
   justify-content: space-between;
@@ -1943,6 +1948,16 @@ button.log-pane-main-btn.active:hover {
   gap: 8px;
   margin-top: 12px;
   flex-wrap: wrap;
+}
+/* The mute-event-rule checkboxes inside a .modal-field - flex-direction:column there would stack
+   these one per line otherwise, which reads as three separate fields instead of one group. */
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 12px;
+  font-size: 13px;
+  color: var(--text);
 }
 .modal-body hr {
   border: none;
