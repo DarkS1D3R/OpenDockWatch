@@ -94,6 +94,7 @@ function startWatcher(host) {
 
   child.on('spawn', () => {
     if (watchers.get(host.id) !== state) return;
+    logger.info('events.stream.started', { host: host.id, dockerHost: host.dockerHost || 'local' });
     state.healthyTimer = setTimeout(() => {
       state.restartDelay = RESTART_BASE_DELAY_MS;
     }, HEALTHY_AFTER_MS);
@@ -106,6 +107,9 @@ function startWatcher(host) {
     if (watchers.get(host.id) !== state || state.stopped) return;
     if (state.healthyTimer) clearTimeout(state.healthyTimer);
     const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);
+    // A host whose stream keeps dying and backing off is otherwise entirely silent - the exit
+    // isn't an error, so nothing logged it, and the growing delay was invisible.
+    logger.warn('events.stream.restarting', { host: host.id, delayMs: delay });
     state.restartTimer = setTimeout(() => {
       if (watchers.get(host.id) !== state || state.stopped) return;
       startWatcher(host);
@@ -139,6 +143,7 @@ function removeHost(hostId) {
   if (!state) return;
   teardown(state);
   watchers.delete(hostId);
+  logger.info('events.stream.stopped', { host: hostId });
 }
 
 function stop() {

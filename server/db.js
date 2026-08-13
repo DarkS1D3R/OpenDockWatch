@@ -493,13 +493,17 @@ function close() {
   db.close();
 }
 
+// Returns rows deleted per table so the caller can report what retention actually removed - this
+// is the only path in the app that deletes anything, and it used to leave no trace at all.
 function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
   const now = Date.now();
-  stmts.pruneContainerMetrics.run(now - metricsRetentionMs);
-  stmts.pruneHostMetrics.run(now - metricsRetentionMs);
-  stmts.pruneEvents.run(now - eventsRetentionMs);
-  stmts.pruneAuditLog.run(now - auditRetentionMs);
-  stmts.pruneAlerts.run(now - auditRetentionMs);
+  return {
+    containerMetrics: stmts.pruneContainerMetrics.run(now - metricsRetentionMs).changes,
+    hostMetrics: stmts.pruneHostMetrics.run(now - metricsRetentionMs).changes,
+    events: stmts.pruneEvents.run(now - eventsRetentionMs).changes,
+    auditLog: stmts.pruneAuditLog.run(now - auditRetentionMs).changes,
+    alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
+  };
 }
 
 module.exports = {

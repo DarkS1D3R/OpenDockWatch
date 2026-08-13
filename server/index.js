@@ -87,12 +87,13 @@ function requireContainerId(req, res, next) {
   next();
 }
 
-// Resolves :hostId to a configured host, attaching it as req.host so route handlers don't each
-// repeat the getHost()/404 pair - it was copy-pasted verbatim across every /hosts/:hostId route.
+// Resolves :hostId to a configured host so route handlers don't each repeat the getHost()/404
+// pair. The property is `odwHost` and must not be `host`: express defines req.host as a getter-only
+// property (the Host header), so assigning it silently no-ops and handlers get a string. See CLAUDE.md.
 function requireHost(req, res, next) {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
-  req.host = host;
+  req.odwHost = host;
   next();
 }
 
@@ -328,7 +329,7 @@ api.get('/hosts', async (req, res) => {
 // browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. ?fresh=1
 // forces a live call right after a start/stop/restart, where staleness reads as "didn't work".
 api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const useSnapshot = req.query.fresh !== '1' && snapshot && snapshot.reachable && snapshot.statsTs;
   try {
@@ -347,7 +348,7 @@ api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
 // Config.Env is where DB passwords and API keys live. Viewers get variable names with the values
 // masked, flagged by envMasked so the UI can say so rather than look like the values are blank.
 api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   try {
     const inspect = await getContainerInspect(host, req.params.id);
     if (req.session.role === 'admin') return res.json(inspect);
@@ -358,7 +359,7 @@ api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId
 });
 
 api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   try {
     res.json(await getHostInfo(host));
   } catch (err) {
@@ -367,7 +368,7 @@ api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   // Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's
   // at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on
   // statsTs, not just reachable, since a freshly-added host has empty stats until its first poll.
@@ -381,7 +382,7 @@ api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   try {
     const snapshot = metricsCollector.getSnapshot(host.id);
     const topology = await getTopology(host, snapshot);
@@ -394,7 +395,7 @@ api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   if (snapshot && snapshot.diskUsage) return res.json(snapshot.diskUsage);
   try {
@@ -408,7 +409,7 @@ api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
 // is extra work to walk every image's shared/unique layer sizes - only fetched on demand, when
 // the Images disclosure in the Disk tile is actually opened.
 api.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   try {
     res.json(await getDiskUsageImages(host));
   } catch (err) {
@@ -441,9 +442,21 @@ api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   );
 });
 
+// Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
+// the Activity tab is open, so "which streams are actually open right now" is worth being able to
+// reconstruct from the log when the UI goes unresponsive. See CLAUDE.md's connection budget.
 api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   const unsubscribe = eventWatcher.broadcaster.subscribe(res, req.params.hostId);
-  req.on('close', unsubscribe);
+  const openedAt = Date.now();
+  logger.info('events.stream.subscribed', { host: req.params.hostId, user: req.session.username });
+  req.on('close', () => {
+    unsubscribe();
+    logger.info('events.stream.unsubscribed', {
+      host: req.params.hostId,
+      user: req.session.username,
+      heldSec: Math.round((Date.now() - openedAt) / 1000),
+    });
+  });
 });
 
 api.get('/audit', (req, res) => {
@@ -494,11 +507,11 @@ api.put('/settings/webhook', requireAdmin, (req, res) => {
   if (format && format !== 'slack') {
     return res.status(400).json({ error: 'format must be empty or "slack"' });
   }
-  // Log only the scheme, never the full URL - webhook URLs embed secrets (Discord token, Slack
-  // path, ntfy topic) that have no business sitting in the container's log output.
+  // Scheme only, never the full URL - webhook URLs embed secrets (Discord token, Slack path, ntfy
+  // topic) that have no business in the container's log output. Shared helper, same reason.
   logger.info('settings.webhook.update', {
     user: req.session.username,
-    url: url ? new URL(url).protocol + '//…' : '(cleared)',
+    url: url ? alerts.webhookScheme(url) : '(cleared)',
     format: format || 'auto',
   });
   res.json(alerts.setWebhookConfig({ url, format }));
@@ -620,7 +633,7 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
 // of collapsing it to a boolean - "Host key verification failed" or "Permission denied
 // (publickey)" tells the user exactly what to fix, "unreachable" in the host card doesn't.
 api.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   try {
     await testHostConnection(host);
     res.json({ ok: true });
@@ -727,10 +740,11 @@ api.delete('/settings/container-rules/:id', requireAdmin, (req, res) => {
 });
 
 api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, requireContainerId, async (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
   const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
   const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
+  const startedAt = Date.now();
 
   // Written before containerAction runs, not after it resolves - the daemon can emit the
   // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
@@ -746,21 +760,26 @@ api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, req
     error: null,
   });
 
+  // Paired with the completion line below rather than logging only on success: `docker stop` can
+  // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
+  // a pressed button left nothing in the log at all - only a 'pending' audit row.
+  logger.info(`container.${req.params.action}.requested`, logFields);
+
   try {
     await containerAction(host, req.params.id, req.params.action);
     db.updateAuditLogResult(auditId, 'ok', null);
-    logger.info(`container.${req.params.action}`, logFields);
+    logger.info(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt });
     res.json({ ok: true });
   } catch (err) {
     const detail = err.stderr || err.message;
     db.updateAuditLogResult(auditId, 'error', detail);
-    logger.error(`container.${req.params.action}`, { ...logFields, error: detail });
+    logger.error(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
     dockerError(res, err);
   }
 });
 
 api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
 
   res.set({
     'Content-Type': 'text/event-stream',
@@ -769,7 +788,20 @@ api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (
   });
   res.flushHeaders();
 
-  const child = streamLogs(host, req.params.id, { tail: tailParam(req.query.tail, 200) });
+  const tail = tailParam(req.query.tail, 200);
+  const child = streamLogs(host, req.params.id, { tail });
+  // Each of these is a `docker logs -f` child on the host *and* a held browser connection, and
+  // the pair is the app's main way of running out of either. closedBy says which side ended it:
+  // 'client' is a normal pane close or tab suspend, 'child' is docker exiting under us.
+  const openedAt = Date.now();
+  logger.info('logs.stream.open', { host: host.id, container: req.params.id, tail, user: req.session.username });
+  const logClose = (closedBy) =>
+    logger.info('logs.stream.close', {
+      host: host.id,
+      container: req.params.id,
+      closedBy,
+      heldSec: Math.round((Date.now() - openedAt) / 1000),
+    });
 
   // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
   // streams) so a line split across chunk boundaries isn't emitted as two SSE
@@ -797,27 +829,35 @@ api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (
   // removed container, a restarted daemon) - without ending the response on the latter, the
   // heartbeat kept it looking alive forever. Ending it lets EventSource's reconnect take over.
   let closed = false;
-  const cleanup = () => {
+  const cleanup = (closedBy) => {
     if (closed) return;
     closed = true;
     clearInterval(heartbeat);
     child.kill();
     res.end();
+    logClose(closedBy);
   };
 
   child.on('error', (err) => {
+    // Only the browser pane used to see this - a stream that never starts left nothing server-side.
+    logger.error('logs.stream.failed', { host: host.id, container: req.params.id, error: err.message });
     res.write(`data: [opendockwatch] failed to stream logs: ${err.message}\n\n`);
-    cleanup();
+    cleanup('error');
   });
-  child.on('close', cleanup);
-
-  req.on('close', cleanup);
+  // Both wrapped rather than passed directly: 'close' hands its listener an exit code, which would
+  // otherwise land in cleanup's closedBy.
+  child.on('close', () => cleanup('child'));
+  req.on('close', () => cleanup('client'));
 });
 
 api.get('/hosts/:hostId/containers/:id/logs/download', requireHost, requireContainerId, (req, res) => {
-  const host = req.host;
+  const host = req.odwHost;
 
-  const child = downloadLogs(host, req.params.id, { tail: tailParam(req.query.tail, 5000) });
+  const tail = tailParam(req.query.tail, 5000);
+  // Container logs routinely carry secrets and customer data, so who exported them and when is
+  // audit material, not just diagnostics - the same reason container.start/stop is logged.
+  logger.info('logs.download', { host: host.id, container: req.params.id, tail, user: req.session.username });
+  const child = downloadLogs(host, req.params.id, { tail });
 
   const safeName = (s) => s.replace(/[^a-zA-Z0-9_.-]/g, '_');
   res.set({
@@ -861,8 +901,17 @@ app.use((err, req, res, next) => {
 // guard, importing the module for its routes would also open a port and start polling.
 if (require.main === module) {
   const server = app.listen(PORT, () => {
-    // eslint-disable-next-line no-console -- plain startup banner, not a structured logger.js event
-    console.log(`[opendockwatch] listening on http://localhost:${PORT}`);
+    // Through logger.js, not console: the Log Viewer filters on the [LEVEL] tag, so a banner on
+    // plain console is invisible in the app's own log view - which is where someone checking
+    // "did it actually come up, and as what version?" is looking.
+    logger.banner(appVersion, `http://localhost:${PORT}`);
+    logger.info('app.started', {
+      version: appVersion,
+      port: PORT,
+      nodeEnv: process.env.NODE_ENV || 'development',
+      hosts: loadHosts().length,
+      pid: process.pid,
+    });
     alerts.loadBreachState();
     alerts.start();
     eventWatcher.start();
@@ -891,8 +940,9 @@ if (require.main === module) {
   // Without this, `docker stop` sends SIGTERM and the default handler kills the
   // process immediately - potentially mid-write to the sqlite db.
   const shutdown = (signal) => {
-    // eslint-disable-next-line no-console -- plain shutdown banner, not a structured logger.js event
-    console.log(`[opendockwatch] received ${signal}, shutting down`);
+    // Same reasoning as app.started: a clean SIGTERM shutdown and a watchdog self-exit look
+    // identical in `docker logs` unless the graceful path says so itself.
+    logger.info('app.shutdown', { signal, uptimeSec: Math.round(process.uptime()) });
     watchdog.stop();
     metricsCollector.stop();
     eventWatcher.stop();
@@ -916,4 +966,4 @@ if (require.main === module) {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = { app, api, requestTimeout };
+module.exports = { app, api, requestTimeout, requireHost };

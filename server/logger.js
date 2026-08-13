@@ -19,8 +19,28 @@ function write(level, event, fields) {
   else console.log(line);
 }
 
+// Boot banner. Deliberately the one thing here that isn't a tagged single-line event: it's a
+// visual marker for where a restart begins when scrolling back through `docker logs`, and the
+// app.started line carrying the actual data follows it immediately. See CLAUDE.md.
+const BANNER = String.raw`
+    ____  ____ _       __
+   / __ \/ __ \ |     / /   OpenDockWatch
+  / / / / / / / | /| / /    %s
+ / /_/ / /_/ /| |/ |/ /     %s
+ \____/_____/ |__/|__/
+`;
+
+function banner(version, subtitle) {
+  // Two separate replaces, not replaceAll - the placeholders are filled in order, one per line.
+  const line = BANNER.replace('%s', `v${version}`).replace('%s', subtitle);
+  // Straight to console, not write(): the banner is art, not a tagged event. It's the only such
+  // write in the server - everything else goes through write() above.
+  console.log(line);
+}
+
 module.exports = {
   info: (event, fields) => write('INFO', event, fields),
   warn: (event, fields) => write('WARN', event, fields),
   error: (event, fields) => write('ERROR', event, fields),
+  banner,
 };

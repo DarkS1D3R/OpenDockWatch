@@ -23,6 +23,16 @@ function slackText(alert) {
   return `*[opendockwatch] ${alert.severity.toUpperCase()}* ${alert.hostId}/${alert.containerName || alert.containerId || ''}: ${alert.message}`;
 }
 
+// The only form of a webhook URL that may ever reach a log: the rest embeds a Discord/Gotify token
+// or an ntfy topic. Shared with index.js's settings route so the redaction can't drift between them.
+function webhookScheme(rawUrl) {
+  try {
+    return new URL(rawUrl).protocol + '//…';
+  } catch {
+    return '(unparseable)';
+  }
+}
+
 // Routes ALERT_WEBHOOK_URL to the right destination/payload shape based on its scheme,
 // apprise-style (discord://, ntfy://, gotify(s)://, or a plain http(s) URL - auto-detects
 // Slack, else generic JSON POST). See README's Alerts section for the full scheme table.
@@ -286,6 +296,9 @@ async function notify(alert) {
   try {
     await deliverWebhook(rawUrl, alert, format);
     if (alert.id) db.markWebhookDelivered(alert.id);
+    // Scheme only, never the URL - it embeds the Discord/Gotify/ntfy token. Delivery was silent
+    // on success, so "the alert fired but did the notification go out?" had no answer.
+    logger.info('alert.webhook.delivered', { host: alert.hostId, rule: alert.rule, via: webhookScheme(rawUrl) });
   } catch (err) {
     if (alert.id) db.markWebhookAttemptFailed(alert.id);
     // The URL stays out of this deliberately - it embeds the Discord/Gotify/ntfy token.
@@ -327,6 +340,12 @@ async function retryFailedWebhooks() {
     try {
       await deliverWebhook(rawUrl, alert, format);
       db.markWebhookDelivered(alert.id);
+      logger.info('alert.webhook.retry_delivered', {
+        host: alert.hostId,
+        rule: alert.rule,
+        attempt: row.webhook_attempts + 1,
+        delayedSec: Math.round((Date.now() - alert.ts) / 1000),
+      });
     } catch (err) {
       db.markWebhookAttemptFailed(alert.id);
       logger.error('alert.webhook.retry_failed', {
@@ -456,6 +475,11 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
       message: `Host ${hostName || hostId} became unreachable`,
     });
   }
+  // Recovery gets no alert (nobody wants a webhook for good news) but it does get a log line -
+  // going down was loud and coming back was silent, which left the log implying it's still down.
+  if (!wasReachable && reachable) {
+    logger.info('host.reachable', { host: hostId, name: hostName || hostId });
+  }
 }
 
 // Called once per running container on every stats poll (~5s), with `ctx` one alertContext() shared
@@ -559,6 +583,7 @@ module.exports = {
   retainContainers,
   forgetHost,
   buildDelivery,
+  webhookScheme,
   getWebhookConfig,
   setWebhookConfig,
   clearWebhookConfig,
