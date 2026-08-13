@@ -2005,6 +2005,90 @@ button.log-pane-main-btn.active:hover {
 .alert-row.severity-warning {
   border-left-color: #d29922;
 }
+/* Per-kind count badges in the Activity columns' headers: alerts by rule, events by action.
+   margin-left:auto pins the group to the right of the header (the Acknowledge-all button, when
+   it's there, follows it) rather than letting the header's space-between strand it in the middle.
+   Wraps rather than scrolls, right-aligned, so a host with many rule kinds gets a second line -
+   still far shorter than the list below. */
+.activity-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+  min-width: 0;
+}
+/* Scoped to this view - .log-section-header is shared with ContainerDetail, which has its own
+   spacing already. Keeps the badge group off the Acknowledge-all button beside it.
+   The h3's own 10px bottom margin is the reason the badges used to read as sitting low: flex
+   centring centres each child's *margin* box, so a heading carrying 10px underneath it lands its
+   text 5px above everything beside it. Zeroing it here and moving that 10px onto the header's own
+   margin-bottom (8 + 10 = 18) aligns the row without changing the gap to the search box below. */
+.activity-column .log-section-header {
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.activity-column .log-section-header h3 {
+  margin-bottom: 0;
+}
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 11px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* The count itself is the part being scanned for, so it gets the readable colour and the weight. */
+.activity-badge b {
+  color: var(--text);
+  font-weight: 600;
+}
+/* Same left-border severity language the alert rows use, so a badge and its rows read as one. */
+.activity-badge.severity-critical {
+  border-left-color: var(--danger);
+}
+.activity-badge.severity-warning {
+  border-left-color: #d29922;
+}
+/* Events only - alerts have no "good news" severity, but start/create/unpause/healthy do. */
+.activity-badge.severity-ok {
+  border-left-color: var(--ok);
+}
+.activity-badge-more {
+  border-left-width: 1px;
+  font-style: italic;
+}
+/* Event rows get the same left accent the alert rows carry, via an inset shadow on the first cell
+   rather than a border - the events table is border-collapse, where a per-cell border-left fights
+   the collapsed grid and renders a pixel off. The action itself is the token being scanned for, so
+   it takes the colour too; unclassified actions keep the muted default and stay out of the way. */
+.event-row.severity-critical td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.event-row.severity-warning td:first-child {
+  box-shadow: inset 3px 0 0 #d29922;
+}
+.event-row.severity-ok td:first-child {
+  box-shadow: inset 3px 0 0 var(--ok);
+}
+.event-action {
+  color: var(--muted);
+}
+.event-row.severity-critical .event-action {
+  color: var(--danger);
+}
+.event-row.severity-warning .event-action {
+  color: #d29922;
+}
+.event-row.severity-ok .event-action {
+  color: var(--ok);
+}
 .alert-row-main {
   display: flex;
   justify-content: space-between;

@@ -1,5 +1,7 @@
 import { MAX_ACTIVITY_EVENTS } from '../constants.js';
 import { apiGetEvents, eventsStreamUrl } from '../api.js';
+import { eventSeverity } from '../format.js';
+import { groupCounts } from '../lib/activityCounts.js';
 
 // The Activity tab: an alerts column (search + acknowledge) and an events column (SSE-backed
 // search). Mounted fresh (v-if) each time opened, so its own mounted()/beforeUnmount() own the
@@ -46,6 +48,15 @@ export default {
         (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
       );
     },
+    // Counted off the *searched* lists, not the raw ones, so the badges always describe the rows
+    // actually on screen - a breakdown that disagreed with the list under it would be worse than
+    // none. Alerts group by rule and carry their severity for colouring; events group by action.
+    alertCounts() {
+      return groupCounts(this.searchedAlerts, (a) => a.rule, { metaOf: (a) => a.severity });
+    },
+    eventCounts() {
+      return groupCounts(this.searchedEvents, (e) => e.action, { metaOf: (e) => e.severity });
+    },
   },
   watch: {
     hostId() {
@@ -75,10 +86,15 @@ export default {
       // 16px so the panel border doesn't sit flush against the very bottom edge of the window.
       this.wrapHeightPx = Math.max(420, Math.floor(window.innerHeight - top - 16));
     },
+    // Severity is attached once here and in openStream, not derived in the template - a method call
+    // from a v-for re-runs on every render, including the 5s poll's. Same reasoning as logLines.js.
+    withSeverity(event) {
+      return { ...event, severity: eventSeverity(event.action) };
+    },
     async loadEvents() {
       if (!this.hostId) return;
       try {
-        this.events = await apiGetEvents(this.hostId, { limit: 200 });
+        this.events = (await apiGetEvents(this.hostId, { limit: 200 })).map(this.withSeverity);
       } catch {
         /* events are best-effort */
       }
@@ -90,7 +106,7 @@ export default {
       this._stream.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
-          this.events.unshift(event);
+          this.events.unshift(this.withSeverity(event));
           if (this.events.length > MAX_ACTIVITY_EVENTS) this.events.length = MAX_ACTIVITY_EVENTS;
         } catch {
           /* ignore malformed event */
@@ -130,6 +146,20 @@ export default {
       <div class="activity-column">
         <div class="log-section-header">
           <h3>Alerts</h3>
+          <div class="activity-badges">
+            <span
+              v-for="c in alertCounts.shown"
+              :key="c.key"
+              class="activity-badge"
+              :class="'severity-' + (c.meta || 'warning')"
+              :title="c.count + ' × ' + c.key"
+            >{{ c.key }} <b>{{ c.count }}</b></span>
+            <span
+              v-if="alertCounts.hidden.length"
+              class="activity-badge activity-badge-more"
+              :title="alertCounts.hidden.map(h => h.count + ' × ' + h.key).join(', ')"
+            >+{{ alertCounts.hidden.length }} more <b>{{ alertCounts.hiddenTotal }}</b></span>
+          </div>
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
         </div>
         <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
@@ -150,7 +180,23 @@ export default {
         </div>
       </div>
       <div class="activity-column">
-        <h3>Events</h3>
+        <div class="log-section-header">
+          <h3>Events</h3>
+          <div class="activity-badges">
+            <span
+              v-for="c in eventCounts.shown"
+              :key="c.key"
+              class="activity-badge"
+              :class="c.meta ? 'severity-' + c.meta : null"
+              :title="c.count + ' × ' + c.key"
+            >{{ c.key }} <b>{{ c.count }}</b></span>
+            <span
+              v-if="eventCounts.hidden.length"
+              class="activity-badge activity-badge-more"
+              :title="eventCounts.hidden.map(h => h.count + ' × ' + h.key).join(', ')"
+            >+{{ eventCounts.hidden.length }} more <b>{{ eventCounts.hiddenTotal }}</b></span>
+          </div>
+        </div>
         <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
         <p v-if="!searchedEvents.length" class="muted">{{ events.length ? 'No matching events.' : 'No events yet.' }}</p>
         <div v-else class="activity-list-wrap">
@@ -158,10 +204,10 @@ export default {
             <table class="containers">
               <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
               <tbody>
-                <tr v-for="(e, i) in searchedEvents" :key="i">
+                <tr v-for="(e, i) in searchedEvents" :key="i" class="event-row" :class="e.severity ? 'severity-' + e.severity : null">
                   <td class="muted">{{ formatEventTime(e.ts) }}</td>
                   <td>{{ e.containerName || e.containerId || '—' }}</td>
-                  <td class="muted">{{ e.action }}</td>
+                  <td class="event-action">{{ e.action }}</td>
                 </tr>
               </tbody>
             </table>

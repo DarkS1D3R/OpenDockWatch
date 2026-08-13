@@ -117,6 +117,31 @@ export function healthLabel(health) {
   return health === 'starting' ? 'health: starting' : health;
 }
 
+// Docker container event actions mapped onto the same severity vocabulary the alert rows already
+// use, so one colour language covers both Activity columns. Anything unlisted stays neutral on
+// purpose: exec_create/attach/commit/resize and friends are routine noise, and colouring them too
+// would drown the handful of rows worth spotting. See ActivityView.js.
+const EVENT_SEVERITY = {
+  die: 'critical',
+  oom: 'critical',
+  kill: 'critical',
+  stop: 'warning',
+  restart: 'warning',
+  pause: 'warning',
+  destroy: 'warning',
+  start: 'ok',
+  create: 'ok',
+  unpause: 'ok',
+};
+
+export function eventSeverity(action) {
+  if (!action) return null;
+  // Health events arrive as "health_status: healthy"/"health_status: unhealthy". Test the negative
+  // first - "unhealthy" contains "healthy", so the obvious order gets it exactly backwards.
+  if (action.startsWith('health_status:')) return action.includes('unhealthy') ? 'critical' : 'ok';
+  return EVENT_SEVERITY[action] || null;
+}
+
 // Checked in order (most severe first) since a line can contain more than one of these words
 // incidentally - e.g. an info line mentioning "retrying after error" should still read as info
 // in ambiguous cases, but in practice explicit level tags (ERROR/WARN/...) dominate real logs.

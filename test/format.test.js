@@ -149,6 +149,39 @@ test('healthColor / healthLabel', async (t) => {
   });
 });
 
+test('eventSeverity', async (t) => {
+  await t.test('classifies the lifecycle actions worth colouring', () => {
+    assert.equal(format.eventSeverity('die'), 'critical');
+    assert.equal(format.eventSeverity('oom'), 'critical');
+    assert.equal(format.eventSeverity('kill'), 'critical');
+    assert.equal(format.eventSeverity('stop'), 'warning');
+    assert.equal(format.eventSeverity('restart'), 'warning');
+    assert.equal(format.eventSeverity('destroy'), 'warning');
+    assert.equal(format.eventSeverity('start'), 'ok');
+    assert.equal(format.eventSeverity('create'), 'ok');
+    assert.equal(format.eventSeverity('unpause'), 'ok');
+  });
+
+  // "unhealthy" contains "healthy", so a naive check gets the two exactly backwards - the whole
+  // reason the negative case is tested first in eventSeverity.
+  await t.test('health_status events are not confused with each other', () => {
+    assert.equal(format.eventSeverity('health_status: unhealthy'), 'critical');
+    assert.equal(format.eventSeverity('health_status: healthy'), 'ok');
+  });
+
+  await t.test('routine noise stays neutral rather than being coloured', () => {
+    for (const action of ['exec_create', 'exec_start', 'attach', 'commit', 'resize', 'top', 'rename']) {
+      assert.equal(format.eventSeverity(action), null, `${action} should not be coloured`);
+    }
+  });
+
+  await t.test('missing or empty action', () => {
+    assert.equal(format.eventSeverity(null), null);
+    assert.equal(format.eventSeverity(''), null);
+    assert.equal(format.eventSeverity(undefined), null);
+  });
+});
+
 test('detectLogLevel', async (t) => {
   await t.test('detects each level case-insensitively', () => {
     assert.equal(format.detectLogLevel('ERROR: connection refused'), 'error');
