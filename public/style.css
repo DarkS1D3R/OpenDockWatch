@@ -540,6 +540,17 @@ body {
   color: #fff;
 }
 
+.container-list-search {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 12px;
+}
 .group-block {
   margin-bottom: 16px;
 }
@@ -1442,10 +1453,21 @@ table.containers td:nth-child(7) {
   border-radius: 2px;
   padding: 0 1px;
 }
-.search-active-line {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-  background: rgba(88, 166, 255, 0.12);
+/* No box around the active match line - just its own highlighted text turning brighter/orange
+   reads as "this one" clearly enough without outlining the whole (often very wide) line. Bold plus
+   a glow on top of the color swap, since orange-on-dark next to yellow-on-dark otherwise reads as
+   too close a family at a glance. */
+.search-active-line .log-highlight {
+  background: #ff6a00;
+  color: #1a0a00;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px #ff6a00;
+}
+.search-line-clickable {
+  cursor: pointer;
+}
+.search-line-clickable:hover {
+  background: rgba(88, 166, 255, 0.06);
 }
 
 .log-view {

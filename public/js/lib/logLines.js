@@ -21,24 +21,26 @@ export function decorateLines(lines) {
 }
 
 // Filter + render over lines already through decorateLine. With no filter, every line reuses its
-// cached baseHtml; with one, highlightLine reruns only for matches. A line whose level was never
-// detected is always kept. An invalid regex matches everything (not nothing) so a half-typed pattern doesn't blank the pane.
-export function selectLines(lines, { levels = null, filterText = '', regexMode = false, testRegex = null } = {}) {
+// cached baseHtml; with one, highlightLine reruns only for actual matches - never for a line kept
+// only by hideNonMatching:false, which reuses baseHtml same as the no-filter case. A line whose
+// level was never detected is always kept. An invalid regex matches everything (not nothing) so a
+// half-typed pattern doesn't blank the pane. `hideNonMatching:false` keeps every line (LogViewer's
+// "reveal" mode, after clicking a hit - see CLAUDE.md) while still reporting `isMatch` per line, so
+// the hits box and the click-to-reveal behavior can tell an actual hit from context around it.
+export function selectLines(lines, { levels = null, filterText = '', regexMode = false, testRegex = null, hideNonMatching = true } = {}) {
   const filtering = filterText.length > 0;
   const filterLower = filterText.toLowerCase();
   const highlightRegex = regexMode && !!testRegex;
   const out = [];
   for (const line of lines) {
     if (line.level && levels && !levels[line.level]) continue;
-    if (filtering) {
-      if (regexMode) {
-        if (testRegex && !testRegex.test(line.text)) continue;
-      } else if (!line.text.toLowerCase().includes(filterLower)) continue;
-    }
+    const isMatch = filtering && (regexMode ? !testRegex || testRegex.test(line.text) : line.text.toLowerCase().includes(filterLower));
+    if (filtering && hideNonMatching && !isMatch) continue;
     out.push({
       id: line.id,
-      html: filtering ? highlightLine(line.text, filterText, highlightRegex) : line.baseHtml,
+      html: isMatch ? highlightLine(line.text, filterText, highlightRegex) : line.baseHtml,
       tsMs: line.tsMs,
+      isMatch,
     });
   }
   return out;

@@ -31,7 +31,7 @@ export default {
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
     return {
-      tail: 200,
+      tail: 1000,
       filter: '',
       regexMode: false,
       levels: { error: true, warn: true, info: true, debug: true },
@@ -51,6 +51,11 @@ export default {
       // its position - the buffer trims from the front while tailing, so a position stops meaning
       // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
       activeMatchId: null,
+      // Clicking a hit sets this instead of clearing the filter - filteredLines then keeps every
+      // line (context included) rather than just the matches, while the hits box/count still track
+      // matches only via matchLines. Typing a new filter term drops back out of it (see the filter
+      // watcher); clearing the filter entirely just turns searchActive off, which hides all of it.
+      revealAll: false,
     };
   },
   computed: {
@@ -76,16 +81,35 @@ export default {
         filterText: this.filter.trim(),
         regexMode: this.regexMode,
         testRegex: this.testRegex,
+        hideNonMatching: !this.revealAll,
+      });
+    },
+    // The actual hit list, independent of revealAll - the count/prev/next controls step through
+    // matches only, even while filteredLines is showing every line for context.
+    matchLines() {
+      if (!this.searchActive) return [];
+      return selectLines(this.lines, {
+        levels: this.levels,
+        filterText: this.filter.trim(),
+        regexMode: this.regexMode,
+        testRegex: this.testRegex,
       });
     },
     searchActive() {
       return !!this.filter.trim() && !this.regexError;
     },
-    // Resolves the id back to a position on every render, so the highlight follows its line as the
-    // list shifts underneath it (append, trim, level toggle) instead of staying put while the
-    // lines move past. Computed, so the lookup runs once per render pass and not once per line.
+    // Resolves the id back to a position in matchLines on every render, so the highlight follows
+    // its line as the list shifts underneath it (append, trim, level toggle) instead of staying put
+    // while the lines move past. Computed, so the lookup runs once per render pass, not per line.
     activeHitIndex() {
-      return hitIndexFor(this.filteredLines, this.activeMatchId);
+      return hitIndexFor(this.matchLines, this.activeMatchId);
+    },
+    // The concrete id activeHitIndex resolved to (including the "null cursor = first hit" fallback)
+    // - what the template actually compares against, since filteredLines and matchLines can now be
+    // different arrays with different indices for the same line.
+    activeHitId() {
+      const idx = this.activeHitIndex;
+      return idx >= 0 ? this.matchLines[idx].id : null;
     },
   },
   created() {
@@ -96,11 +120,17 @@ export default {
   },
   watch: {
     // A new search term (or flipping regex mode) is a new hit list, so the cursor goes back to the
-    // first of them rather than staying on a line that may not even match any more.
+    // first of them rather than staying on a line that may not even match any more. Also drops
+    // revealAll - typing a further term means "search again", i.e. narrow back down to just the
+    // hits, per selectMatch below. An edit down to an empty filter turns searchActive off instead,
+    // which is what actually hides the hits box/highlighting - revealAll itself being stale by then
+    // doesn't matter, since nothing reads it while search is inactive.
     filter() {
+      this.revealAll = false;
       this.resetMatchCursor();
     },
     regexMode() {
+      this.revealAll = false;
       this.resetMatchCursor();
     },
   },
@@ -132,6 +162,7 @@ export default {
       // logStream restarts line ids from 0 for a new source, so a cursor held across one would
       // point at whatever unrelated line inherits that id. Same reason in onReset below.
       this.activeMatchId = null;
+      this.revealAll = false;
       // A fresh stream is never suspended - the flag would otherwise survive from the stream this
       // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
       this.suspended = false;
@@ -148,6 +179,7 @@ export default {
           this.lines = [];
           this.atBottom = true;
           this.activeMatchId = null;
+          this.revealAll = false;
         },
         onSuspendChange: (suspended) => {
           this.suspended = suspended;
@@ -253,16 +285,30 @@ export default {
       this.moveMatch(-1);
     },
     moveMatch(delta) {
-      const id = stepHitId(this.filteredLines, this.activeMatchId, delta);
+      const id = stepHitId(this.matchLines, this.activeMatchId, delta);
       if (id == null) return;
+      this.activeMatchId = id;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    // Clicking a hit reveals the full log around it instead of parking the cursor on it within
+    // the still-narrowed view - revealAll switches filteredLines over to "every line, matches
+    // highlighted" (see its computed). The filter term itself, and the hits box, both stay put.
+    selectMatch(id) {
+      if (!this.searchActive) return;
+      this.revealAll = true;
       this.activeMatchId = id;
       this.$nextTick(() => this.scrollToActiveMatch());
     },
     // Line-granularity, not per-occurrence: filteredLines' divs are the only stable scroll targets,
     // and centering on the matching line is enough to read which term hit without indexing marks.
+    // Looked up by id, not activeHitIndex directly - that index is into matchLines, which is a
+    // different array from filteredLines (and from its rendered divs) once revealAll is on.
     scrollToActiveMatch() {
       const el = this.$refs.logView;
-      const child = el && this.activeHitIndex >= 0 ? el.children[this.activeHitIndex] : null;
+      const id = this.activeHitId;
+      if (!el || id == null) return;
+      const idx = this.filteredLines.findIndex((l) => l.id === id);
+      const child = idx === -1 ? null : el.children[idx];
       if (!child) return;
       this._programmatic = true;
       child.scrollIntoView({ block: 'center' });
@@ -271,10 +317,17 @@ export default {
       });
     },
     onFilterKeydown(e) {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      if (e.shiftKey) this.prevMatch();
-      else this.nextMatch();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) this.prevMatch();
+        else this.nextMatch();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.nextMatch();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.prevMatch();
+      }
     },
     scrollToBottom() {
       this.atBottom = true;
@@ -357,16 +410,15 @@ export default {
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
             <div v-else-if="searchActive" class="search-hits-box">
-              <button class="search-hits-btn" @click="prevMatch" :disabled="!filteredLines.length" title="Previous match (Shift+Enter)">▲</button>
-              <span class="search-hits-count">{{ filteredLines.length ? activeHitIndex + 1 : 0 }} / {{ filteredLines.length }}</span>
-              <button class="search-hits-btn" @click="nextMatch" :disabled="!filteredLines.length" title="Next match (Enter)">▼</button>
+              <button class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
+              <span class="search-hits-count">{{ matchLines.length ? activeHitIndex + 1 : 0 }} / {{ matchLines.length }}</span>
+              <button class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
             </div>
           </div>
           <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
-            <option :value="100">Last 100 lines</option>
-            <option :value="200">Last 200 lines</option>
             <option :value="1000">Last 1000 lines</option>
             <option :value="5000">Last 5000 lines</option>
+            <option :value="10000">Last 10000 lines</option>
             <option value="all">All lines</option>
           </select>
           <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
@@ -416,7 +468,7 @@ export default {
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="(line, idx) in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && idx === activeHitIndex }" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
     </div>
