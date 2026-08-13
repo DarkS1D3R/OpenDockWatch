@@ -1,170 +1,19 @@
-import {
-  apiGetWebhookConfig,
-  apiSaveWebhookConfig,
-  apiClearWebhookConfig,
-  apiTestWebhook,
-  apiGetThresholdConfig,
-  apiSaveThresholdConfig,
-  apiClearThresholdConfig,
-  apiGetHostsConfig,
-  apiAddHost,
-  apiUpdateHost,
-  apiDeleteHost,
-  apiTestHost,
-} from '../api.js';
+import SettingsWebhook from './SettingsWebhook.js';
+import SettingsThresholds from './SettingsThresholds.js';
+import SettingsContainerRules from './SettingsContainerRules.js';
+import SettingsHosts from './SettingsHosts.js';
 
-// The Settings panel: webhook config, alert thresholds, and host management. Mounted fresh
-// (v-if); emits 'hosts-changed' after add/edit/remove so the root refreshes its host selector.
-// runSection(section, savingField, fn) collapses the shared saving-flag/error/status shape.
+// The Settings panel: a tab strip over four independent sections, each owning its own data/fetch
+// (Webhook/Thresholds/ContainerRules/Hosts - see those files). v-if, not v-show, per tab: each
+// child is a cheap admin-only GET-config panel with no stream to preserve across a switch, so
+// remounting fresh keeps data always-current (e.g. add a host, then flip to Container Rules and
+// see it in the dropdown) at the cost of one harmless refetch per tab click.
 export default {
   name: 'SettingsPanel',
+  components: { SettingsWebhook, SettingsThresholds, SettingsContainerRules, SettingsHosts },
   emits: ['close', 'hosts-changed'],
   data() {
-    return {
-      webhookUrl: '',
-      webhookFormat: '',
-      webhookOverridden: false,
-      webhookSaving: false,
-      webhookTesting: false,
-      webhookError: null,
-      webhookStatus: null,
-
-      thresholds: { cpuThreshold: 0, memThreshold: 0, sustainMinutes: 5, diskThresholdGb: 0 },
-      thresholdsOverridden: false,
-      thresholdsSaving: false,
-      thresholdsError: null,
-      thresholdsStatus: null,
-
-      settingsHosts: [],
-      newHost: { id: '', name: '', dockerHost: '' },
-      hostsSaving: false,
-      hostsError: null,
-      hostsStatus: null,
-      editingHostId: null,
-      editHostDraft: { name: '', dockerHost: '' },
-      testingHostId: null,
-      hostTestResults: {}, // hostId -> { ok, message }
-    };
-  },
-  async mounted() {
-    try {
-      const config = await apiGetWebhookConfig();
-      this.webhookUrl = config.url;
-      this.webhookFormat = config.format;
-      this.webhookOverridden = config.overridden;
-    } catch (err) {
-      this.webhookError = err.message;
-    }
-    try {
-      const config = await apiGetThresholdConfig();
-      this.thresholds = config;
-      this.thresholdsOverridden = config.overridden;
-    } catch (err) {
-      this.thresholdsError = err.message;
-    }
-    try {
-      this.settingsHosts = await apiGetHostsConfig();
-    } catch (err) {
-      this.hostsError = err.message;
-    }
-  },
-  methods: {
-    async runSection(section, savingField, fn) {
-      this[savingField] = true;
-      this[`${section}Error`] = null;
-      this[`${section}Status`] = null;
-      try {
-        await fn();
-      } catch (err) {
-        this[`${section}Error`] = err.message;
-      } finally {
-        this[savingField] = false;
-      }
-    },
-    saveWebhookConfig() {
-      return this.runSection('webhook', 'webhookSaving', async () => {
-        const config = await apiSaveWebhookConfig(this.webhookUrl, this.webhookFormat);
-        this.webhookOverridden = config.overridden;
-        this.webhookStatus = 'Saved.';
-      });
-    },
-    clearWebhookConfig() {
-      return this.runSection('webhook', 'webhookSaving', async () => {
-        const config = await apiClearWebhookConfig();
-        this.webhookUrl = config.url;
-        this.webhookFormat = config.format;
-        this.webhookOverridden = config.overridden;
-        this.webhookStatus = 'Cleared - using the .env default.';
-      });
-    },
-    testWebhook() {
-      return this.runSection('webhook', 'webhookTesting', async () => {
-        await apiTestWebhook();
-        this.webhookStatus = 'Test alert sent.';
-      });
-    },
-    saveThresholds() {
-      return this.runSection('thresholds', 'thresholdsSaving', async () => {
-        const config = await apiSaveThresholdConfig(this.thresholds);
-        this.thresholds = config;
-        this.thresholdsOverridden = config.overridden;
-        this.thresholdsStatus = 'Saved.';
-      });
-    },
-    clearThresholds() {
-      return this.runSection('thresholds', 'thresholdsSaving', async () => {
-        const config = await apiClearThresholdConfig();
-        this.thresholds = config;
-        this.thresholdsOverridden = config.overridden;
-        this.thresholdsStatus = 'Cleared - using the .env default.';
-      });
-    },
-    addHost() {
-      return this.runSection('hosts', 'hostsSaving', async () => {
-        this.settingsHosts = await apiAddHost(this.newHost);
-        this.newHost = { id: '', name: '', dockerHost: '' };
-        this.hostsStatus = 'Host added.';
-        this.$emit('hosts-changed');
-      });
-    },
-    startEditHost(host) {
-      this.editingHostId = host.id;
-      this.editHostDraft = { name: host.name || '', dockerHost: host.dockerHost || '' };
-      this.hostsError = null;
-      this.hostsStatus = null;
-    },
-    cancelEditHost() {
-      this.editingHostId = null;
-    },
-    saveEditHost(id) {
-      return this.runSection('hosts', 'hostsSaving', async () => {
-        this.settingsHosts = await apiUpdateHost(id, this.editHostDraft);
-        this.editingHostId = null;
-        this.hostsStatus = 'Host updated.';
-        this.$emit('hosts-changed');
-      });
-    },
-    removeHost(id) {
-      return this.runSection('hosts', 'hostsSaving', async () => {
-        this.settingsHosts = await apiDeleteHost(id);
-        this.hostsStatus = 'Host removed.';
-        this.$emit('hosts-changed');
-      });
-    },
-    async testHostConnection(id) {
-      this.testingHostId = id;
-      this.hostTestResults = { ...this.hostTestResults, [id]: null };
-      try {
-        await apiTestHost(id);
-        this.hostTestResults = { ...this.hostTestResults, [id]: { ok: true, message: 'Connected.' } };
-      } catch (err) {
-        // The real docker/ssh stderr, not a generic "unreachable" - e.g. "Host key verification
-        // failed" or "Permission denied (publickey)" tells the user exactly what to fix.
-        this.hostTestResults = { ...this.hostTestResults, [id]: { ok: false, message: err.message } };
-      } finally {
-        this.testingHostId = null;
-      }
-    },
+    return { activeTab: 'webhook' };
   },
   template: `
     <aside class="detail-panel">
@@ -172,128 +21,17 @@ export default {
         <strong>Settings</strong>
         <button @click="$emit('close')">✕</button>
       </div>
+      <div class="view-toggle settings-tabs">
+        <button :class="{active: activeTab==='webhook'}" @click="activeTab='webhook'">Webhook</button>
+        <button :class="{active: activeTab==='thresholds'}" @click="activeTab='thresholds'">Thresholds</button>
+        <button :class="{active: activeTab==='container-rules'}" @click="activeTab='container-rules'">Container Rules</button>
+        <button :class="{active: activeTab==='hosts'}" @click="activeTab='hosts'">Hosts</button>
+      </div>
       <div class="detail-body">
-          <p class="muted small">
-            Sets ALERT_WEBHOOK_URL for all hosts. Supports
-            <code>discord://</code>, <code>ntfy://</code>, <code>gotify://</code> / <code>gotifys://</code>, or any
-            <code>http(s)://</code> URL (auto-detected for Slack, generic JSON otherwise).
-          </p>
-          <label class="modal-field">
-            Webhook URL
-            <input type="text" v-model="webhookUrl" placeholder="discord://webhook_id/webhook_token" />
-          </label>
-          <label class="modal-field">
-            Format override
-            <select v-model="webhookFormat">
-              <option value="">Auto</option>
-              <option value="slack">Force Slack {text} shape</option>
-            </select>
-          </label>
-          <p v-if="webhookOverridden" class="muted small">Overriding the .env default.</p>
-          <p v-else class="muted small">Using the .env default (if any) — no override saved yet.</p>
-          <p v-if="webhookError" class="error">{{ webhookError }}</p>
-          <p v-if="webhookStatus" class="muted small">{{ webhookStatus }}</p>
-          <div class="modal-actions">
-            <button :disabled="webhookSaving" @click="saveWebhookConfig">Save</button>
-            <button :disabled="webhookSaving || !webhookOverridden" @click="clearWebhookConfig">Clear override</button>
-            <button :disabled="webhookTesting" @click="testWebhook">Send test alert</button>
-          </div>
-
-          <hr />
-
-          <strong>Resource thresholds</strong>
-          <p class="muted small">
-            Alert when a value stays over threshold for the sustain window. Leave a threshold at 0 to disable that
-            rule. CPU% is raw <code>docker stats</code> CPU (per-core cumulative, so 4 cores fully busy reads 400%).
-            Mem% needs a container memory limit set to mean much. Docker disk usage is Docker's own footprint
-            (images/containers/volumes/cache), not host free disk space — it's a prune reminder, not a disk-full alert.
-            Skip a container entirely with the <code>opendockwatch.alerts=off</code> label.
-          </p>
-          <label class="modal-field">
-            Container/host CPU threshold (%)
-            <input type="number" min="0" max="100" v-model.number="thresholds.cpuThreshold" />
-          </label>
-          <label class="modal-field">
-            Container/host memory threshold (%)
-            <input type="number" min="0" max="100" v-model.number="thresholds.memThreshold" />
-          </label>
-          <label class="modal-field">
-            Sustain window (minutes)
-            <input type="number" min="0" v-model.number="thresholds.sustainMinutes" />
-          </label>
-          <label class="modal-field">
-            Docker disk usage threshold (GB)
-            <input type="number" min="0" v-model.number="thresholds.diskThresholdGb" />
-          </label>
-          <p v-if="thresholdsOverridden" class="muted small">Overriding the .env defaults.</p>
-          <p v-else class="muted small">Using the .env defaults (if any) — no override saved yet.</p>
-          <p v-if="thresholdsError" class="error">{{ thresholdsError }}</p>
-          <p v-if="thresholdsStatus" class="muted small">{{ thresholdsStatus }}</p>
-          <div class="modal-actions">
-            <button :disabled="thresholdsSaving" @click="saveThresholds">Save</button>
-            <button :disabled="thresholdsSaving || !thresholdsOverridden" @click="clearThresholds">Clear override</button>
-          </div>
-
-          <hr />
-
-          <strong>Hosts</strong>
-          <p class="muted small">
-            Docker hosts this dashboard monitors. Add a remote one as
-            <code>ssh://user@host[:port]</code> — the container's docker CLI reaches it using the
-            SSH keys already mounted in, no password needed here. Changes apply immediately, no
-            restart required.
-          </p>
-          <p v-if="hostsError" class="error">{{ hostsError }}</p>
-          <p v-if="hostsStatus" class="muted small">{{ hostsStatus }}</p>
-
-          <div v-for="h in settingsHosts" :key="h.id" class="host-row">
-            <template v-if="editingHostId === h.id">
-              <label class="modal-field">
-                Display name
-                <input type="text" v-model="editHostDraft.name" :placeholder="h.id" />
-              </label>
-              <label class="modal-field">
-                Docker host
-                <input type="text" v-model="editHostDraft.dockerHost" placeholder="ssh://user@host (blank = local socket)" />
-              </label>
-              <div class="modal-actions">
-                <button :disabled="hostsSaving" @click="saveEditHost(h.id)">Save</button>
-                <button :disabled="hostsSaving" @click="cancelEditHost">Cancel</button>
-              </div>
-            </template>
-            <template v-else>
-              <div class="host-row-main">
-                <strong>{{ h.name || h.id }}</strong>
-                <span class="muted small">{{ h.dockerHost || 'local socket' }}</span>
-              </div>
-              <p v-if="hostTestResults[h.id]" :class="hostTestResults[h.id].ok ? 'muted small' : 'error'">
-                {{ hostTestResults[h.id].ok ? '✓' : '✕' }} {{ hostTestResults[h.id].message }}
-              </p>
-              <div class="modal-actions">
-                <button class="small-btn" :disabled="testingHostId === h.id" @click="testHostConnection(h.id)">
-                  {{ testingHostId === h.id ? 'Testing…' : 'Test connection' }}
-                </button>
-                <button class="small-btn" :disabled="hostsSaving" @click="startEditHost(h)">Edit</button>
-                <button class="small-btn" :disabled="hostsSaving" @click="removeHost(h.id)">Remove</button>
-              </div>
-            </template>
-          </div>
-
-          <label class="modal-field">
-            ID
-            <input type="text" v-model="newHost.id" placeholder="prod" />
-          </label>
-          <label class="modal-field">
-            Display name (optional)
-            <input type="text" v-model="newHost.name" placeholder="Production" />
-          </label>
-          <label class="modal-field">
-            Docker host (blank = local socket)
-            <input type="text" v-model="newHost.dockerHost" placeholder="ssh://deploy@prod.example.com" />
-          </label>
-          <div class="modal-actions">
-            <button :disabled="hostsSaving || !newHost.id" @click="addHost">Add host</button>
-          </div>
+        <settings-webhook v-if="activeTab==='webhook'"></settings-webhook>
+        <settings-thresholds v-if="activeTab==='thresholds'"></settings-thresholds>
+        <settings-container-rules v-if="activeTab==='container-rules'"></settings-container-rules>
+        <settings-hosts v-if="activeTab==='hosts'" @hosts-changed="$emit('hosts-changed')"></settings-hosts>
       </div>
     </aside>
   `,

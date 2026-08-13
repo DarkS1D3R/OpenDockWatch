@@ -98,6 +98,24 @@ db.exec(`
     key TEXT PRIMARY KEY,
     start_ts INTEGER NOT NULL
   );
+
+  -- Per-container/name/compose-project alert overrides, evaluated in sort_order as an ordered,
+  -- first-match-wins list by alerts.js's resolveContainerConfig - see CLAUDE.md. host_id NULL
+  -- means "all hosts"; cpu/mem/sustain NULL means "inherit the global threshold for that field".
+  -- muted_rules is a JSON array (container_crashed/crash_loop/unhealthy) rather than one column
+  -- per rule so a future event rule doesn't need an ALTER TABLE.
+  CREATE TABLE IF NOT EXISTS container_alert_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT,
+    match_type TEXT NOT NULL CHECK (match_type IN ('name', 'composeProject')),
+    match_value TEXT NOT NULL,
+    cpu_threshold REAL,
+    mem_threshold REAL,
+    sustain_minutes REAL,
+    muted_rules TEXT NOT NULL DEFAULT '[]',
+    sort_order INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_container_alert_rules_order ON container_alert_rules (sort_order);
 `);
 
 // host_metrics gained these three columns after the table already existed for upgrading installs
@@ -241,6 +259,24 @@ const stmts = {
   `),
   deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
   ping: db.prepare(`SELECT 1`),
+  insertContainerAlertRule: db.prepare(`
+    INSERT INTO container_alert_rules
+      (host_id, match_type, match_value, cpu_threshold, mem_threshold, sustain_minutes, muted_rules, sort_order)
+    VALUES (@hostId, @matchType, @matchValue, @cpuThreshold, @memThreshold, @sustainMinutes, @mutedRules, @sortOrder)
+  `),
+  updateContainerAlertRule: db.prepare(`
+    UPDATE container_alert_rules
+    SET host_id = @hostId, match_type = @matchType, match_value = @matchValue,
+        cpu_threshold = @cpuThreshold, mem_threshold = @memThreshold, sustain_minutes = @sustainMinutes,
+        muted_rules = @mutedRules
+    WHERE id = @id
+  `),
+  deleteContainerAlertRule: db.prepare(`DELETE FROM container_alert_rules WHERE id = ?`),
+  // id ASC tiebreak keeps ordering deterministic even if two rows ever share a sort_order (e.g. a
+  // double-submitted reorder from two open tabs) rather than depending on SQLite's unspecified tie order.
+  getContainerAlertRules: db.prepare(`SELECT * FROM container_alert_rules ORDER BY sort_order ASC, id ASC`),
+  getContainerAlertRuleMaxSortOrder: db.prepare(`SELECT COALESCE(MAX(sort_order), -1) AS maxOrder FROM container_alert_rules`),
+  setContainerAlertRuleSortOrder: db.prepare(`UPDATE container_alert_rules SET sort_order = ? WHERE id = ?`),
 };
 
 // One transaction for the whole poll, not one implicit commit per row. WAL mode still runs at
@@ -389,17 +425,85 @@ function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
   return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs });
 }
 
+function rowToContainerAlertRule(row) {
+  return {
+    id: row.id,
+    hostId: row.host_id,
+    matchType: row.match_type,
+    matchValue: row.match_value,
+    cpuThreshold: row.cpu_threshold,
+    memThreshold: row.mem_threshold,
+    sustainMinutes: row.sustain_minutes,
+    mutedRules: JSON.parse(row.muted_rules),
+    sortOrder: row.sort_order,
+  };
+}
+
+function getContainerAlertRules() {
+  return stmts.getContainerAlertRules.all().map(rowToContainerAlertRule);
+}
+
+function insertContainerAlertRule(rule) {
+  const maxOrder = stmts.getContainerAlertRuleMaxSortOrder.get().maxOrder;
+  const info = stmts.insertContainerAlertRule.run({
+    hostId: rule.hostId || null,
+    matchType: rule.matchType,
+    matchValue: rule.matchValue,
+    cpuThreshold: rule.cpuThreshold ?? null,
+    memThreshold: rule.memThreshold ?? null,
+    sustainMinutes: rule.sustainMinutes ?? null,
+    mutedRules: JSON.stringify(rule.mutedRules || []),
+    sortOrder: maxOrder + 1,
+  });
+  return info.lastInsertRowid;
+}
+
+// Both return whether the row existed, so the routes can 404 rather than report success for an id
+// another tab already deleted.
+function updateContainerAlertRule(id, rule) {
+  const info = stmts.updateContainerAlertRule.run({
+    id,
+    hostId: rule.hostId || null,
+    matchType: rule.matchType,
+    matchValue: rule.matchValue,
+    cpuThreshold: rule.cpuThreshold ?? null,
+    memThreshold: rule.memThreshold ?? null,
+    sustainMinutes: rule.sustainMinutes ?? null,
+    mutedRules: JSON.stringify(rule.mutedRules || []),
+  });
+  return info.changes > 0;
+}
+
+function deleteContainerAlertRule(id) {
+  return stmts.deleteContainerAlertRule.run(id).changes > 0;
+}
+
+// Rewrites every row's sort_order to match orderedIds' position, in one transaction - a partial
+// reorder would otherwise leave two rules sharing a sort_order mid-write, which briefly makes
+// first-match-wins ambiguous for anything alerting concurrently.
+const reorderContainerAlertRulesTx = db.transaction((orderedIds) => {
+  orderedIds.forEach((id, index) => stmts.setContainerAlertRuleSortOrder.run(index, id));
+});
+
+function reorderContainerAlertRules(orderedIds) {
+  reorderContainerAlertRulesTx(orderedIds);
+}
+
 function close() {
   db.close();
 }
 
+// Returns rows deleted per table so the caller can report what retention actually removed - this
+// is the only path in the app that deletes anything, and it used to leave no trace at all.
 function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
   const now = Date.now();
-  stmts.pruneContainerMetrics.run(now - metricsRetentionMs);
-  stmts.pruneHostMetrics.run(now - metricsRetentionMs);
-  stmts.pruneEvents.run(now - eventsRetentionMs);
-  stmts.pruneAuditLog.run(now - auditRetentionMs);
-  stmts.pruneAlerts.run(now - auditRetentionMs);
+  return {
+    containerMetrics: stmts.pruneContainerMetrics.run(now - metricsRetentionMs).changes,
+    hostMetrics: stmts.pruneHostMetrics.run(now - metricsRetentionMs).changes,
+    events: stmts.pruneEvents.run(now - eventsRetentionMs).changes,
+    auditLog: stmts.pruneAuditLog.run(now - auditRetentionMs).changes,
+    alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
+  };
 }
 
 module.exports = {
@@ -436,4 +540,9 @@ module.exports = {
   ping,
   pruneOld,
   close,
+  getContainerAlertRules,
+  insertContainerAlertRule,
+  updateContainerAlertRule,
+  deleteContainerAlertRule,
+  reorderContainerAlertRules,
 };

@@ -195,3 +195,41 @@ export async function apiDeleteHost(id) {
 export async function apiTestHost(id) {
   return jsonOrThrow(await apiFetch(`/api/settings/hosts/${id}/test`, { method: 'POST', timeoutMs: 30_000 }));
 }
+
+export async function apiGetContainerRules() {
+  return jsonOrThrow(await apiFetch('/api/settings/container-rules'));
+}
+
+export async function apiAddContainerRule(rule) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/container-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    })
+  );
+}
+
+export async function apiUpdateContainerRule(id, rule) {
+  return jsonOrThrow(
+    await apiFetch(`/api/settings/container-rules/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    })
+  );
+}
+
+export async function apiDeleteContainerRule(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/container-rules/${id}`, { method: 'DELETE' }));
+}
+
+export async function apiReorderContainerRules(orderedIds) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/container-rules/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds }),
+    })
+  );
+}

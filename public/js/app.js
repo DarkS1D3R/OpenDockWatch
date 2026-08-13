@@ -322,6 +322,11 @@ createApp({
     async setView(v) {
       this.view = v;
       if (v !== 'flow') this.flowFullscreen = false;
+      // The host card itself unmounts on the way into Logs (v-if="... && view !== 'logs'"), so
+      // nothing would be left to clear this - and .layout stays hidden while it's true, which is
+      // the blank-screen bug this guards against. Reset on every switch, not just into Logs: a
+      // fullscreen host card has no reason to survive a tab change in general.
+      this.hostCardFullscreen = false;
       // The bottom Log Viewer belongs to List/Flow (via the detail panel's button). Closing it
       // on the way into a view that can't open it releases its connection - logViewerOpen is a
       // v-if, so this unmounts and stops the stream. See detailPanelVisible for the budget.
@@ -457,7 +462,7 @@ createApp({
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
       <host-card
-        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs'"
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity'"
         :host-info="hostInfo"
         :host-name="currentHostName"
         :host-id="selectedHostId"

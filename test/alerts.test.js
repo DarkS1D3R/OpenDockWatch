@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const db = require('../server/db');
 const hosts = require('../server/hosts');
+const logger = require('../server/logger');
 const alerts = require('../server/alerts');
 
 // Same reasoning as mockDb below: alerts.js calls hosts.loadHosts() through the module object
@@ -28,6 +29,7 @@ function mockDb(t, overrides = {}) {
     markWebhookDelivered: () => {},
     markWebhookAttemptFailed: () => {},
     getPendingWebhookRetries: () => [],
+    getContainerAlertRules: () => [],
   };
   for (const [name, impl] of Object.entries({ ...defaults, ...overrides })) {
     t.mock.method(db, name, impl);
@@ -472,6 +474,299 @@ test('threshold config (DB override vs .env default)', async (t) => {
 
     const cleared = alerts.clearThresholdConfig();
     assert.equal(cleared.overridden, false);
+  });
+});
+
+test('resolveContainerConfig', async (t) => {
+  await t.test('no matching rule falls through to the global threshold config unchanged', () => {
+    mockDb(t, { getSetting: mockThresholdSettings({ cpuThreshold: 50, memThreshold: 50, sustainMinutes: 5 }) });
+    const cfg = alerts.resolveContainerConfig({ hostId: 'h', containerName: 'web-1', composeProject: null });
+    assert.equal(cfg.cpuThreshold, 50);
+    assert.equal(cfg.memThreshold, 50);
+    assert.equal(cfg.sustainMinutes, 5);
+    assert.deepEqual(cfg.mutedEventRules, new Set());
+    assert.equal(cfg.matchedRuleId, null);
+  });
+
+  await t.test('a name-match rule (case-insensitive substring) overrides only the fields it sets', () => {
+    mockDb(t, {
+      getSetting: mockThresholdSettings({ cpuThreshold: 50, memThreshold: 50, sustainMinutes: 5 }),
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'REDIS',
+          cpuThreshold: 90,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: [],
+        },
+      ],
+    });
+    const cfg = alerts.resolveContainerConfig({ hostId: 'h', containerName: 'my-redis-1', composeProject: null });
+    assert.equal(cfg.cpuThreshold, 90);
+    assert.equal(cfg.memThreshold, 50);
+    assert.equal(cfg.sustainMinutes, 5);
+    assert.equal(cfg.matchedRuleId, 1);
+  });
+
+  await t.test('a composeProject rule matches exactly, not by substring', () => {
+    mockDb(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'composeProject',
+          matchValue: 'billing',
+          cpuThreshold: 70,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: [],
+        },
+      ],
+    });
+    const noMatch = alerts.resolveContainerConfig({ hostId: 'h', containerName: 'x', composeProject: 'billing-old' });
+    assert.equal(noMatch.matchedRuleId, null);
+    const match = alerts.resolveContainerConfig({ hostId: 'h', containerName: 'x', composeProject: 'billing' });
+    assert.equal(match.matchedRuleId, 1);
+    assert.equal(match.cpuThreshold, 70);
+  });
+
+  await t.test('a host-scoped rule only applies on its own host', () => {
+    mockDb(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: 'prod',
+          matchType: 'name',
+          matchValue: 'web',
+          cpuThreshold: 99,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: [],
+        },
+      ],
+    });
+    const onProd = alerts.resolveContainerConfig({ hostId: 'prod', containerName: 'web-1', composeProject: null });
+    assert.equal(onProd.matchedRuleId, 1);
+    const elsewhere = alerts.resolveContainerConfig({ hostId: 'staging', containerName: 'web-1', composeProject: null });
+    assert.equal(elsewhere.matchedRuleId, null);
+  });
+
+  await t.test('first match wins: an earlier rule is used in full even if a later rule would also match', () => {
+    mockDb(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'web',
+          cpuThreshold: 10,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: [],
+        },
+        {
+          id: 2,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'web',
+          cpuThreshold: 20,
+          memThreshold: 20,
+          sustainMinutes: null,
+          mutedRules: [],
+        },
+      ],
+    });
+    const cfg = alerts.resolveContainerConfig({ hostId: 'h', containerName: 'web-1', composeProject: null });
+    assert.equal(cfg.cpuThreshold, 10);
+    assert.equal(cfg.memThreshold, 0);
+    assert.equal(cfg.matchedRuleId, 1);
+  });
+
+  await t.test('the opendockwatch.alerts=off label short-circuits handleSample before any rule lookup', () => {
+    const calls = [];
+    const fired = captureFired(t, {
+      getSetting: mockThresholdSettings({ cpuThreshold: 1, sustainMinutes: 0 }),
+      getContainerAlertRules: () => (calls.push(1), []),
+    });
+    alerts.handleSample({
+      hostId: 'h',
+      containerId: 'c',
+      containerName: 'web',
+      cpuPerc: 100,
+      memPerc: 100,
+      ts: Date.now(),
+      alertsDisabled: true,
+    });
+    assert.equal(fired.length, 0);
+    assert.equal(calls.length, 0, 'getContainerAlertRules should not run when the label already disabled alerting');
+  });
+
+  await t.test('one alertContext serves a whole poll without re-reading the rules table per container', () => {
+    let reads = 0;
+    const fired = captureFired(t, {
+      getSetting: mockThresholdSettings({ cpuThreshold: 50, sustainMinutes: 0 }),
+      getContainerAlertRules: () => {
+        reads++;
+        return [
+          {
+            id: 1,
+            hostId: null,
+            matchType: 'name',
+            matchValue: 'quiet',
+            cpuThreshold: 99,
+            memThreshold: null,
+            sustainMinutes: null,
+            mutedRules: [],
+          },
+        ];
+      },
+    });
+    const ctx = alerts.alertContext();
+    assert.equal(reads, 1);
+    for (const name of ['quiet-a', 'quiet-b', 'loud-a']) {
+      alerts.handleSample(
+        { hostId: 'ctxhost', containerId: name, containerName: name, cpuPerc: 60, memPerc: 0, ts: Date.now(), alertsDisabled: false },
+        ctx
+      );
+    }
+    assert.equal(reads, 1, 'the rules table should be read once per poll, not once per container');
+    // The shared context must not flatten per-container resolution: the two "quiet" containers
+    // match the rule's 99% override and stay under it, the third falls back to the global 50%.
+    assert.deepEqual(
+      fired.map((a) => a.containerName),
+      ['loud-a']
+    );
+  });
+});
+
+test('handleEvent: a matched rule can mute individual event rules', async (t) => {
+  await t.test('mutes container_crashed for a matching container while an unmatched one still fires', () => {
+    const fired = captureFired(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'noisy',
+          cpuThreshold: null,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: ['container_crashed'],
+        },
+      ],
+    });
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c1',
+      containerName: 'noisy-app',
+      composeProject: null,
+      action: 'die',
+      ts: Date.now(),
+      raw: { Actor: { Attributes: { exitCode: '1' } } },
+    });
+    assert.equal(fired.length, 0);
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c2',
+      containerName: 'other-app',
+      composeProject: null,
+      action: 'die',
+      ts: Date.now(),
+      raw: { Actor: { Attributes: { exitCode: '1' } } },
+    });
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('mutes crash_loop for a matching container', () => {
+    const fired = captureFired(t, {
+      countRestartsSince: () => 3,
+      countManualStartsSince: () => 0,
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'noisy',
+          cpuThreshold: null,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: ['crash_loop'],
+        },
+      ],
+    });
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c1',
+      containerName: 'noisy-app',
+      composeProject: null,
+      action: 'start',
+      ts: Date.now(),
+      raw: {},
+    });
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('logs alert.muted so a suppressed alert still leaves a trace to explain itself', () => {
+    const logged = [];
+    t.mock.method(logger, 'info', (event, fields) => logged.push({ event, fields }));
+    captureFired(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 7,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'noisy',
+          cpuThreshold: null,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: ['unhealthy'],
+        },
+      ],
+    });
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c1',
+      containerName: 'noisy-app',
+      composeProject: null,
+      action: 'health_status: unhealthy',
+      ts: Date.now(),
+      raw: {},
+    });
+    const muted = logged.filter((l) => l.event === 'alert.muted');
+    assert.equal(muted.length, 1);
+    assert.equal(muted[0].fields.rule, 'unhealthy');
+    assert.equal(muted[0].fields.container, 'noisy-app');
+    assert.equal(muted[0].fields.ruleId, 7);
+  });
+
+  await t.test('mutes unhealthy for a matching container', () => {
+    const fired = captureFired(t, {
+      getContainerAlertRules: () => [
+        {
+          id: 1,
+          hostId: null,
+          matchType: 'name',
+          matchValue: 'noisy',
+          cpuThreshold: null,
+          memThreshold: null,
+          sustainMinutes: null,
+          mutedRules: ['unhealthy'],
+        },
+      ],
+    });
+    alerts.handleEvent({
+      hostId: 'h',
+      containerId: 'c1',
+      containerName: 'noisy-app',
+      composeProject: null,
+      action: 'health_status: unhealthy',
+      ts: Date.now(),
+      raw: {},
+    });
+    assert.equal(fired.length, 0);
   });
 });
 

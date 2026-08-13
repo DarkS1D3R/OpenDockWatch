@@ -29,7 +29,8 @@ const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-index-test-${process.
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
-const { app, api, requestTimeout } = require('../server/index');
+const { app, api, requestTimeout, requireHost } = require('../server/index');
+const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
@@ -129,6 +130,65 @@ test('security headers are set on every response', async (t) => {
     const res = await request(app).get('/login');
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(res.text), false, 'login.html still contains an inline <script>');
     assert.match(res.text, /<script src="\/assets\/js\/login\.js">/);
+  });
+});
+
+// express defines req.host as a getter-only property returning the Host header, so `req.host = obj`
+// silently no-ops and every handler downstream gets a string. hostArgs() reads `.dockerHost` off it,
+// finds undefined, and falls back to the local socket - a remote host's routes hit the wrong daemon.
+test('requireHost hands the handler the host object, not express own req.host string', async () => {
+  const configured = loadHosts();
+  assert.ok(configured.length, 'no hosts configured - hosts.js should fall back to hosts.example.json');
+  const hostId = configured[0].id;
+
+  const seen = [];
+  const probe = express();
+  probe.get('/hosts/:hostId/probe', requireHost, (req, res) => {
+    seen.push(req.odwHost);
+    res.json({ ok: true });
+  });
+  const res = await request(probe).get(`/hosts/${hostId}/probe`);
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  // A string here means the host went out under a name express owns and the object was dropped:
+  // hostArgs() then reads no .dockerHost and every remote host silently targets the local socket.
+  assert.equal(typeof seen[0], 'object', 'requireHost handed the handler a string, not the host object');
+  assert.equal(seen[0].id, hostId);
+
+  // The reason the workaround is needed. If express ever makes this writable, this flips and the
+  // rename can be reconsidered - until then, assigning req.host is a silent no-op.
+  const probe2 = express();
+  probe2.get('/probe', (req, res) => {
+    req.host = { id: 'sentinel' };
+    res.json({ type: typeof req.host });
+  });
+  assert.equal((await request(probe2).get('/probe')).body.type, 'string', 'express.request.host became writable');
+});
+
+// A NaN bound into `WHERE id = ?` matches no row and reports success, so an unvalidated id makes
+// the API answer 200 to a request that did nothing at all - same class as intParam's guard.
+test('container-rules routes reject an unusable id rather than no-op with a 200', async (t) => {
+  const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+  const body = { matchType: 'name', matchValue: 'x' };
+
+  await t.test('400s on a non-numeric id', async () => {
+    assert.equal((await agent.delete('/api/settings/container-rules/abc')).status, 400);
+    assert.equal((await agent.put('/api/settings/container-rules/abc').send(body)).status, 400);
+  });
+
+  await t.test('404s on a well-formed id that no rule has', async () => {
+    assert.equal((await agent.delete('/api/settings/container-rules/999999')).status, 404);
+    assert.equal((await agent.put('/api/settings/container-rules/999999').send(body)).status, 404);
+  });
+
+  await t.test('still round-trips a real rule through add, update and delete', async () => {
+    const added = await agent.post('/api/settings/container-rules').send(body);
+    assert.equal(added.status, 200);
+    const id = added.body[added.body.length - 1].id;
+    assert.equal((await agent.put(`/api/settings/container-rules/${id}`).send({ ...body, cpuThreshold: 150 })).status, 200);
+    const updated = (await agent.get('/api/settings/container-rules')).body.find((r) => r.id === id);
+    assert.equal(updated.cpuThreshold, 150, 'a CPU threshold over 100 is valid - docker CPU% is per-core cumulative');
+    assert.equal((await agent.delete(`/api/settings/container-rules/${id}`)).status, 200);
   });
 });
 

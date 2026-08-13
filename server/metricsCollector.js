@@ -127,11 +127,16 @@ async function pollHost(host) {
         memPerc,
         ts,
         alertsDisabled: c.alertsDisabled,
+        composeProject: c.composeProject,
       });
     }
 
     db.insertContainerMetrics(samples);
-    for (const sample of alertSamples) alerts.handleSample(sample);
+    // One settings+rules read for the whole poll rather than one per container - resolved lazily so
+    // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
+    const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);
+    const alertCtx = anyAlerting ? alerts.alertContext() : null;
+    for (const sample of alertSamples) alerts.handleSample(sample, alertCtx);
 
     // Containers that have gone away since the last poll can't dip back under threshold to
     // clear their own breach counters, so they're dropped here instead.
@@ -212,6 +217,7 @@ function scheduleDiskPolling(host, diskState) {
 // removeHost+addHost) host is monitored right away instead of needing a process restart.
 function addHost(host) {
   if (hostStates.has(host.id)) return;
+  logger.info('metrics.host.watching', { host: host.id, dockerHost: host.dockerHost || 'local', pollMs: POLL_MS });
   const pollState = { stopped: false, timer: null };
   const diskState = { stopped: false, timer: null };
   hostStates.set(host.id, { pollState, diskState });
@@ -240,6 +246,7 @@ function removeHost(hostId) {
   localCpuTimesPrev.delete(hostId);
   alerts.forgetHost(hostId);
   forgetDockerHost(hostId);
+  logger.info('metrics.host.stopped', { host: hostId });
 }
 
 function start() {
@@ -247,7 +254,17 @@ function start() {
 
   const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
-  const prune = () => db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs });
+  logger.info('metrics.retention', {
+    metricsDays: metricsRetentionMs / 86_400_000,
+    eventsDays: eventsRetentionMs / 86_400_000,
+  });
+  // Pruning is the only thing in the app that deletes data, and it ran completely silently -
+  // "where did my history go?" had no answer, and neither did "is retention even applying?".
+  const prune = () => {
+    const deleted = db.pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs: eventsRetentionMs });
+    const total = Object.values(deleted).reduce((a, b) => a + b, 0);
+    if (total > 0) logger.info('db.pruned', { total, ...deleted });
+  };
   // Once up front, not just on the hour: the interval's first tick is an hour away, so an
   // instance that gets restarted more often than that (or one whose retention window was just
   // shortened) would otherwise never prune anything at all.

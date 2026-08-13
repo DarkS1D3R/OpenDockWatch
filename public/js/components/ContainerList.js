@@ -19,7 +19,19 @@ export default {
   data() {
     return {
       collapsedGroups: {},
+      search: '',
     };
+  },
+  computed: {
+    // Same shape as LogsView's own container filter - groups with no matching container drop out
+    // entirely rather than rendering an empty table.
+    filteredGroups() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return this.groupedContainers;
+      return this.groupedContainers
+        .map(([name, items]) => [name, items.filter((c) => c.name.toLowerCase().includes(q))])
+        .filter(([, items]) => items.length);
+    },
   },
   methods: {
     toggleGroup(name) {
@@ -52,7 +64,9 @@ export default {
   },
   template: `
     <div>
-      <div v-for="[groupName, items] in groupedContainers" :key="groupName" class="group-block">
+      <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
+      <p v-if="search.trim() && !filteredGroups.length" class="muted">No containers match "{{ search.trim() }}".</p>
+      <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="group-block">
         <div class="group-header" @click="toggleGroup(groupName)">
           <span class="chevron" :class="{open: !collapsedGroups[groupName]}">&#9656;</span>
           {{ groupName }} <span class="muted">({{ items.length }})</span>

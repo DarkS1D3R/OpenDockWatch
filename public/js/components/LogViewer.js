@@ -3,6 +3,7 @@ import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs } from '../lib/logSync.js';
 import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
+import { pushCapped } from '../lib/logBuffer.js';
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
@@ -31,7 +32,7 @@ export default {
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
     return {
-      tail: 200,
+      tail: 1000,
       filter: '',
       regexMode: false,
       levels: { error: true, warn: true, info: true, debug: true },
@@ -51,6 +52,19 @@ export default {
       // its position - the buffer trims from the front while tailing, so a position stops meaning
       // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
       activeMatchId: null,
+      // Clicking a hit sets this instead of clearing the filter - filteredLines then keeps every
+      // line (context included) rather than just the matches, while the hits box/count still track
+      // matches only via matchLines. Typing a new filter term drops back out of it (see the filter
+      // watcher); clearing the filter entirely just turns searchActive off, which hides all of it.
+      revealAll: false,
+      // Manual pause (space bar / the header button), distinct from `suspended` above: the stream
+      // stays connected and its lines are buffered off-screen in _pendingLines, so resuming shows
+      // what arrived rather than re-tailing. Dropping the connection would cost a re-tail instead.
+      paused: false,
+      pendingCount: 0,
+      // The filtered-results strip: the match list rendered under the log body as its own
+      // scrollable pane, single-pane only (multiPane has no room). Off by default - see matchPaneVisible.
+      showMatchPane: false,
     };
   },
   computed: {
@@ -70,7 +84,25 @@ export default {
     },
     // The per-line level/timestamp/HTML work this used to do on every recompute now happens once
     // per line in appendLines - see lib/logLines.js for why that mattered at four panes.
+    // The match strip already lists the hits, so narrowing the body to them as well would hide the
+    // surrounding context the strip exists to jump *into* - it makes revealAll's behaviour the
+    // default while it's open, rather than something you get only after clicking a hit.
+    showAllLines() {
+      return this.revealAll || this.matchPaneVisible;
+    },
     filteredLines() {
+      return selectLines(this.lines, {
+        levels: this.levels,
+        filterText: this.filter.trim(),
+        regexMode: this.regexMode,
+        testRegex: this.testRegex,
+        hideNonMatching: !this.showAllLines,
+      });
+    },
+    // The actual hit list, independent of revealAll - the count/prev/next controls step through
+    // matches only, even while filteredLines is showing every line for context.
+    matchLines() {
+      if (!this.searchActive) return [];
       return selectLines(this.lines, {
         levels: this.levels,
         filterText: this.filter.trim(),
@@ -81,11 +113,44 @@ export default {
     searchActive() {
       return !!this.filter.trim() && !this.regexError;
     },
-    // Resolves the id back to a position on every render, so the highlight follows its line as the
-    // list shifts underneath it (append, trim, level toggle) instead of staying put while the
-    // lines move past. Computed, so the lookup runs once per render pass and not once per line.
+    // Resolves the id back to a position in matchLines on every render, so the highlight follows
+    // its line as the list shifts underneath it (append, trim, level toggle) instead of staying put
+    // while the lines move past. Computed, so the lookup runs once per render pass, not per line.
     activeHitIndex() {
-      return hitIndexFor(this.filteredLines, this.activeMatchId);
+      return hitIndexFor(this.matchLines, this.activeMatchId);
+    },
+    // The concrete id activeHitIndex resolved to (including the "null cursor = first hit" fallback)
+    // - what the template actually compares against, since filteredLines and matchLines can now be
+    // different arrays with different indices for the same line.
+    activeHitId() {
+      const idx = this.activeHitIndex;
+      return idx >= 0 ? this.matchLines[idx].id : null;
+    },
+    // Single-pane only: a quarter-width pane in the 4-up grid has no vertical room to give up,
+    // and the strip would push the log body down to nothing. The standalone viewer counts as
+    // single too - it's one pane with the whole width, which is exactly what this wants.
+    matchPaneVisible() {
+      return this.showMatchPane && !this.multiPane;
+    },
+    // One badge rather than a span per state: the three are mutually exclusive, and "active" only
+    // reads as meaningful because it sits in the same spot the paused states do. Manual pause wins
+    // over suspension - if the user paused it, that's the answer to "why isn't this moving".
+    statusBadge() {
+      if (this.paused) {
+        return {
+          cls: 'log-status-paused',
+          text: `⏸ paused${this.pendingCount ? ' · ' + this.pendingCount + ' held' : ''}`,
+          title: 'Paused - new lines are being held. Press space (or click Resume) to catch up.',
+        };
+      }
+      if (this.suspended) {
+        return {
+          cls: 'log-status-suspended',
+          text: '⏸ suspended',
+          title: 'Paused while this tab was in the background - it resumes from the latest lines when you come back',
+        };
+      }
+      return { cls: 'log-status-active', text: '▶ active', title: 'Streaming live - press space to pause' };
     },
   },
   created() {
@@ -93,15 +158,31 @@ export default {
     this._programmatic = false;
     this._syncRaf = null;
     this._pendingJoinTsMs = null;
+    // Deliberately not reactive: this holds up to MAX_LOG_LINES decorated lines that nothing
+    // renders while paused, so reactivity on it would be pure overhead. pendingCount carries the
+    // only part the template needs.
+    this._pendingLines = [];
+    this._hovered = false;
   },
   watch: {
     // A new search term (or flipping regex mode) is a new hit list, so the cursor goes back to the
-    // first of them rather than staying on a line that may not even match any more.
+    // first of them rather than staying on a line that may not even match any more. Also drops
+    // revealAll - typing a further term means "search again", i.e. narrow back down to just the
+    // hits, per selectMatch below. An edit down to an empty filter turns searchActive off instead,
+    // which is what actually hides the hits box/highlighting - revealAll itself being stale by then
+    // doesn't matter, since nothing reads it while search is inactive.
     filter() {
+      this.revealAll = false;
       this.resetMatchCursor();
     },
     regexMode() {
+      this.revealAll = false;
       this.resetMatchCursor();
+    },
+    // Keeps the match pane's own highlight on screen while ▲/▼ (or Enter) walk the hit list - the
+    // main body already scrolls itself via scrollToActiveMatch, and the two move together.
+    activeHitId() {
+      if (this.matchPaneVisible) this.$nextTick(() => this.scrollMatchRowIntoView());
     },
   },
   mounted() {
@@ -115,6 +196,7 @@ export default {
       });
     }
     document.addEventListener('click', this.onDocumentClick);
+    document.addEventListener('keydown', this.onKeydown);
   },
   beforeUnmount() {
     if (this._stream) {
@@ -123,6 +205,7 @@ export default {
     }
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
     document.removeEventListener('click', this.onDocumentClick);
+    document.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
     startStream() {
@@ -132,9 +215,12 @@ export default {
       // logStream restarts line ids from 0 for a new source, so a cursor held across one would
       // point at whatever unrelated line inherits that id. Same reason in onReset below.
       this.activeMatchId = null;
+      this.revealAll = false;
       // A fresh stream is never suspended - the flag would otherwise survive from the stream this
       // one replaces (e.g. changing the tail size) and leave a live pane labelled paused.
       this.suspended = false;
+      this.paused = false;
+      this.clearPending();
       this._pendingJoinTsMs = this.joinAtTsMs;
       this._stream = createLogStream({
         url: logsUrl(this.hostId, this.containerId, this.tail),
@@ -148,6 +234,11 @@ export default {
           this.lines = [];
           this.atBottom = true;
           this.activeMatchId = null;
+          this.revealAll = false;
+          // Unpause rather than hold: the reset just wiped whatever was being read, so staying
+          // paused would leave an empty pane that never fills - which reads as broken, not paused.
+          this.paused = false;
+          this.clearPending();
         },
         onSuspendChange: (suspended) => {
           this.suspended = suspended;
@@ -156,10 +247,14 @@ export default {
       this._stream.start();
     },
     appendLines(lines) {
-      for (const line of decorateLines(lines)) this.lines.push(line);
-      if (this.lines.length > MAX_LOG_LINES) {
-        this.lines.splice(0, this.lines.length - MAX_LOG_LINES);
+      // Paused: buffer instead of rendering, capped at the same MAX_LOG_LINES the visible buffer
+      // is - a chatty container left paused for an hour must not grow this without bound.
+      if (this.paused) {
+        pushCapped(this._pendingLines, decorateLines(lines), MAX_LOG_LINES);
+        this.pendingCount = this._pendingLines.length;
+        return;
       }
+      pushCapped(this.lines, decorateLines(lines), MAX_LOG_LINES);
       // First real content since a pending join was requested - honor it instead of the normal
       // tail-to-bottom behavior below, then never again for this stream (one-shot).
       if (this._pendingJoinTsMs != null) {
@@ -187,6 +282,38 @@ export default {
     changeTail(newTail) {
       this.tail = newTail;
       this.startStream();
+    },
+    togglePause() {
+      if (this.paused) this.resumeLogs();
+      else this.paused = true;
+    },
+    resumeLogs() {
+      this.paused = false;
+      const pending = this._pendingLines;
+      this._pendingLines = [];
+      this.pendingCount = 0;
+      if (!pending.length) return;
+      // Straight onto the visible buffer rather than back through appendLines - these are already
+      // decorated, and re-running that would decorate them a second time.
+      pushCapped(this.lines, pending, MAX_LOG_LINES);
+      if (this.atBottom) this.$nextTick(() => this.scrollToBottom());
+    },
+    clearPending() {
+      this._pendingLines = [];
+      this.pendingCount = 0;
+    },
+    // Space toggles pause. Ignored while typing (the filter box needs its spaces) and with any
+    // modifier held, and preventDefault stops the page-scroll space would otherwise do.
+    onKeydown(e) {
+      if (e.key !== ' ' && e.code !== 'Space') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const t = e.target;
+      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName))) return;
+      // Every open pane has this listener, so in multi-pane the hovered one takes it - otherwise
+      // one space would pause all four at once. A lone pane doesn't need to be hovered first.
+      if (this.multiPane && !this._hovered) return;
+      e.preventDefault();
+      this.togglePause();
     },
     downloadLogs() {
       window.location.href = downloadLogsUrl(this.hostId, this.containerId, this.tail);
@@ -253,16 +380,30 @@ export default {
       this.moveMatch(-1);
     },
     moveMatch(delta) {
-      const id = stepHitId(this.filteredLines, this.activeMatchId, delta);
+      const id = stepHitId(this.matchLines, this.activeMatchId, delta);
       if (id == null) return;
+      this.activeMatchId = id;
+      this.$nextTick(() => this.scrollToActiveMatch());
+    },
+    // Clicking a hit reveals the full log around it instead of parking the cursor on it within
+    // the still-narrowed view - revealAll switches filteredLines over to "every line, matches
+    // highlighted" (see its computed). The filter term itself, and the hits box, both stay put.
+    selectMatch(id) {
+      if (!this.searchActive) return;
+      this.revealAll = true;
       this.activeMatchId = id;
       this.$nextTick(() => this.scrollToActiveMatch());
     },
     // Line-granularity, not per-occurrence: filteredLines' divs are the only stable scroll targets,
     // and centering on the matching line is enough to read which term hit without indexing marks.
+    // Looked up by id, not activeHitIndex directly - that index is into matchLines, which is a
+    // different array from filteredLines (and from its rendered divs) once revealAll is on.
     scrollToActiveMatch() {
       const el = this.$refs.logView;
-      const child = el && this.activeHitIndex >= 0 ? el.children[this.activeHitIndex] : null;
+      const id = this.activeHitId;
+      if (!el || id == null) return;
+      const idx = this.filteredLines.findIndex((l) => l.id === id);
+      const child = idx === -1 ? null : el.children[idx];
       if (!child) return;
       this._programmatic = true;
       child.scrollIntoView({ block: 'center' });
@@ -270,11 +411,27 @@ export default {
         this._programmatic = false;
       });
     },
+    // Scrolls within the match strip only (nearest, not center) so it never yanks the page.
+    scrollMatchRowIntoView() {
+      const list = this.$refs.matchList;
+      const id = this.activeHitId;
+      if (!list || id == null) return;
+      const idx = this.matchLines.findIndex((l) => l.id === id);
+      const row = idx === -1 ? null : list.children[idx];
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    },
     onFilterKeydown(e) {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      if (e.shiftKey) this.prevMatch();
-      else this.nextMatch();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) this.prevMatch();
+        else this.nextMatch();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.nextMatch();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.prevMatch();
+      }
     },
     scrollToBottom() {
       this.atBottom = true;
@@ -305,12 +462,16 @@ export default {
         embedded: embedded,
         'pane-main': multiPane && isMain,
         'pane-desynced': multiPane && !syncEnabled,
+        'has-match-pane': matchPaneVisible,
       }"
+      @mouseenter="_hovered = true"
+      @mouseleave="_hovered = false"
     >
       <div class="log-panel-header">
-        <strong>{{ containerName }}</strong>
-        <span v-if="suspended" class="log-paused-badge" title="Paused while this tab was in the background - it resumes from the latest lines when you come back">paused</span>
-        <div class="log-panel-controls">
+        <strong class="log-panel-name" :title="containerName">{{ containerName }}</strong>
+        <div class="log-panel-statusline">
+          <span class="log-status-badge" :class="statusBadge.cls" :title="statusBadge.title">{{ statusBadge.text }}</span>
+          <div class="log-panel-controls">
           <div class="log-level-toggle log-level-toggle-full">
             <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
             <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
@@ -357,26 +518,42 @@ export default {
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
             <div v-else-if="searchActive" class="search-hits-box">
-              <button class="search-hits-btn" @click="prevMatch" :disabled="!filteredLines.length" title="Previous match (Shift+Enter)">▲</button>
-              <span class="search-hits-count">{{ filteredLines.length ? activeHitIndex + 1 : 0 }} / {{ filteredLines.length }}</span>
-              <button class="search-hits-btn" @click="nextMatch" :disabled="!filteredLines.length" title="Next match (Enter)">▼</button>
+              <button class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
+              <span class="search-hits-count">{{ matchLines.length ? activeHitIndex + 1 : 0 }} / {{ matchLines.length }}</span>
+              <button class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
             </div>
+            <button
+              v-if="!multiPane"
+              class="small-btn"
+              :class="{ active: showMatchPane }"
+              @click="showMatchPane = !showMatchPane"
+              title="List every matching line in a strip below - the log itself stays unfiltered, so clicking a match jumps to it in context"
+            >
+              ☰ <span class="btn-label">Matches</span>
+            </button>
           </div>
-          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
-            <option :value="100">Last 100 lines</option>
-            <option :value="200">Last 200 lines</option>
-            <option :value="1000">Last 1000 lines</option>
-            <option :value="5000">Last 5000 lines</option>
-            <option value="all">All lines</option>
+          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load">
+            <option :value="1000">1000</option>
+            <option :value="5000">5000</option>
+            <option :value="10000">10000</option>
+            <option value="all">All</option>
           </select>
-          <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
+          <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
+          <button
+            class="small-btn"
+            :class="{ active: paused }"
+            @click="togglePause"
+            :title="paused ? 'Paused - new lines are held until you resume (space)' : 'Pause the log - new lines are held rather than dropped (space)'"
+          >
+            {{ paused ? '▶' : '⏸' }} <span class="btn-label">{{ paused ? 'Resume' : 'Pause' }}</span>
+          </button>
           <button
             class="small-btn"
             :class="{ active: showTimestamps }"
             @click="showTimestamps = !showTimestamps"
             title="Toggle the docker timestamp shown at the start of each line"
           >
-            🕐 Time
+            🕐 <span class="btn-label">Time</span>
           </button>
           <button v-if="!embedded" class="small-btn" @click="toggleFullscreen" :title="fullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'">
             {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
@@ -408,16 +585,35 @@ export default {
               {{ isMain ? '★' : '☆' }}
             </button>
           </template>
-          <button v-if="!embedded" @click="$emit('close')">Close</button>
-          <button v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
-            ✕
-          </button>
+            <button v-if="!embedded" @click="$emit('close')">Close</button>
+            <button v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
+              ✕
+            </button>
+          </div>
         </div>
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="(line, idx) in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && idx === activeHitIndex }" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
+      </div>
+      <div v-if="matchPaneVisible" class="log-match-pane">
+        <div class="log-match-pane-header">
+          <span class="muted small" v-if="searchActive">{{ matchLines.length }} matching {{ matchLines.length === 1 ? 'line' : 'lines' }}</span>
+          <span class="muted small" v-else>Type a filter above to list matching lines here.</span>
+          <button class="small-btn log-match-close" @click="showMatchPane = false" title="Hide the match list">✕</button>
+        </div>
+        <div v-if="searchActive" class="log-match-list" ref="matchList">
+          <div
+            v-for="line in matchLines"
+            :key="line.id"
+            class="log-match-row"
+            :class="{ active: line.id === activeHitId }"
+            @click="selectMatch(line.id)"
+            v-html="line.html"
+          ></div>
+          <div v-if="!matchLines.length" class="log-match-empty muted small">No matches.</div>
+        </div>
       </div>
     </div>
   `,

@@ -93,6 +93,14 @@ body {
 .meta-item svg {
   flex: none;
 }
+/* Sits after .host-card-meta's margin-left:auto, so it rides the right-hand group next to the
+   fullscreen button rather than needing margins of its own. Fullscreen-only - see HostCard.js. */
+.host-range-toggle {
+  flex: none;
+}
+.host-range-status {
+  margin: 0 0 8px;
+}
 .host-card.fullscreen .host-tiles {
   flex-direction: column;
 }
@@ -540,6 +548,17 @@ body {
   color: #fff;
 }
 
+.container-list-search {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 12px;
+}
 .group-block {
   margin-bottom: 16px;
 }
@@ -1093,6 +1112,11 @@ table.containers td:nth-child(7) {
 .detail-body {
   padding: 14px 16px;
 }
+/* .view-toggle carries no outer margin of its own (the topbar positions it via flex gap instead) -
+   needed here since it sits directly between .detail-header and .detail-body's own padding. */
+.settings-tabs {
+  margin: 12px 16px 0;
+}
 .detail-row {
   display: flex;
   justify-content: space-between;
@@ -1181,11 +1205,24 @@ table.containers td:nth-child(7) {
 .log-panel.with-detail {
   margin-right: 520px;
 }
+/* A flex column with the body flexing, the same shape .log-panel.embedded already uses, rather
+   than pinning the *body* to a viewport calc. The old `height: calc(100vh - 191px)` on the body
+   baked the header's height into that 191px, so the two-row header above would have overflowed it
+   - and every later header change would need it retuned again. 151px is that same allowance with
+   the old single-row header's ~40px taken back out: it now covers only what sits above the panel,
+   which is the part this file can actually know. The header and match strip measure themselves. */
 .log-panel.fullscreen {
   margin-top: 8px;
+  height: calc(100vh - 151px);
+  display: flex;
+  flex-direction: column;
+}
+.log-panel.fullscreen .log-view-wrap {
+  flex: 1;
+  min-height: 0;
 }
 .log-panel.fullscreen .log-viewer-pane {
-  height: calc(100vh - 191px);
+  height: 100%;
 }
 .log-panel.embedded {
   margin-top: 0;
@@ -1210,12 +1247,60 @@ table.containers td:nth-child(7) {
 .log-panel.pane-desynced {
   border-style: dashed;
 }
+/* Two rows, not one: container names run long (a compose project prefix plus a service name) and
+   the control strip is wide, so sharing a row made the name wrap to two lines and pushed the last
+   few buttons onto a second row anyway. Giving the name its own full-width row costs less height
+   than the wrapping did, and holds at any pane width. */
 .log-panel-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+/* The name owns the top row outright - ellipsis rather than wrap, with the full name on the title
+   attribute for when it's truncated. min-width:0 lets it actually shrink to that ellipsis, since a
+   flex item's default min-width:auto would hold the row open at the full untruncated name. */
+.log-panel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Second row: status badge pinned left, controls pushed right by their own margin. */
+.log-panel-statusline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.log-panel-statusline .log-panel-controls {
+  margin-left: auto;
+}
+/* Always present, never conditional - "active" is only legible as a state because it sits exactly
+   where "paused" would, so a pane that is streaming says so rather than saying nothing. */
+.log-status-badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.log-status-active {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+/* Manually paused (space bar / the button) - accented, so it reads as something the user did. */
+.log-status-paused {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Suspended by the tab going to the background: muted, because nobody chose it and it undoes
+   itself on return. See logStream.js's HIDDEN_SUSPEND_GRACE_MS. */
+.log-status-suspended {
+  color: var(--muted);
 }
 /* Shown when a stream has handed its connection back because the tab was in the background (see
    logStream.js's HIDDEN_SUSPEND_GRACE_MS). margin-right: auto so it sits beside the title in both
@@ -1229,6 +1314,55 @@ table.containers td:nth-child(7) {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
+}
+/* The filtered-results strip: every matching line, click one to jump to it in context. Kept
+   deliberately short - it's a scan-and-jump aid, and the log body it sits under is the main view.
+   flex:none so it keeps its height in the embedded pane's column instead of being squeezed. */
+.log-match-pane {
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.log-match-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+}
+.log-match-close {
+  padding: 0 6px;
+}
+.log-match-list {
+  max-height: 132px;
+  overflow: auto;
+  background: #0d0e11;
+  border-top: 1px solid var(--border);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* One line per match, never wrapped - a wrapped row would cost two or three of the handful of
+   rows this strip shows at once, which is the opposite of what it's for. */
+.log-match-row {
+  padding: 0 12px;
+  white-space: pre;
+  cursor: pointer;
+}
+.log-match-row:hover {
+  background: var(--row-hover, rgba(255, 255, 255, 0.06));
+}
+.log-match-row.active {
+  background: rgba(88, 166, 255, 0.18);
+}
+.log-match-empty {
+  padding: 6px 12px;
+}
+/* Only the non-fullscreen standalone pane needs this: its body is a fixed 320px rather than a
+   flexed one, so the strip's height has to come out of it explicitly. Fullscreen and embedded are
+   both flex columns now, where the body gives up the space on its own. */
+.log-panel:not(.embedded):not(.fullscreen).has-match-pane .log-viewer-pane {
+  height: 240px;
 }
 .log-panel-controls {
   display: flex;
@@ -1286,6 +1420,15 @@ table.containers td:nth-child(7) {
 }
 .filter-clear-btn:hover {
   color: var(--text);
+}
+/* The plain Unicode arrow renders as a thin, hard-to-read stroke at .small-btn's 11px - unlike the
+   emoji icons on the other buttons here (🕐, 🔍, ☰), which already carry enough visual weight at
+   that size. Bumped on its own rather than the whole button, so the label text next to it (when
+   shown) isn't oversized too. */
+.log-download-btn .btn-icon {
+  font-size: 15px;
+  line-height: 1;
+  vertical-align: -2px;
 }
 .regex-toggle-btn {
   font-family: monospace;
@@ -1415,13 +1558,44 @@ table.containers td:nth-child(7) {
    point where it's still wrapping to two rows and looking cramped even though nothing's actually
    overlapping. Swaps the level buttons for the dropdown above, and collapses the search box to an
    icon that expands back to a usable width on focus. */
-@container log-panel (max-width: 760px) {
+/* First tier, and the one that does most of the work. Measured, not guessed: at full size the
+   control strip needs 993px to sit on one row in a multi-pane header and 1140px in a standalone
+   one (which also carries Matches/Fullscreen/Wrap/Close), so anything under ~1150px was wrapping
+   to a second row - including the very common case of two panes side by side on a 1080p screen,
+   at ~985px each. Dropping just the button labels takes ~150-200px off and buys back the single
+   row down to ~850px, while keeping the level buttons and the search box at full size; each of
+   these keeps its icon and its title tooltip, so nothing becomes unidentifiable. */
+@container log-panel (max-width: 1150px) {
+  .btn-label {
+    display: none;
+  }
+  /* The status badge now shares this row, so dropping the labels alone left the strip ~30px short
+     of fitting at the two-panes-on-1080p width. The search box is the one control with slack to
+     give - 150px still shows a typed term and its placeholder, where the ≤760px tier below has to
+     collapse it to an icon outright. */
+  .log-panel-controls input {
+    width: 150px;
+  }
+}
+
+/* Second tier. Was 760px, raised to 900 for the same reason the tier above exists: four panes in
+   the 2x2 grid land at roughly 800px each on a 1080p screen, where the four level buttons (~180px)
+   are the next thing that has to give for the strip to stay on one row. The dropdown keeps every
+   level reachable in one click. */
+@container log-panel (max-width: 900px) {
   .log-level-toggle-full {
     display: none;
   }
   .log-level-toggle-compact {
     display: block;
   }
+}
+
+/* Last tier, and the only one that costs real legibility: the search box gives up showing its own
+   term and becomes an icon that expands back on focus. Kept at the original 760px rather than
+   folded into the tier above - between 760 and 900 the level dropdown alone buys back enough, and
+   being able to see what you filtered on is worth more than the 120px it costs. */
+@container log-panel (max-width: 760px) {
   .log-filter-input-wrap input {
     width: 26px;
     padding-right: 4px;
@@ -1442,10 +1616,21 @@ table.containers td:nth-child(7) {
   border-radius: 2px;
   padding: 0 1px;
 }
-.search-active-line {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-  background: rgba(88, 166, 255, 0.12);
+/* No box around the active match line - just its own highlighted text turning brighter/orange
+   reads as "this one" clearly enough without outlining the whole (often very wide) line. Bold plus
+   a glow on top of the color swap, since orange-on-dark next to yellow-on-dark otherwise reads as
+   too close a family at a glance. */
+.search-active-line .log-highlight {
+  background: #ff6a00;
+  color: #1a0a00;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px #ff6a00;
+}
+.search-line-clickable {
+  cursor: pointer;
+}
+.search-line-clickable:hover {
+  background: rgba(88, 166, 255, 0.06);
 }
 
 .log-view {
@@ -1716,7 +1901,12 @@ button.log-pane-main-btn.active:hover {
 .activity-wrap {
   display: flex;
   gap: 20px;
-  align-items: flex-start;
+  align-items: stretch;
+  /* Height is measured and set inline by ActivityView.js (same reasoning as .logs-tab-wrap above -
+     a hardcoded calc(100vh - Npx) only matches one exact combination of browser chrome/zoom/window
+     size and leaves a gap under real ones that differ, which is exactly the leftover space below a
+     short list this replaces). min-height is just the floor for a very short window. */
+  min-height: 420px;
 }
 .activity-column {
   flex: 1;
@@ -1725,6 +1915,8 @@ button.log-pane-main-btn.active:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
 }
 .activity-column h3 {
   margin: 0 0 10px;
@@ -1732,6 +1924,15 @@ button.log-pane-main-btn.active:hover {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+/* Alerts' h3 sits inside .log-section-header (for the "Acknowledge all" button) rather than bare
+   like Events' - that shared class's own margin otherwise adds on top of the h3's own bottom
+   margin (already set by .activity-column h3 above, which wins the tie against .log-section-header
+   h3's own reset since it's declared later), leaving Alerts with a taller header-to-search gap than
+   Events for no visible reason. Zeroed entirely rather than just the top: the h3's margin alone
+   already matches Events' spacing. */
+.activity-column .log-section-header {
+  margin: 0;
 }
 .activity-search {
   background: var(--bg);
@@ -1745,10 +1946,11 @@ button.log-pane-main-btn.active:hover {
 }
 .activity-list-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
 }
 .activity-list {
-  max-height: calc(100vh - 480px);
-  min-height: 200px;
+  height: 100%;
   overflow-y: auto;
 }
 .scroll-top-btn {
@@ -1802,6 +2004,90 @@ button.log-pane-main-btn.active:hover {
 }
 .alert-row.severity-warning {
   border-left-color: #d29922;
+}
+/* Per-kind count badges in the Activity columns' headers: alerts by rule, events by action.
+   margin-left:auto pins the group to the right of the header (the Acknowledge-all button, when
+   it's there, follows it) rather than letting the header's space-between strand it in the middle.
+   Wraps rather than scrolls, right-aligned, so a host with many rule kinds gets a second line -
+   still far shorter than the list below. */
+.activity-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+  min-width: 0;
+}
+/* Scoped to this view - .log-section-header is shared with ContainerDetail, which has its own
+   spacing already. Keeps the badge group off the Acknowledge-all button beside it.
+   The h3's own 10px bottom margin is the reason the badges used to read as sitting low: flex
+   centring centres each child's *margin* box, so a heading carrying 10px underneath it lands its
+   text 5px above everything beside it. Zeroing it here and moving that 10px onto the header's own
+   margin-bottom (8 + 10 = 18) aligns the row without changing the gap to the search box below. */
+.activity-column .log-section-header {
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.activity-column .log-section-header h3 {
+  margin-bottom: 0;
+}
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 11px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* The count itself is the part being scanned for, so it gets the readable colour and the weight. */
+.activity-badge b {
+  color: var(--text);
+  font-weight: 600;
+}
+/* Same left-border severity language the alert rows use, so a badge and its rows read as one. */
+.activity-badge.severity-critical {
+  border-left-color: var(--danger);
+}
+.activity-badge.severity-warning {
+  border-left-color: #d29922;
+}
+/* Events only - alerts have no "good news" severity, but start/create/unpause/healthy do. */
+.activity-badge.severity-ok {
+  border-left-color: var(--ok);
+}
+.activity-badge-more {
+  border-left-width: 1px;
+  font-style: italic;
+}
+/* Event rows get the same left accent the alert rows carry, via an inset shadow on the first cell
+   rather than a border - the events table is border-collapse, where a per-cell border-left fights
+   the collapsed grid and renders a pixel off. The action itself is the token being scanned for, so
+   it takes the colour too; unclassified actions keep the muted default and stay out of the way. */
+.event-row.severity-critical td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.event-row.severity-warning td:first-child {
+  box-shadow: inset 3px 0 0 #d29922;
+}
+.event-row.severity-ok td:first-child {
+  box-shadow: inset 3px 0 0 var(--ok);
+}
+.event-action {
+  color: var(--muted);
+}
+.event-row.severity-critical .event-action {
+  color: var(--danger);
+}
+.event-row.severity-warning .event-action {
+  color: #d29922;
+}
+.event-row.severity-ok .event-action {
+  color: var(--ok);
 }
 .alert-row-main {
   display: flex;
@@ -1890,6 +2176,16 @@ button.log-pane-main-btn.active:hover {
   gap: 8px;
   margin-top: 12px;
   flex-wrap: wrap;
+}
+/* The mute-event-rule checkboxes inside a .modal-field - flex-direction:column there would stack
+   these one per line otherwise, which reads as three separate fields instead of one group. */
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 12px;
+  font-size: 13px;
+  color: var(--text);
 }
 .modal-body hr {
   border: none;
