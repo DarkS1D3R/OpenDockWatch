@@ -19,6 +19,8 @@ export default {
       events: [],
       alertsAtTop: true,
       eventsAtTop: true,
+      // Measured, not guessed - see updateWrapHeight.
+      wrapHeightPx: 420,
     };
   },
   computed: {
@@ -55,11 +57,24 @@ export default {
   },
   mounted() {
     this.loadEvents();
+    this.updateWrapHeight();
+    // document.body doesn't actually resize with the viewport (its box is content-driven, not
+    // viewport-driven - a ResizeObserver on it never fires just because the window did), so the
+    // window's own resize event is the real signal here, not a proxy for it.
+    window.addEventListener('resize', this.updateWrapHeight);
   },
   beforeUnmount() {
     this.closeStream();
+    window.removeEventListener('resize', this.updateWrapHeight);
   },
   methods: {
+    updateWrapHeight() {
+      const el = this.$refs.wrap;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      // 16px so the panel border doesn't sit flush against the very bottom edge of the window.
+      this.wrapHeightPx = Math.max(420, Math.floor(window.innerHeight - top - 16));
+    },
     async loadEvents() {
       if (!this.hostId) return;
       try {
@@ -111,7 +126,7 @@ export default {
     },
   },
   template: `
-    <div class="activity-wrap">
+    <div class="activity-wrap" ref="wrap" :style="{ height: wrapHeightPx + 'px' }">
       <div class="activity-column">
         <div class="log-section-header">
           <h3>Alerts</h3>

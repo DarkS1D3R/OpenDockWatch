@@ -1738,7 +1738,12 @@ button.log-pane-main-btn.active:hover {
 .activity-wrap {
   display: flex;
   gap: 20px;
-  align-items: flex-start;
+  align-items: stretch;
+  /* Height is measured and set inline by ActivityView.js (same reasoning as .logs-tab-wrap above -
+     a hardcoded calc(100vh - Npx) only matches one exact combination of browser chrome/zoom/window
+     size and leaves a gap under real ones that differ, which is exactly the leftover space below a
+     short list this replaces). min-height is just the floor for a very short window. */
+  min-height: 420px;
 }
 .activity-column {
   flex: 1;
@@ -1747,6 +1752,8 @@ button.log-pane-main-btn.active:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
 }
 .activity-column h3 {
   margin: 0 0 10px;
@@ -1754,6 +1761,15 @@ button.log-pane-main-btn.active:hover {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+/* Alerts' h3 sits inside .log-section-header (for the "Acknowledge all" button) rather than bare
+   like Events' - that shared class's own margin otherwise adds on top of the h3's own bottom
+   margin (already set by .activity-column h3 above, which wins the tie against .log-section-header
+   h3's own reset since it's declared later), leaving Alerts with a taller header-to-search gap than
+   Events for no visible reason. Zeroed entirely rather than just the top: the h3's margin alone
+   already matches Events' spacing. */
+.activity-column .log-section-header {
+  margin: 0;
 }
 .activity-search {
   background: var(--bg);
@@ -1767,10 +1783,11 @@ button.log-pane-main-btn.active:hover {
 }
 .activity-list-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
 }
 .activity-list {
-  max-height: calc(100vh - 480px);
-  min-height: 200px;
+  height: 100%;
   overflow-y: auto;
 }
 .scroll-top-btn {
