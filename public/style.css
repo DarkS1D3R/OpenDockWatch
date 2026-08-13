@@ -93,6 +93,14 @@ body {
 .meta-item svg {
   flex: none;
 }
+/* Sits after .host-card-meta's margin-left:auto, so it rides the right-hand group next to the
+   fullscreen button rather than needing margins of its own. Fullscreen-only - see HostCard.js. */
+.host-range-toggle {
+  flex: none;
+}
+.host-range-status {
+  margin: 0 0 8px;
+}
 .host-card.fullscreen .host-tiles {
   flex-direction: column;
 }
