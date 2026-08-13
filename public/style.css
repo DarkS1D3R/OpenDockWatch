@@ -1205,11 +1205,24 @@ table.containers td:nth-child(7) {
 .log-panel.with-detail {
   margin-right: 520px;
 }
+/* A flex column with the body flexing, the same shape .log-panel.embedded already uses, rather
+   than pinning the *body* to a viewport calc. The old `height: calc(100vh - 191px)` on the body
+   baked the header's height into that 191px, so the two-row header above would have overflowed it
+   - and every later header change would need it retuned again. 151px is that same allowance with
+   the old single-row header's ~40px taken back out: it now covers only what sits above the panel,
+   which is the part this file can actually know. The header and match strip measure themselves. */
 .log-panel.fullscreen {
   margin-top: 8px;
+  height: calc(100vh - 151px);
+  display: flex;
+  flex-direction: column;
+}
+.log-panel.fullscreen .log-view-wrap {
+  flex: 1;
+  min-height: 0;
 }
 .log-panel.fullscreen .log-viewer-pane {
-  height: calc(100vh - 191px);
+  height: 100%;
 }
 .log-panel.embedded {
   margin-top: 0;
@@ -1234,12 +1247,60 @@ table.containers td:nth-child(7) {
 .log-panel.pane-desynced {
   border-style: dashed;
 }
+/* Two rows, not one: container names run long (a compose project prefix plus a service name) and
+   the control strip is wide, so sharing a row made the name wrap to two lines and pushed the last
+   few buttons onto a second row anyway. Giving the name its own full-width row costs less height
+   than the wrapping did, and holds at any pane width. */
 .log-panel-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+/* The name owns the top row outright - ellipsis rather than wrap, with the full name on the title
+   attribute for when it's truncated. min-width:0 lets it actually shrink to that ellipsis, since a
+   flex item's default min-width:auto would hold the row open at the full untruncated name. */
+.log-panel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Second row: status badge pinned left, controls pushed right by their own margin. */
+.log-panel-statusline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.log-panel-statusline .log-panel-controls {
+  margin-left: auto;
+}
+/* Always present, never conditional - "active" is only legible as a state because it sits exactly
+   where "paused" would, so a pane that is streaming says so rather than saying nothing. */
+.log-status-badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.log-status-active {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+/* Manually paused (space bar / the button) - accented, so it reads as something the user did. */
+.log-status-paused {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Suspended by the tab going to the background: muted, because nobody chose it and it undoes
+   itself on return. See logStream.js's HIDDEN_SUSPEND_GRACE_MS. */
+.log-status-suspended {
+  color: var(--muted);
 }
 /* Shown when a stream has handed its connection back because the tab was in the background (see
    logStream.js's HIDDEN_SUSPEND_GRACE_MS). margin-right: auto so it sits beside the title in both
@@ -1253,6 +1314,55 @@ table.containers td:nth-child(7) {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
+}
+/* The filtered-results strip: every matching line, click one to jump to it in context. Kept
+   deliberately short - it's a scan-and-jump aid, and the log body it sits under is the main view.
+   flex:none so it keeps its height in the embedded pane's column instead of being squeezed. */
+.log-match-pane {
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.log-match-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+}
+.log-match-close {
+  padding: 0 6px;
+}
+.log-match-list {
+  max-height: 132px;
+  overflow: auto;
+  background: #0d0e11;
+  border-top: 1px solid var(--border);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* One line per match, never wrapped - a wrapped row would cost two or three of the handful of
+   rows this strip shows at once, which is the opposite of what it's for. */
+.log-match-row {
+  padding: 0 12px;
+  white-space: pre;
+  cursor: pointer;
+}
+.log-match-row:hover {
+  background: var(--row-hover, rgba(255, 255, 255, 0.06));
+}
+.log-match-row.active {
+  background: rgba(88, 166, 255, 0.18);
+}
+.log-match-empty {
+  padding: 6px 12px;
+}
+/* Only the non-fullscreen standalone pane needs this: its body is a fixed 320px rather than a
+   flexed one, so the strip's height has to come out of it explicitly. Fullscreen and embedded are
+   both flex columns now, where the body gives up the space on its own. */
+.log-panel:not(.embedded):not(.fullscreen).has-match-pane .log-viewer-pane {
+  height: 240px;
 }
 .log-panel-controls {
   display: flex;
@@ -1448,13 +1558,44 @@ table.containers td:nth-child(7) {
    point where it's still wrapping to two rows and looking cramped even though nothing's actually
    overlapping. Swaps the level buttons for the dropdown above, and collapses the search box to an
    icon that expands back to a usable width on focus. */
-@container log-panel (max-width: 760px) {
+/* First tier, and the one that does most of the work. Measured, not guessed: at full size the
+   control strip needs 993px to sit on one row in a multi-pane header and 1140px in a standalone
+   one (which also carries Matches/Fullscreen/Wrap/Close), so anything under ~1150px was wrapping
+   to a second row - including the very common case of two panes side by side on a 1080p screen,
+   at ~985px each. Dropping just the button labels takes ~150-200px off and buys back the single
+   row down to ~850px, while keeping the level buttons and the search box at full size; each of
+   these keeps its icon and its title tooltip, so nothing becomes unidentifiable. */
+@container log-panel (max-width: 1150px) {
+  .btn-label {
+    display: none;
+  }
+  /* The status badge now shares this row, so dropping the labels alone left the strip ~30px short
+     of fitting at the two-panes-on-1080p width. The search box is the one control with slack to
+     give - 150px still shows a typed term and its placeholder, where the ≤760px tier below has to
+     collapse it to an icon outright. */
+  .log-panel-controls input {
+    width: 150px;
+  }
+}
+
+/* Second tier. Was 760px, raised to 900 for the same reason the tier above exists: four panes in
+   the 2x2 grid land at roughly 800px each on a 1080p screen, where the four level buttons (~180px)
+   are the next thing that has to give for the strip to stay on one row. The dropdown keeps every
+   level reachable in one click. */
+@container log-panel (max-width: 900px) {
   .log-level-toggle-full {
     display: none;
   }
   .log-level-toggle-compact {
     display: block;
   }
+}
+
+/* Last tier, and the only one that costs real legibility: the search box gives up showing its own
+   term and becomes an icon that expands back on focus. Kept at the original 760px rather than
+   folded into the tier above - between 760 and 900 the level dropdown alone buys back enough, and
+   being able to see what you filtered on is worth more than the 120px it costs. */
+@container log-panel (max-width: 760px) {
   .log-filter-input-wrap input {
     width: 26px;
     padding-right: 4px;
@@ -1466,11 +1607,6 @@ table.containers td:nth-child(7) {
   .log-filter-input-wrap input:focus {
     width: 140px;
     padding-right: 22px;
-  }
-  /* Download/Time keep their icon and title tooltip, same as the level/search icons above - the
-     label text is the part that isn't essential once space is tight. */
-  .btn-label {
-    display: none;
   }
 }
 
