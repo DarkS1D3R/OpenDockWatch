@@ -1298,6 +1298,15 @@ table.containers td:nth-child(7) {
 .filter-clear-btn:hover {
   color: var(--text);
 }
+/* The plain Unicode arrow renders as a thin, hard-to-read stroke at .small-btn's 11px - unlike the
+   emoji icons on the other buttons here (🕐, 🔍, ☰), which already carry enough visual weight at
+   that size. Bumped on its own rather than the whole button, so the label text next to it (when
+   shown) isn't oversized too. */
+.log-download-btn .btn-icon {
+  font-size: 15px;
+  line-height: 1;
+  vertical-align: -2px;
+}
 .regex-toggle-btn {
   font-family: monospace;
   font-weight: 700;
@@ -1444,6 +1453,11 @@ table.containers td:nth-child(7) {
   .log-filter-input-wrap input:focus {
     width: 140px;
     padding-right: 22px;
+  }
+  /* Download/Time keep their icon and title tooltip, same as the level/search icons above - the
+     label text is the part that isn't essential once space is tight. */
+  .btn-label {
+    display: none;
   }
 }
 

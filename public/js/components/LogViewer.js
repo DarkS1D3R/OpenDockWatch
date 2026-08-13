@@ -415,20 +415,20 @@ export default {
               <button class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
             </div>
           </div>
-          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))">
-            <option :value="1000">Last 1000 lines</option>
-            <option :value="5000">Last 5000 lines</option>
-            <option :value="10000">Last 10000 lines</option>
-            <option value="all">All lines</option>
+          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load">
+            <option :value="1000">1000</option>
+            <option :value="5000">5000</option>
+            <option :value="10000">10000</option>
+            <option value="all">All</option>
           </select>
-          <button class="small-btn" @click="downloadLogs" title="Download the currently selected tail as a text file">⬇ Download</button>
+          <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
           <button
             class="small-btn"
             :class="{ active: showTimestamps }"
             @click="showTimestamps = !showTimestamps"
             title="Toggle the docker timestamp shown at the start of each line"
           >
-            🕐 Time
+            🕐 <span class="btn-label">Time</span>
           </button>
           <button v-if="!embedded" class="small-btn" @click="toggleFullscreen" :title="fullscreen ? 'Exit fullscreen' : 'Fullscreen - hide everything else so you can see more of the log'">
             {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
