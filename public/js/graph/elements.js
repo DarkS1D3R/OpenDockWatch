@@ -69,7 +69,7 @@ function containerNodeEl(n, selectedId, parent) {
   const data = {
     id: n.id,
     name: n.name,
-    emoji: stateEmoji(n.state),
+    emoji: stateEmoji(n.state, n.health),
     status: n.status || '',
     icon: iconFor(n.image, n.composeService),
     cpuPerc: n.cpuPerc,
@@ -87,8 +87,8 @@ function containerNodeEl(n, selectedId, parent) {
   return {
     data,
     classes:
-      (n.state === 'running' ? 'running' : 'stopped') +
-      (n.health === 'unhealthy' ? ' unhealthy' : '') +
+      (n.state === 'running' ? 'running' : n.state === 'created' ? 'created' : 'stopped') +
+      (n.health === 'unhealthy' ? ' unhealthy' : n.health === 'starting' ? ' starting' : '') +
       (n.id === selectedId ? ' selected' : ''),
   };
 }

@@ -178,8 +178,8 @@ export default {
         if (tsMs != null) this.broadcastFrom(id, tsMs);
       }
     },
-    stateIcon(state) {
-      return stateEmoji(state);
+    stateIcon(state, health) {
+      return stateEmoji(state, health);
     },
   },
   template: `
@@ -219,7 +219,7 @@ export default {
             :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
             @click="toggleOpen(c.id)"
           >
-            <span class="logs-tab-row-icon" v-html="stateIcon(c.state)"></span>
+            <span class="logs-tab-row-icon" v-html="stateIcon(c.state, c.health)"></span>
             <span class="logs-tab-row-name">{{ c.name }}</span>
           </div>
         </div>

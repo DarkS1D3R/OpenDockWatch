@@ -115,16 +115,20 @@ test('buildElements', async (t) => {
     for (const token of tokens) assert.match(token, /^\d+:\d+$/);
   });
 
-  await t.test('node classes reflect running/stopped, unhealthy, and selection', () => {
+  await t.test('node classes reflect running/stopped/created, unhealthy, starting, and selection', () => {
     const nodes = [
       { id: 'a', group: 'g', state: 'running', health: 'healthy' },
       { id: 'b', group: 'g', state: 'exited', health: 'unhealthy' },
       { id: 'c', group: 'g', state: 'running', health: 'healthy' },
+      { id: 'd', group: 'g', state: 'running', health: 'starting' },
+      { id: 'e', group: 'g', state: 'created' },
     ];
     const els = elements.buildElements(nodes, [], 'c');
     assert.equal(els.find((e) => e.data.id === 'a').classes, 'running');
     assert.equal(els.find((e) => e.data.id === 'b').classes, 'stopped unhealthy');
     assert.equal(els.find((e) => e.data.id === 'c').classes, 'running selected');
+    assert.equal(els.find((e) => e.data.id === 'd').classes, 'running starting');
+    assert.equal(els.find((e) => e.data.id === 'e').classes, 'created');
   });
 
   await t.test('edge classes map by kind, defaulting to edge-network', () => {
@@ -364,6 +368,7 @@ function svgContainerFixture(overrides = {}) {
     height: 76,
     running: true,
     stopped: false,
+    created: false,
     unhealthy: false,
     selected: false,
     faded: false,
@@ -392,6 +397,12 @@ test('renderSvg', async (t) => {
   await t.test('an unhealthy container uses the unhealthy border color', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true })], edges: [] });
     assert.match(svg, /stroke="#f85149"/);
+  });
+
+  await t.test('a created-but-never-started container gets a dashed accent-colored border, distinct from stopped', () => {
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ running: false, created: true })], edges: [] });
+    assert.match(svg, /stroke="#4f8cff"/);
+    assert.match(svg, /stroke-dasharray="6 4"/);
   });
 
   await t.test('a selected container uses the selected border color', () => {

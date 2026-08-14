@@ -304,7 +304,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
   if (typeof cy.nodeHtmlLabel === 'function') {
     cy.nodeHtmlLabel([
       {
-        query: 'node.running, node.stopped',
+        query: 'node.running, node.stopped, node.created',
         halign: 'center',
         valign: 'center',
         halignBox: 'center',

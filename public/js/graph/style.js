@@ -109,6 +109,27 @@ export const CY_STYLE = [
     },
   },
   {
+    // Created but never started - dashed like .log-panel.pane-desynced elsewhere in this app,
+    // reusing that same "dashed = not in its normal state" visual language, in --accent (matches
+    // state-created in style.css) so it doesn't read as gray/stopped at a glance.
+    selector: 'node.created',
+    style: {
+      'background-color': '#1d2027',
+      'border-width': 2,
+      'border-color': '#4f8cff',
+      'border-style': 'dashed',
+      width: 170,
+      height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
+      shape: 'round-rectangle',
+    },
+  },
+  {
+    selector: 'node.starting',
+    style: {
+      'border-color': '#d29922',
+    },
+  },
+  {
     selector: 'node.unhealthy',
     style: {
       'border-color': '#f85149',

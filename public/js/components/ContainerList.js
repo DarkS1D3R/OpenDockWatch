@@ -53,7 +53,9 @@ export default {
       return `Peak ${formatted} over the last couple of minutes - click for full history`;
     },
     stateClass(container) {
-      return container.state === 'running' ? 'state-running' : 'state-stopped';
+      if (container.state === 'running') return 'state-running';
+      if (container.state === 'created') return 'state-created';
+      return 'state-stopped';
     },
     healthDotColor(health) {
       return healthColor(health);

@@ -135,7 +135,9 @@ export default {
       return healthLabel(health);
     },
     stateClass() {
-      return this.container.state === 'running' ? 'state-running' : 'state-stopped';
+      if (this.container.state === 'running') return 'state-running';
+      if (this.container.state === 'created') return 'state-created';
+      return 'state-stopped';
     },
   },
   template: `

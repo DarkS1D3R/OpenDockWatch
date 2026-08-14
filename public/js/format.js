@@ -1,12 +1,31 @@
-const ICON_RUNNING = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" fill="none" stroke="#3fb950" stroke-width="1.4"/><circle cx="6" cy="6" r="2.2" fill="#3fb950"/></svg>`;
+// Running is the only state with a second axis worth showing - health. Same dot shape, colored
+// per HEALTH_COLOR below (kept as literals here since that const isn't declared until further
+// down the file) rather than one flat green, so "running" stops reading as "fine" for a container
+// that's still starting or has failed its healthcheck. Stopped/exited stay the plain gray square -
+// there's no health to report once a container isn't running.
+function runningIcon(color) {
+  return `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" fill="none" stroke="${color}" stroke-width="1.4"/><circle cx="6" cy="6" r="2.2" fill="${color}"/></svg>`;
+}
+const ICON_RUNNING = runningIcon('#3fb950');
+const ICON_RUNNING_STARTING = runningIcon('#d29922');
+const ICON_RUNNING_UNHEALTHY = runningIcon('#f85149');
 const ICON_RESTARTING = `<svg class="state-icon state-icon-spin" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 4.5A4 4 0 1 0 10 6.5" fill="none" stroke="#4f8cff" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2v2.5H7" fill="none" stroke="#4f8cff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_PAUSED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="2" width="2" height="8" rx="0.6" fill="#8b909c"/><rect x="7" y="2" width="2" height="8" rx="0.6" fill="#8b909c"/></svg>`;
 const ICON_STOPPED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="#8b909c" stroke-width="1.4"/></svg>`;
+// Same square as ICON_STOPPED but dashed and in --accent, not --muted: a container that was
+// `docker create`d but never started is not the same fact as one that ran and exited, and the two
+// used to be indistinguishable (both fell into the generic "else" branch below).
+const ICON_CREATED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="#4f8cff" stroke-width="1.4" stroke-dasharray="2 1.5"/></svg>`;
 
-export function stateEmoji(state) {
-  if (state === 'running') return ICON_RUNNING;
+export function stateEmoji(state, health) {
+  if (state === 'running') {
+    if (health === 'unhealthy') return ICON_RUNNING_UNHEALTHY;
+    if (health === 'starting') return ICON_RUNNING_STARTING;
+    return ICON_RUNNING;
+  }
   if (state === 'restarting') return ICON_RESTARTING;
   if (state === 'paused') return ICON_PAUSED;
+  if (state === 'created') return ICON_CREATED;
   return ICON_STOPPED;
 }
 

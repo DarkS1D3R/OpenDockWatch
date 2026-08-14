@@ -687,6 +687,11 @@ table.containers td:nth-child(7) {
 .state-stopped {
   color: var(--muted);
 }
+/* Created but never started (docker create, no docker start) - distinct from state-stopped so it
+   doesn't read as "ran, then exited" when it never ran at all. */
+.state-created {
+  color: var(--accent);
+}
 
 .actions button {
   margin-right: 6px;
