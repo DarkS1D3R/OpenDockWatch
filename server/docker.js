@@ -58,15 +58,28 @@ function release() {
   waiter.resolve();
 }
 
+// execFile reports a timeout kill as a generic "Command failed: docker ..." with *empty* stderr -
+// nothing was ever written to it - which reads like a daemon error and hides the one fact that
+// matters. `docker system df` timed out every 60s for weeks on a WSL2 host and looked exactly like
+// a broken daemon in the log. Pure and separate from spawnDocker so it's unit-testable without
+// mocking child_process, same as the CLI-output parsers further down this file.
+function dockerCommandError(err, args, timeoutMs, stderr) {
+  if (err.killed || err.signal === 'SIGTERM' || err.signal === 'SIGKILL') {
+    const timedOut = new Error(`docker ${args.join(' ')} timed out after ${timeoutMs}ms`);
+    timedOut.timedOut = true;
+    timedOut.stderr = stderr;
+    return timedOut;
+  }
+  err.stderr = stderr;
+  return err;
+}
+
 function spawnDocker(args, timeoutMs) {
   return new Promise((resolve, reject) => {
     let killTimer = null;
     const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       clearTimeout(killTimer);
-      if (err) {
-        err.stderr = stderr;
-        return reject(err);
-      }
+      if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr));
       resolve(stdout);
     });
     killTimer = setTimeout(() => {
@@ -500,10 +513,16 @@ function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
 
-// `docker system df` walks the whole build cache and can take well over CMD_TIMEOUT_MS on a host
-// with a lot of build history, so it gets its own longer timeout. Safe to be generous: only the
-// 60s disk-usage poll calls this, not the 5s container poll, so it never delays anything urgent.
-const DISK_USAGE_TIMEOUT_MS = 30_000;
+// `docker system df` deduplicates shared image layers by walking the whole overlay2 tree, so it
+// gets its own much longer timeout - it is not in the same cost class as any other call here.
+// **How much longer depends on the storage, not on the number of images**: measured on the same
+// 32-image host, sub-second on native Linux against ~40-75s on WSL2/Docker Desktop, where the
+// layers live on a virtual disk behind a 9p/virtiofs hop and every `stat` pays for it. The old
+// 30s was picked on Linux and meant this call could never once succeed on WSL2 - the Disk panel
+// was permanently empty and a heavyweight process was spawned and killed every 60s forever. Note
+// the 40-75s spread across runs on one host: no fixed value is reliably right, which is why
+// metricsCollector also backs off on failure rather than trusting this number alone.
+const DISK_USAGE_TIMEOUT_MS = Number(process.env.DISK_USAGE_TIMEOUT_MS) || 120_000;
 
 async function getDiskUsage(host) {
   const stdout = await run([...hostArgs(host), 'system', 'df', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
@@ -575,4 +594,6 @@ module.exports = {
   parseMountsList,
   computeRate,
   computeIoRates,
+  dockerCommandError,
+  DISK_USAGE_TIMEOUT_MS,
 };

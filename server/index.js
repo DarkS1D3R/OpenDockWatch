@@ -397,9 +397,14 @@ api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
 api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
   const host = req.odwHost;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.diskUsage) return res.json(snapshot.diskUsage);
+  // `{rows, error}` rather than a bare array, so a host where `docker system df` can't complete
+  // says so instead of returning `[]` - indistinguishable from "nothing on disk" to the client,
+  // which then rendered no panel at all. Last known rows are still served alongside the error.
+  if (snapshot && (snapshot.diskUsage || snapshot.diskUsageError)) {
+    return res.json({ rows: snapshot.diskUsage || [], error: snapshot.diskUsageError || null });
+  }
   try {
-    res.json(await getDiskUsage(host));
+    res.json({ rows: await getDiskUsage(host), error: null });
   } catch (err) {
     dockerError(res, err);
   }

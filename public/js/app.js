@@ -65,6 +65,7 @@ createApp({
       hostInfo: null,
       hostCardFullscreen: false,
       diskUsage: [],
+      diskUsageError: null,
       hostMetricsHistory: [],
       containerMetricsHistory: {},
 
@@ -183,6 +184,7 @@ createApp({
       this.metricsContainerId = null;
       this.hostInfo = null;
       this.diskUsage = [];
+      this.diskUsageError = null;
       this.hostMetricsHistory = [];
       this.containerMetricsHistory = {};
       this.alerts = [];
@@ -268,7 +270,9 @@ createApp({
       const hostId = this.selectedHostId;
       try {
         const usage = await apiGetDiskUsage(hostId);
-        if (this.selectedHostId === hostId) this.diskUsage = usage;
+        if (this.selectedHostId !== hostId) return;
+        this.diskUsage = usage.rows || [];
+        this.diskUsageError = usage.error || null;
       } catch {
         /* disk usage is best-effort */
       }
@@ -483,6 +487,7 @@ createApp({
         :host-id="selectedHostId"
         :metrics-history="hostMetricsHistory"
         :disk-usage="diskUsage"
+        :disk-usage-error="diskUsageError"
         :with-detail="detailPanelVisible || settingsOpen"
         v-model:fullscreen="hostCardFullscreen"
       ></host-card>
