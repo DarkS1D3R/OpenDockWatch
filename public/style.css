@@ -1333,9 +1333,15 @@ table.containers td:nth-child(7) {
 .log-match-close {
   padding: 0 6px;
 }
+/* height (not max-height) + resize: vertical gives the browser's native drag handle on the
+   bottom-right corner - min/max-height keep a drag from collapsing it to nothing or growing past
+   the log body above it. */
 .log-match-list {
-  max-height: 132px;
+  height: 132px;
+  min-height: 60px;
+  max-height: 480px;
   overflow: auto;
+  resize: vertical;
   background: #0d0e11;
   border-top: 1px solid var(--border);
   font-family: 'Cascadia Code', Consolas, monospace;
