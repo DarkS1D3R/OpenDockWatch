@@ -57,7 +57,7 @@ createApp({
       pollFailures: 0,
       actionInFlight: {},
 
-      view: 'list', // 'list' | 'flow' | 'logs' | 'activity'
+      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -145,8 +145,9 @@ createApp({
   },
   async mounted() {
     document.addEventListener('visibilitychange', this.onVisibilityChange);
+    let session;
     try {
-      const session = await apiGetSession();
+      session = await apiGetSession();
       this.role = session.role;
       this.appVersion = session.version;
       await this.loadHosts();
@@ -156,6 +157,9 @@ createApp({
     if (this.hosts.length) {
       this.selectHost(this.hosts[0].id);
     }
+    // setView (not a direct assignment) so a configured 'flow' default also gets its topology
+    // fetched immediately, same as clicking the Flow tab by hand - see setView.
+    await this.setView(session.defaultView || 'list');
   },
   beforeUnmount() {
     document.removeEventListener('visibilitychange', this.onVisibilityChange);

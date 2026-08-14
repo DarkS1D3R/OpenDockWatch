@@ -122,6 +122,24 @@ export async function apiAckAllAlerts(hostId) {
   return jsonOrThrow(await apiFetch(`/api/alerts/ack-all?hostId=${encodeURIComponent(hostId)}`, { method: 'POST' }));
 }
 
+export async function apiGetDefaultView() {
+  return jsonOrThrow(await apiFetch('/api/settings/default-view'));
+}
+
+export async function apiSaveDefaultView(defaultView) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/default-view', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultView }),
+    })
+  );
+}
+
+export async function apiClearDefaultView() {
+  return jsonOrThrow(await apiFetch('/api/settings/default-view', { method: 'DELETE' }));
+}
+
 export async function apiGetWebhookConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook'));
 }

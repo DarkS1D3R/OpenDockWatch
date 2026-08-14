@@ -293,7 +293,7 @@ api.use(requireAuth);
 api.use(requestTimeout(REQUEST_TIMEOUT_MS));
 
 api.get('/session', (req, res) => {
-  res.json({ username: req.session.username, role: req.session.role, version: appVersion });
+  res.json({ username: req.session.username, role: req.session.role, version: appVersion, defaultView: getDefaultView() });
 });
 
 // The collector already establishes reachability and hostname for every host every POLL_MS -
@@ -481,6 +481,40 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.ackAllAlerts(hostId);
   res.json({ ok: true, count });
+});
+
+// The tab the app lands on after login - env-default + DB-override, same shape as the alert
+// settings below, but general enough (no secrets, affects every role) that the read isn't
+// admin-gated: /session already hands it to every authenticated user regardless of role, since a
+// viewer's landing tab should match the configured default too, not just an admin's.
+const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity']);
+const DEFAULT_VIEW_KEY = 'defaultView';
+
+function getDefaultView() {
+  const dbVal = db.getSetting(DEFAULT_VIEW_KEY);
+  if (dbVal !== null) return dbVal;
+  const envVal = process.env.DEFAULT_VIEW;
+  return VALID_VIEWS.has(envVal) ? envVal : 'list';
+}
+
+api.get('/settings/default-view', requireAdmin, (req, res) => {
+  res.json({ defaultView: getDefaultView(), overridden: db.getSetting(DEFAULT_VIEW_KEY) !== null });
+});
+
+api.put('/settings/default-view', requireAdmin, (req, res) => {
+  const { defaultView } = req.body || {};
+  if (!VALID_VIEWS.has(defaultView)) {
+    return res.status(400).json({ error: 'defaultView must be one of list, flow, logs, activity' });
+  }
+  db.setSetting(DEFAULT_VIEW_KEY, defaultView);
+  logger.info('settings.default_view.update', { user: req.session.username, defaultView });
+  res.json({ defaultView, overridden: true });
+});
+
+api.delete('/settings/default-view', requireAdmin, (req, res) => {
+  db.deleteSetting(DEFAULT_VIEW_KEY);
+  logger.info('settings.default_view.clear', { user: req.session.username });
+  res.json({ defaultView: getDefaultView(), overridden: false });
 });
 
 // Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as

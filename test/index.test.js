@@ -192,6 +192,34 @@ test('container-rules routes reject an unusable id rather than no-op with a 200'
   });
 });
 
+test('default view (landing tab) setting', async (t) => {
+  await t.test('rejects a value outside list/flow/logs/activity', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.put('/api/settings/default-view').send({ defaultView: 'nonsense' })).status, 400);
+  });
+
+  await t.test('save/clear round-trip, and GET /session reflects it for every role', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+
+    const saved = await admin.put('/api/settings/default-view').send({ defaultView: 'flow' });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.body, { defaultView: 'flow', overridden: true });
+
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/session')).body.defaultView, 'flow', 'a viewer session should see the same configured default');
+
+    const cleared = await admin.delete('/api/settings/default-view');
+    assert.deepEqual(cleared.body, { defaultView: 'list', overridden: false });
+    assert.equal((await admin.get('/api/session')).body.defaultView, 'list');
+  });
+
+  await t.test('only an admin can change it, though any role can read the resolved value via /session', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.put('/api/settings/default-view').send({ defaultView: 'logs' })).status, 403);
+    assert.equal((await viewer.get('/api/session')).status, 200);
+  });
+});
+
 test('GET /metrics', async (t) => {
   const original = process.env.METRICS_TOKEN;
   t.after(() => {
