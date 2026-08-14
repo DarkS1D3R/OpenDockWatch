@@ -1,5 +1,5 @@
 import { healthColor } from './format.js';
-import { containerFullHeight, clampPct } from './graph/elements.js';
+import { containerFullHeight, clampPct, CONTAINER_STATE_CLASSES } from './graph/elements.js';
 import { CY_STYLE, CPU_COLOR, MEM_COLOR } from './graph/style.js';
 import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout.js';
 import { loadCollapsedGroups, saveCollapsedGroups, saveNodePosition, saveViewport } from './graph/persistence.js';
@@ -304,7 +304,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
   if (typeof cy.nodeHtmlLabel === 'function') {
     cy.nodeHtmlLabel([
       {
-        query: 'node.running, node.stopped',
+        query: CONTAINER_STATE_CLASSES.map((c) => `node.${c}`).join(', '),
         halign: 'center',
         valign: 'center',
         halignBox: 'center',

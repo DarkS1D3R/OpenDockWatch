@@ -30,6 +30,29 @@ test('stateEmoji', async (t) => {
     assert.equal(format.stateEmoji('exited'), format.stateEmoji('stopped'));
     assert.equal(format.stateEmoji(undefined), format.stateEmoji('stopped'));
   });
+
+  await t.test('a running container colors its dot by health, not just green', () => {
+    const healthy = format.stateEmoji('running');
+    const starting = format.stateEmoji('running', 'starting');
+    const unhealthy = format.stateEmoji('running', 'unhealthy');
+    assert.notEqual(starting, healthy);
+    assert.notEqual(unhealthy, healthy);
+    assert.notEqual(starting, unhealthy);
+    assert.ok(starting.includes('#d29922'));
+    assert.ok(unhealthy.includes('#f85149'));
+    assert.ok(healthy.includes('#3fb950'));
+  });
+
+  await t.test('stopped/exited ignore health - no health to report once not running', () => {
+    assert.equal(format.stateEmoji('stopped', 'unhealthy'), format.stateEmoji('stopped'));
+  });
+
+  await t.test('created (docker create, never started) renders its own icon, distinct from stopped', () => {
+    const created = format.stateEmoji('created');
+    const stopped = format.stateEmoji('stopped');
+    assert.notEqual(created, stopped);
+    assert.ok(created.includes('#4f8cff'));
+  });
 });
 
 test('iconFor', async (t) => {

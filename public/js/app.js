@@ -57,7 +57,7 @@ createApp({
       pollFailures: 0,
       actionInFlight: {},
 
-      view: 'list', // 'list' | 'flow' | 'logs' | 'activity'
+      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -65,6 +65,7 @@ createApp({
       hostInfo: null,
       hostCardFullscreen: false,
       diskUsage: [],
+      diskUsageError: null,
       hostMetricsHistory: [],
       containerMetricsHistory: {},
 
@@ -79,6 +80,11 @@ createApp({
       logViewerOpen: false,
       logViewerFullscreen: false,
       logViewerWrap: true,
+
+      // One-shot handoff into the Logs tab's own single-pane state - see openLogsFor. Read once by
+      // LogsView's mounted() (it remounts fresh every time view flips into 'logs', v-if not v-show)
+      // then cleared, so a later plain click on the Logs nav tab doesn't keep reopening this container.
+      logsTabOpenId: null,
 
       settingsOpen: false,
     };
@@ -145,8 +151,9 @@ createApp({
   },
   async mounted() {
     document.addEventListener('visibilitychange', this.onVisibilityChange);
+    let session;
     try {
-      const session = await apiGetSession();
+      session = await apiGetSession();
       this.role = session.role;
       this.appVersion = session.version;
       await this.loadHosts();
@@ -156,6 +163,9 @@ createApp({
     if (this.hosts.length) {
       this.selectHost(this.hosts[0].id);
     }
+    // setView (not a direct assignment) so a configured 'flow' default also gets its topology
+    // fetched immediately, same as clicking the Flow tab by hand - see setView.
+    await this.setView(session.defaultView || 'list');
   },
   beforeUnmount() {
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
@@ -174,6 +184,7 @@ createApp({
       this.metricsContainerId = null;
       this.hostInfo = null;
       this.diskUsage = [];
+      this.diskUsageError = null;
       this.hostMetricsHistory = [];
       this.containerMetricsHistory = {};
       this.alerts = [];
@@ -259,7 +270,9 @@ createApp({
       const hostId = this.selectedHostId;
       try {
         const usage = await apiGetDiskUsage(hostId);
-        if (this.selectedHostId === hostId) this.diskUsage = usage;
+        if (this.selectedHostId !== hostId) return;
+        this.diskUsage = usage.rows || [];
+        this.diskUsageError = usage.error || null;
       } catch {
         /* disk usage is best-effort */
       }
@@ -393,14 +406,20 @@ createApp({
       this.settingsOpen = false;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
+    // The List view's "Logs" button used to pop open the standalone bottom log-viewer modal - now
+    // it takes you to the Logs tab instead, with this container opened there in single-pane mode,
+    // where the multi-pane/sync/match-strip machinery lives. The detail panel's own Logs button
+    // (@open-log-viewer -> openLogViewer) deliberately still opens the bottom viewer in place:
+    // that one is for reading a container's logs *without* leaving List/Flow and losing the
+    // selection, which is a different thing to ask for, not a second copy of this.
     async openLogsFor(id) {
       this.settingsOpen = false;
-      this.selectedContainerId = id;
-      // The selectedContainerId watcher closes the log viewer as part of resetting log state for
-      // the new container - wait for that to settle before opening it, or it immediately clobbers
-      // the logViewerOpen flag we're about to set.
+      this.logsTabOpenId = id;
+      await this.setView('logs');
+      // Let LogsView mount and its own mounted() read logsTabOpenId before clearing it - otherwise
+      // a later plain click on the Logs nav tab would keep force-reopening this same container.
       await this.$nextTick();
-      await this.openLogViewer();
+      this.logsTabOpenId = null;
     },
     closeDetail() {
       this.selectedContainerId = null;
@@ -468,6 +487,7 @@ createApp({
         :host-id="selectedHostId"
         :metrics-history="hostMetricsHistory"
         :disk-usage="diskUsage"
+        :disk-usage-error="diskUsageError"
         :with-detail="detailPanelVisible || settingsOpen"
         v-model:fullscreen="hostCardFullscreen"
       ></host-card>
@@ -504,6 +524,7 @@ createApp({
             v-if="view === 'logs'"
             :host-id="selectedHostId"
             :grouped-containers="groupedContainers"
+            :open-container-id="logsTabOpenId"
           ></logs-view>
 
           <activity-view

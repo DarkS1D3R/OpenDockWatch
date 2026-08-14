@@ -26,6 +26,10 @@ export default {
     hostId: { type: String, default: null },
     metricsHistory: { type: Array, default: () => [] },
     diskUsage: { type: Array, default: () => [] },
+    // Set when `docker system df` couldn't complete on this host. Rendered rather than swallowed:
+    // an empty Disk tile is indistinguishable from a host with nothing on disk, which is how this
+    // went unnoticed for weeks on a machine where the call could never succeed at all.
+    diskUsageError: { type: String, default: null },
     withDetail: { type: Boolean, default: false },
     fullscreen: { type: Boolean, default: false },
   },
@@ -267,8 +271,11 @@ export default {
             ><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="16" height="8" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4.5M8 7V4.5M11 7V4.5M14 7V4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></template
           >
         </spark-tile>
-        <div class="host-tile disk-tile" v-if="diskUsage.length">
+        <div class="host-tile disk-tile" v-if="diskUsage.length || diskUsageError">
           <div class="host-tile-label"><span class="tile-icon tile-icon-disk"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="10" cy="5" rx="7" ry="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 5v10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5" stroke="currentColor" stroke-width="1.6"/><path d="M3 10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" stroke="currentColor" stroke-width="1.6"/></svg></span> Disk</div>
+          <div v-if="diskUsageError" class="disk-usage-unavailable muted small" :title="diskUsageError">
+            Unavailable — {{ diskUsageError }}{{ diskUsage.length ? ' (showing the last successful reading)' : '' }}
+          </div>
           <div class="disk-usage-rows">
             <div class="disk-usage-row" v-if="diskRow('Images')">
               <span class="muted">Images ({{ diskRow('Images').total }})</span>

@@ -64,12 +64,25 @@ function wrapPortsLabel(text, maxLineChars) {
   return lines.join('\n');
 }
 
+// Every state class a container leaf can carry. Exported because four other places have to cover
+// the whole set - layout.js's overlap and compact-flag selectors, graph.js's html-label query and
+// svgExport.js's node-kind test - and a state present in one but not the others is silently wrong
+// rather than broken: `created` shipped missing from layout.js's two, which left those nodes out
+// of overlap resolution and stuck at full height while every neighbor shrank on zoom-out.
+export const CONTAINER_STATE_CLASSES = ['running', 'stopped', 'created'];
+
+function containerStateClass(state) {
+  if (state === 'running') return 'running';
+  if (state === 'created') return 'created';
+  return 'stopped';
+}
+
 function containerNodeEl(n, selectedId, parent) {
   const wrappedPorts = wrapPortsLabel(parsePublishedPorts(n.ports), PORT_LABEL_LINE_CHARS);
   const data = {
     id: n.id,
     name: n.name,
-    emoji: stateEmoji(n.state),
+    emoji: stateEmoji(n.state, n.health),
     status: n.status || '',
     icon: iconFor(n.image, n.composeService),
     cpuPerc: n.cpuPerc,
@@ -87,8 +100,8 @@ function containerNodeEl(n, selectedId, parent) {
   return {
     data,
     classes:
-      (n.state === 'running' ? 'running' : 'stopped') +
-      (n.health === 'unhealthy' ? ' unhealthy' : '') +
+      containerStateClass(n.state) +
+      (n.health === 'unhealthy' ? ' unhealthy' : n.health === 'starting' ? ' starting' : '') +
       (n.id === selectedId ? ' selected' : ''),
   };
 }

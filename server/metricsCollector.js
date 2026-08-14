@@ -17,6 +17,19 @@ const logger = require('./logger');
 const POLL_MS = 5000;
 const DISK_POLL_MS = 60_000;
 
+// The disk poll is the one call whose cost is a property of the *host's storage* rather than of
+// anything this app does - see DISK_USAGE_TIMEOUT_MS in docker.js. So its cadence is derived from
+// what the last run actually cost instead of being a constant: the next run is at least
+// DISK_DUTY_FACTOR times the last duration away, keeping it to a small slice of wall time on any
+// host. On native Linux (sub-second) that floors at the plain 60s and nothing changes; on a WSL2
+// host where it takes ~75s it becomes ~5 minutes, instead of a 75s call running every 60s and
+// holding one of docker.js's 12 concurrency slots almost continuously.
+const DISK_DUTY_FACTOR = 4;
+// ...and a failing call backs off on top of that, rather than retrying every 60s forever with no
+// notion that it has now failed several hundred times in a row.
+const DISK_BACKOFF_STEPS = 6;
+const DISK_BACKOFF_MAX_MS = 3_600_000;
+
 const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
 const hostStates = new Map(); // hostId -> { pollState, diskState } - lets addHost/removeHost target one host
 const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
@@ -168,14 +181,47 @@ async function pollHost(host) {
   }
 }
 
-async function pollDiskUsage(host) {
+// Whichever is longer: keeping the call a small fraction of wall time, or backing off a failing
+// one. Both collapse back to the plain interval on a healthy, fast host, so nothing about this is
+// visible on the setup it was originally tuned for.
+function nextDiskDelay(diskState) {
+  const duty = (diskState.lastDurationMs || 0) * DISK_DUTY_FACTOR;
+  const backoff = diskState.failures > 0 ? DISK_POLL_MS * 2 ** Math.min(diskState.failures, DISK_BACKOFF_STEPS) : 0;
+  return Math.min(DISK_BACKOFF_MAX_MS, Math.max(DISK_POLL_MS, duty, backoff));
+}
+
+async function pollDiskUsage(host, diskState) {
   const snapshot = snapshots.get(host.id);
   if (!snapshot || !snapshot.reachable) return;
+  const startedAt = Date.now();
   try {
     snapshot.diskUsage = await getDiskUsage(host);
+    snapshot.diskUsageError = null;
+    diskState.lastDurationMs = Date.now() - startedAt;
+    if (diskState.failures > 0) {
+      logger.info('disk_usage.poll.recovered', {
+        host: host.id,
+        afterFailures: diskState.failures,
+        tookMs: diskState.lastDurationMs,
+      });
+      diskState.failures = 0;
+    }
     alerts.handleDiskUsage({ hostId: host.id, hostName: host.name || host.id, rows: snapshot.diskUsage });
   } catch (err) {
-    logger.error('disk_usage.poll.failed', { host: host.id, error: err.stderr || err.message });
+    diskState.lastDurationMs = Date.now() - startedAt;
+    diskState.failures += 1;
+    // Kept on the snapshot so the UI can say the measurement failed rather than render an empty
+    // panel that reads as "nothing to show". Last known rows are deliberately left in place.
+    snapshot.diskUsageError = err.message;
+    // warn, not error, and carrying the run of failures: this call being impossible on a given
+    // host is one fact about that host, not several hundred separate incidents.
+    logger.warn('disk_usage.poll.failed', {
+      host: host.id,
+      error: err.stderr || err.message,
+      failures: diskState.failures,
+      tookMs: diskState.lastDurationMs,
+      nextInSec: Math.round(nextDiskDelay(diskState) / 1000),
+    });
   }
 }
 
@@ -197,16 +243,17 @@ function scheduleHostPolling(host, pollState) {
   pollState.timer = setTimeout(tick, POLL_MS);
 }
 
-// `docker system df` gets 30s to walk the build cache on a 60s interval - close enough that a
-// setInterval could fire the next sweep while the previous one is still running. Chained like
-// the container poll instead: the gap is measured from when the last one finished, never overlapping.
+// Chained rather than a setInterval, and the gap is measured from when the last run finished:
+// `docker system df` can take longer than the interval itself on some hosts, so a setInterval
+// would fire the next sweep while the previous one was still running. The gap is also computed
+// per run rather than fixed - see nextDiskDelay.
 function scheduleDiskPolling(host, diskState) {
   const tick = async () => {
     if (diskState.stopped) return;
     try {
-      await pollDiskUsage(host);
+      await pollDiskUsage(host, diskState);
     } finally {
-      if (!diskState.stopped) diskState.timer = setTimeout(tick, DISK_POLL_MS);
+      if (!diskState.stopped) diskState.timer = setTimeout(tick, nextDiskDelay(diskState));
     }
   };
   diskState.timer = setTimeout(tick, DISK_POLL_MS);
@@ -219,13 +266,13 @@ function addHost(host) {
   if (hostStates.has(host.id)) return;
   logger.info('metrics.host.watching', { host: host.id, dockerHost: host.dockerHost || 'local', pollMs: POLL_MS });
   const pollState = { stopped: false, timer: null };
-  const diskState = { stopped: false, timer: null };
+  const diskState = { stopped: false, timer: null, failures: 0, lastDurationMs: 0 };
   hostStates.set(host.id, { pollState, diskState });
   // pollDiskUsage reads the snapshot pollHost writes (snapshot.reachable, set after checkHost
   // resolves) - firing both in parallel left diskUsage empty until the next 60s tick, since the
   // first call found no snapshot yet. pollHost never rejects, so this chain needs no .catch.
   pollHost(host)
-    .then(() => pollDiskUsage(host))
+    .then(() => pollDiskUsage(host, diskState))
     .catch((err) => logger.error('metrics.initial_poll.failed', { host: host.id, error: err.message }))
     .finally(() => {
       lastPollCompletedTs = Date.now();
@@ -287,5 +334,9 @@ module.exports = {
   getAllSnapshots,
   getLastPollCompletedTs,
   getHostCount,
+  nextDiskDelay,
   POLL_MS,
+  DISK_POLL_MS,
+  DISK_DUTY_FACTOR,
+  DISK_BACKOFF_MAX_MS,
 };

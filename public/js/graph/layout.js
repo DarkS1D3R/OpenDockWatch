@@ -1,4 +1,4 @@
-import { NODE_WIDTH, FULL_GROUP_HEIGHT, containerFullHeight } from './elements.js';
+import { NODE_WIDTH, FULL_GROUP_HEIGHT, containerFullHeight, CONTAINER_STATE_CLASSES } from './elements.js';
 import { applySavedPositions, loadViewport, clearPositions, clearViewport } from './persistence.js';
 import { COMPACT_ZOOM_THRESHOLD } from './style.js';
 
@@ -18,10 +18,14 @@ const NODE_ROW_GAP = 96;
 
 const NODE_GAP = 16;
 
+// Every container leaf, whatever its state - built from CONTAINER_STATE_CLASSES rather than spelled
+// out, so adding a state there reaches both selectors below instead of half the graph code.
+const CONTAINER_SELECTOR = CONTAINER_STATE_CLASSES.map((c) => `.${c}`).join(', ');
+
 // Nodes that participate in drag/layout overlap resolution: container leaves and compose groups
 // (graph mode), plus tree mode's project/network/mount pills. One shared selector so the
 // obstacle set (resolveNodeOverlap) and the full sweep (resolveAllOverlaps) can't drift apart.
-const OVERLAP_NODE_SELECTOR = '.running, .stopped, .group, .proj, .net, .mount';
+const OVERLAP_NODE_SELECTOR = `${CONTAINER_SELECTOR}, .group, .proj, .net, .mount`;
 
 // A leaf/collapsed-group node's *current* rendered box isn't safe to collide-check against -
 // semantic zoom shrinks it while zoomed out, so nodes just far enough apart while compact can
@@ -97,7 +101,7 @@ function arrangeGroupsInColumns(cy) {
 // Mirrors 'faded': node-html-label re-renders off node data(), so this drives compact vs full.
 export function updateCompactFlag(cy) {
   const compact = cy.zoom() < COMPACT_ZOOM_THRESHOLD;
-  const changed = cy.nodes('.running, .stopped, .cy-expand-collapse-collapsed-node').filter((n) => n.data('compact') !== compact);
+  const changed = cy.nodes(`${CONTAINER_SELECTOR}, .cy-expand-collapse-collapsed-node`).filter((n) => n.data('compact') !== compact);
   if (!changed.length) return;
   changed.data('compact', compact);
   // Height comes from a compact-dependent style mapper, not a position change - cytoscape only

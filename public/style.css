@@ -687,6 +687,11 @@ table.containers td:nth-child(7) {
 .state-stopped {
   color: var(--muted);
 }
+/* Created but never started (docker create, no docker start) - distinct from state-stopped so it
+   doesn't read as "ran, then exited" when it never ran at all. */
+.state-created {
+  color: var(--accent);
+}
 
 .actions button {
   margin-right: 6px;
@@ -1320,24 +1325,76 @@ table.containers td:nth-child(7) {
    flex:none so it keeps its height in the embedded pane's column instead of being squeezed. */
 .log-match-pane {
   flex: none;
-  border-top: 1px solid var(--border);
   background: var(--panel);
+  border-top: 1px solid var(--border);
 }
+/* The header IS the resize handle - a full-width bar that's already there, already the boundary
+   between log and strip, and big enough to grab without aiming, rather than a separate hairline
+   to hunt for. The ::after is a centred grip pill that brightens on hover/focus; a bare cursor
+   change is only discoverable by sweeping the mouse across it. Centred horizontally so it can't
+   collide with the label on the left or the ✕ on the right. */
 .log-match-pane-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 12px;
+  padding: 8px 12px 5px;
+  cursor: ns-resize;
+  /* Without these a drag that outruns the pointer selects the log text it passes over. */
+  touch-action: none;
+  user-select: none;
+  transition: background 0.12s ease;
+}
+.log-match-pane-header::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.12s ease;
+}
+.log-match-pane-header:hover,
+.log-match-pane.resizing .log-match-pane-header {
+  background: #1b1e25;
+}
+.log-match-pane-header:hover::after,
+.log-match-pane-header:focus-visible::after,
+.log-match-pane.resizing .log-match-pane-header::after {
+  background: var(--accent);
+}
+.log-match-pane-header:focus-visible {
+  outline: none;
+}
+/* The ✕ sits inside the handle, so it has to say it's a button and not a drag. */
+.log-match-pane-header button {
+  cursor: pointer;
+}
+/* While dragging, the pointer regularly leaves the header - keep the resize cursor and stop the
+   log body underneath from taking the selection. */
+.log-panel:has(.log-match-pane.resizing) {
+  cursor: ns-resize;
+  user-select: none;
 }
 .log-match-close {
   padding: 0 6px;
 }
+/* A plain height, set from LogViewer.js. Resizing is a drag on .log-match-pane-header above rather
+   than `resize: vertical`, whose handle sits on the bottom-right corner - diagonally opposite the
+   edge that actually moves on a pane anchored to the bottom of the panel, invisible until stumbled
+   on, and dragged the wrong way round. The bounds live in JS too (MATCH_MIN_PX / MIN_LOG_BODY_PX):
+   the log body above is `flex: 1; min-height: 0` in both the fullscreen and embedded panels, so it
+   yields all the way to zero and the only honest cap is "whatever the body can spare", measured
+   live. min-height here is just a floor for the height JS writes. */
 .log-match-list {
-  max-height: 132px;
+  height: 132px;
+  min-height: 60px;
   overflow: auto;
   background: #0d0e11;
-  border-top: 1px solid var(--border);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1773,6 +1830,19 @@ table.containers td:nth-child(7) {
 .tile-icon-disk {
   color: #d29922;
   background: color-mix(in srgb, #d29922 15%, transparent);
+}
+/* Amber, not red: `docker system df` failing costs you a number, not your monitoring - every other
+   panel is unaffected. Clamped to two lines because the message carries the full failing command. */
+.disk-usage-unavailable {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-left: 2px solid #d29922;
+  background: color-mix(in srgb, #d29922 10%, transparent);
+  border-radius: 0 4px 4px 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .disk-usage-rows {
   display: flex;

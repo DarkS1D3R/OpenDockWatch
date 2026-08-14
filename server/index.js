@@ -293,7 +293,7 @@ api.use(requireAuth);
 api.use(requestTimeout(REQUEST_TIMEOUT_MS));
 
 api.get('/session', (req, res) => {
-  res.json({ username: req.session.username, role: req.session.role, version: appVersion });
+  res.json({ username: req.session.username, role: req.session.role, version: appVersion, defaultView: getDefaultView() });
 });
 
 // The collector already establishes reachability and hostname for every host every POLL_MS -
@@ -397,9 +397,14 @@ api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
 api.get('/hosts/:hostId/disk-usage', requireHost, async (req, res) => {
   const host = req.odwHost;
   const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.diskUsage) return res.json(snapshot.diskUsage);
+  // `{rows, error}` rather than a bare array, so a host where `docker system df` can't complete
+  // says so instead of returning `[]` - indistinguishable from "nothing on disk" to the client,
+  // which then rendered no panel at all. Last known rows are still served alongside the error.
+  if (snapshot && (snapshot.diskUsage || snapshot.diskUsageError)) {
+    return res.json({ rows: snapshot.diskUsage || [], error: snapshot.diskUsageError || null });
+  }
   try {
-    res.json(await getDiskUsage(host));
+    res.json({ rows: await getDiskUsage(host), error: null });
   } catch (err) {
     dockerError(res, err);
   }
@@ -481,6 +486,60 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.ackAllAlerts(hostId);
   res.json({ ok: true, count });
+});
+
+// The tab the app lands on after login - env-default + DB-override, same shape as the alert
+// settings below, but general enough (no secrets, affects every role) that the read isn't
+// admin-gated: /session already hands it to every authenticated user regardless of role, since a
+// viewer's landing tab should match the configured default too, not just an admin's.
+const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity']);
+const DEFAULT_VIEW_KEY = 'defaultView';
+const FALLBACK_VIEW = 'list';
+
+// Resolved once at load, not per call: getDefaultView runs on every /session, and a misspelt .env
+// value is worth saying out loud once at boot rather than silently every login. Same shape as the
+// SESSION_SECRET warning above.
+const ENV_DEFAULT_VIEW = (() => {
+  const raw = process.env.DEFAULT_VIEW;
+  if (!raw) return FALLBACK_VIEW;
+  if (VALID_VIEWS.has(raw)) return raw;
+  logger.warn('config.default_view.invalid', { value: raw, using: FALLBACK_VIEW });
+  return FALLBACK_VIEW;
+})();
+
+// Validated on the way out, not just on the way in. PUT already rejects a bad value, but a
+// hand-edited settings row - or one written by a release that still had a view this one dropped -
+// would otherwise reach the client and land it on a tab nothing renders for: List/Flow are v-show
+// and Logs/Activity v-if, so an unknown view is a blank page with no tab active. Treating an
+// unusable row as absent also keeps `overridden` honest - it reports the override in effect, not
+// merely the presence of a row.
+function dbDefaultView() {
+  const val = db.getSetting(DEFAULT_VIEW_KEY);
+  return val !== null && VALID_VIEWS.has(val) ? val : null;
+}
+
+function getDefaultView() {
+  return dbDefaultView() || ENV_DEFAULT_VIEW;
+}
+
+api.get('/settings/default-view', requireAdmin, (req, res) => {
+  res.json({ defaultView: getDefaultView(), overridden: dbDefaultView() !== null });
+});
+
+api.put('/settings/default-view', requireAdmin, (req, res) => {
+  const { defaultView } = req.body || {};
+  if (!VALID_VIEWS.has(defaultView)) {
+    return res.status(400).json({ error: 'defaultView must be one of list, flow, logs, activity' });
+  }
+  db.setSetting(DEFAULT_VIEW_KEY, defaultView);
+  logger.info('settings.default_view.update', { user: req.session.username, defaultView });
+  res.json({ defaultView, overridden: true });
+});
+
+api.delete('/settings/default-view', requireAdmin, (req, res) => {
+  db.deleteSetting(DEFAULT_VIEW_KEY);
+  logger.info('settings.default_view.clear', { user: req.session.username });
+  res.json({ defaultView: ENV_DEFAULT_VIEW, overridden: false });
 });
 
 // Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as

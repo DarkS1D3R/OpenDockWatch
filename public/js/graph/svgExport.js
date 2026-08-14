@@ -1,5 +1,13 @@
 import { healthColor } from '../format.js';
-import { NODE_WIDTH, FULL_LEAF_HEIGHT, FULL_GROUP_HEIGHT, PORT_EXTRA_LINE_HEIGHT, containerFullHeight, clampPct } from './elements.js';
+import {
+  NODE_WIDTH,
+  FULL_LEAF_HEIGHT,
+  FULL_GROUP_HEIGHT,
+  PORT_EXTRA_LINE_HEIGHT,
+  containerFullHeight,
+  clampPct,
+  CONTAINER_STATE_CLASSES,
+} from './elements.js';
 import {
   CPU_COLOR,
   MEM_COLOR,
@@ -39,7 +47,7 @@ function svgNodeKind(n) {
   if (n.hasClass('net')) return 'net';
   if (n.hasClass('mount-bind')) return 'mount-bind';
   if (n.hasClass('mount-volume')) return 'mount-volume';
-  if (n.hasClass('running') || n.hasClass('stopped')) return 'container';
+  if (CONTAINER_STATE_CLASSES.some((c) => n.hasClass(c))) return 'container';
   return null;
 }
 
@@ -100,6 +108,8 @@ export function extractSvgGeometry(cy) {
       data: n.data(),
       running: n.hasClass('running'),
       stopped: n.hasClass('stopped'),
+      created: n.hasClass('created'),
+      starting: n.hasClass('starting'),
       unhealthy: n.hasClass('unhealthy'),
       selected: n.hasClass('selected'),
       faded: n.hasClass('faded'),
@@ -162,15 +172,17 @@ function svgContainerNode(n) {
   const d = n.data;
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
-  let border = n.stopped ? '#8b909c' : '#3fb950';
+  let border = n.created ? '#4f8cff' : n.stopped ? '#8b909c' : '#3fb950';
+  if (n.starting) border = '#d29922';
   if (n.unhealthy) border = '#f85149';
   if (n.selected) border = '#4f8cff';
+  const dash = n.created ? ' stroke-dasharray="6 4"' : '';
   let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
   if (n.blastUpstream)
     svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_UPSTREAM_COLOR}" fill-opacity="0.22"/>`;
   if (n.blastDownstream)
     svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_DOWNSTREAM_COLOR}" fill-opacity="0.22"/>`;
-  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"/>`;
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"${dash}/>`;
   if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${d.emoji}</g>`;
   if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
   if (d.icon) {

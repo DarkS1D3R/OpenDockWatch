@@ -13,7 +13,47 @@ const {
   computeIoRates,
   parseDiskUsageImages,
   maskEnvValues,
+  dockerCommandError,
+  DISK_USAGE_TIMEOUT_MS,
 } = require('../server/docker');
+
+test('dockerCommandError', async (t) => {
+  await t.test('a timeout kill says it timed out, and for how long', () => {
+    // The real shape execFile hands back when its `timeout` fires: killed, SIGTERM, no stderr at
+    // all. Reported verbatim it reads "Command failed: docker system df" and looks like a daemon
+    // fault - which is exactly how a call that could never once succeed went unnoticed for weeks.
+    const raw = Object.assign(new Error('Command failed: docker system df --format {{json .}}\n'), {
+      killed: true,
+      signal: 'SIGTERM',
+      code: null,
+    });
+    const err = dockerCommandError(raw, ['system', 'df'], 30_000, '');
+    assert.equal(err.timedOut, true);
+    assert.match(err.message, /timed out after 30000ms/);
+    assert.match(err.message, /docker system df/);
+  });
+
+  await t.test('the escalated SIGKILL is reported the same way', () => {
+    const raw = Object.assign(new Error('Command failed'), { killed: false, signal: 'SIGKILL' });
+    assert.equal(dockerCommandError(raw, ['ps'], 10_000, '').timedOut, true);
+  });
+
+  await t.test('a genuine failure is passed through untouched, with its stderr attached', () => {
+    // The distinction matters: a real daemon error carries a message worth reading, and rewriting
+    // it as a timeout would lose it.
+    const raw = Object.assign(new Error('Command failed: docker ps'), { code: 1 });
+    const err = dockerCommandError(raw, ['ps'], 10_000, 'Cannot connect to the Docker daemon\n');
+    assert.equal(err, raw, 'the original error object, not a replacement');
+    assert.equal(err.timedOut, undefined);
+    assert.match(err.stderr, /Cannot connect/);
+  });
+
+  await t.test('the disk-usage timeout clears what the call actually costs on a slow host', () => {
+    // Measured 40-75s on WSL2 (sub-second on native Linux) against the old 30s, so it could never
+    // complete there. Guards the constant against being trimmed back to a Linux-shaped number.
+    assert.ok(DISK_USAGE_TIMEOUT_MS >= 90_000, `${DISK_USAGE_TIMEOUT_MS}ms leaves no margin over a measured 75s`);
+  });
+});
 
 test('parseByteString', async (t) => {
   await t.test('parses decimal (SI) units', () => {
