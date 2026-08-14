@@ -489,16 +489,36 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
 // viewer's landing tab should match the configured default too, not just an admin's.
 const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity']);
 const DEFAULT_VIEW_KEY = 'defaultView';
+const FALLBACK_VIEW = 'list';
+
+// Resolved once at load, not per call: getDefaultView runs on every /session, and a misspelt .env
+// value is worth saying out loud once at boot rather than silently every login. Same shape as the
+// SESSION_SECRET warning above.
+const ENV_DEFAULT_VIEW = (() => {
+  const raw = process.env.DEFAULT_VIEW;
+  if (!raw) return FALLBACK_VIEW;
+  if (VALID_VIEWS.has(raw)) return raw;
+  logger.warn('config.default_view.invalid', { value: raw, using: FALLBACK_VIEW });
+  return FALLBACK_VIEW;
+})();
+
+// Validated on the way out, not just on the way in. PUT already rejects a bad value, but a
+// hand-edited settings row - or one written by a release that still had a view this one dropped -
+// would otherwise reach the client and land it on a tab nothing renders for: List/Flow are v-show
+// and Logs/Activity v-if, so an unknown view is a blank page with no tab active. Treating an
+// unusable row as absent also keeps `overridden` honest - it reports the override in effect, not
+// merely the presence of a row.
+function dbDefaultView() {
+  const val = db.getSetting(DEFAULT_VIEW_KEY);
+  return val !== null && VALID_VIEWS.has(val) ? val : null;
+}
 
 function getDefaultView() {
-  const dbVal = db.getSetting(DEFAULT_VIEW_KEY);
-  if (dbVal !== null) return dbVal;
-  const envVal = process.env.DEFAULT_VIEW;
-  return VALID_VIEWS.has(envVal) ? envVal : 'list';
+  return dbDefaultView() || ENV_DEFAULT_VIEW;
 }
 
 api.get('/settings/default-view', requireAdmin, (req, res) => {
-  res.json({ defaultView: getDefaultView(), overridden: db.getSetting(DEFAULT_VIEW_KEY) !== null });
+  res.json({ defaultView: getDefaultView(), overridden: dbDefaultView() !== null });
 });
 
 api.put('/settings/default-view', requireAdmin, (req, res) => {
@@ -514,7 +534,7 @@ api.put('/settings/default-view', requireAdmin, (req, res) => {
 api.delete('/settings/default-view', requireAdmin, (req, res) => {
   db.deleteSetting(DEFAULT_VIEW_KEY);
   logger.info('settings.default_view.clear', { user: req.session.username });
-  res.json({ defaultView: getDefaultView(), overridden: false });
+  res.json({ defaultView: ENV_DEFAULT_VIEW, overridden: false });
 });
 
 // Webhook URLs carry auth tokens (Discord/Gotify) - admin-only, same as

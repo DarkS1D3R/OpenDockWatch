@@ -218,6 +218,21 @@ test('default view (landing tab) setting', async (t) => {
     assert.equal((await viewer.put('/api/settings/default-view').send({ defaultView: 'logs' })).status, 403);
     assert.equal((await viewer.get('/api/session')).status, 200);
   });
+
+  await t.test('a stored value outside the valid set is ignored, not handed to the client', async () => {
+    // PUT can't produce this, but a hand-edited row or one written by a release that still had a
+    // view this one dropped can - and an unknown view renders a blank page with no tab active,
+    // so it must never leave the server. `overridden` reports the override in effect, so an
+    // unusable row reads as false.
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    db.setSetting('defaultView', 'nonsense');
+    try {
+      assert.equal((await admin.get('/api/session')).body.defaultView, 'list');
+      assert.deepEqual((await admin.get('/api/settings/default-view')).body, { defaultView: 'list', overridden: false });
+    } finally {
+      db.deleteSetting('defaultView');
+    }
+  });
 });
 
 test('GET /metrics', async (t) => {

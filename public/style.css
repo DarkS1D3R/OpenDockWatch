@@ -1339,12 +1339,18 @@ table.containers td:nth-child(7) {
   padding: 0 6px;
 }
 /* height (not max-height) + resize: vertical gives the browser's native drag handle on the
-   bottom-right corner - min/max-height keep a drag from collapsing it to nothing or growing past
-   the log body above it. */
+   bottom-right corner; min-height keeps a drag from collapsing it to nothing. The cap has to be a
+   vh, not a plain px: the log body above it is `flex: 1; min-height: 0` in both the fullscreen and
+   embedded panels, so it yields all the way to zero and a fixed 480px would eat the whole log on a
+   short window. Both panel heights derive from the viewport (fullscreen is calc(100vh - 151px),
+   embedded is measured off it by LogsView's updateWrapHeight), so 45vh leaves the log the larger
+   share whatever the window size, with 480px still capping it on a tall screen. The dragged height
+   itself is remembered by LogViewer.js - the element is v-if'd, so the inline style doesn't survive
+   hiding the strip. */
 .log-match-list {
   height: 132px;
   min-height: 60px;
-  max-height: 480px;
+  max-height: min(480px, 45vh);
   overflow: auto;
   resize: vertical;
   background: #0d0e11;

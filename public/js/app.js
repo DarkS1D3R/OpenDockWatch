@@ -404,7 +404,10 @@ createApp({
     },
     // The List view's "Logs" button used to pop open the standalone bottom log-viewer modal - now
     // it takes you to the Logs tab instead, with this container opened there in single-pane mode,
-    // so there's one place logs are read rather than two.
+    // where the multi-pane/sync/match-strip machinery lives. The detail panel's own Logs button
+    // (@open-log-viewer -> openLogViewer) deliberately still opens the bottom viewer in place:
+    // that one is for reading a container's logs *without* leaving List/Flow and losing the
+    // selection, which is a different thing to ask for, not a second copy of this.
     async openLogsFor(id) {
       this.settingsOpen = false;
       this.logsTabOpenId = id;

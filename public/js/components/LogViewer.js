@@ -65,6 +65,10 @@ export default {
       // The filtered-results strip: the match list rendered under the log body as its own
       // scrollable pane, single-pane only (multiPane has no room). Off by default - see matchPaneVisible.
       showMatchPane: false,
+      // The strip's dragged height, held here because the list is v-if'd twice over (the pane
+      // toggle, then searchActive) - `resize` writes an inline height on the element, so without
+      // this a resize is thrown away the moment the strip is hidden or the filter is cleared.
+      matchListHeight: null,
     };
   },
   computed: {
@@ -132,6 +136,12 @@ export default {
     matchPaneVisible() {
       return this.showMatchPane && !this.multiPane;
     },
+    matchListShown() {
+      return this.matchPaneVisible && this.searchActive;
+    },
+    matchListStyle() {
+      return this.matchListHeight ? { height: this.matchListHeight + 'px' } : null;
+    },
     // One badge rather than a span per state: the three are mutually exclusive, and "active" only
     // reads as meaningful because it sits in the same spot the paused states do. Manual pause wins
     // over suspension - if the user paused it, that's the answer to "why isn't this moving".
@@ -184,6 +194,13 @@ export default {
     activeHitId() {
       if (this.matchPaneVisible) this.$nextTick(() => this.scrollMatchRowIntoView());
     },
+    // `resize` is a browser-native drag with no event of its own, so a ResizeObserver is the only
+    // way to learn the new height - and the element it watches comes and goes with two separate
+    // v-ifs, hence attaching here rather than once in mounted().
+    matchListShown(shown) {
+      if (shown) this.$nextTick(this.observeMatchList);
+      else this.stopObservingMatchList();
+    },
   },
   mounted() {
     this.startStream();
@@ -204,10 +221,30 @@ export default {
       this._stream = null;
     }
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
+    this.stopObservingMatchList();
     document.removeEventListener('click', this.onDocumentClick);
     document.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
+    observeMatchList() {
+      const el = this.$refs.matchList;
+      if (!el || this._matchListObserver) return;
+      // offsetHeight, not the entry's contentRect: everything here is border-box (style.css's `*`
+      // rule), so offsetHeight is the same box CSS `height` sets, while contentRect excludes the
+      // 1px border-top - feeding that back as an inline height would shrink the strip by a pixel
+      // per firing until it hit min-height. CSS fixes the height otherwise, so nothing but the
+      // user's drag can trip this.
+      this._matchListObserver = new ResizeObserver(() => {
+        const h = el.offsetHeight;
+        if (h > 0 && h !== this.matchListHeight) this.matchListHeight = h;
+      });
+      this._matchListObserver.observe(el);
+    },
+    stopObservingMatchList() {
+      if (!this._matchListObserver) return;
+      this._matchListObserver.disconnect();
+      this._matchListObserver = null;
+    },
     startStream() {
       if (this._stream) this._stream.stop();
       this.lines = [];
@@ -603,7 +640,7 @@ export default {
           <span class="muted small" v-else>Type a filter above to list matching lines here.</span>
           <button class="small-btn log-match-close" @click="showMatchPane = false" title="Hide the match list">✕</button>
         </div>
-        <div v-if="searchActive" class="log-match-list" ref="matchList">
+        <div v-if="searchActive" class="log-match-list" ref="matchList" :style="matchListStyle">
           <div
             v-for="line in matchLines"
             :key="line.id"

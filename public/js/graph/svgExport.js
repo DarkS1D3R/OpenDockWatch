@@ -1,5 +1,13 @@
 import { healthColor } from '../format.js';
-import { NODE_WIDTH, FULL_LEAF_HEIGHT, FULL_GROUP_HEIGHT, PORT_EXTRA_LINE_HEIGHT, containerFullHeight, clampPct } from './elements.js';
+import {
+  NODE_WIDTH,
+  FULL_LEAF_HEIGHT,
+  FULL_GROUP_HEIGHT,
+  PORT_EXTRA_LINE_HEIGHT,
+  containerFullHeight,
+  clampPct,
+  CONTAINER_STATE_CLASSES,
+} from './elements.js';
 import {
   CPU_COLOR,
   MEM_COLOR,
@@ -39,7 +47,7 @@ function svgNodeKind(n) {
   if (n.hasClass('net')) return 'net';
   if (n.hasClass('mount-bind')) return 'mount-bind';
   if (n.hasClass('mount-volume')) return 'mount-volume';
-  if (n.hasClass('running') || n.hasClass('stopped') || n.hasClass('created')) return 'container';
+  if (CONTAINER_STATE_CLASSES.some((c) => n.hasClass(c))) return 'container';
   return null;
 }
 
