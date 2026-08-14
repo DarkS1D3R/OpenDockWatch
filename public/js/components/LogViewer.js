@@ -5,6 +5,16 @@ import { closestIndexByTs } from '../lib/logSync.js';
 import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
 import { pushCapped } from '../lib/logBuffer.js';
 
+// The match strip drags by its own top edge (the boundary with the log body), not by the
+// browser's native `resize` corner: the strip is anchored to the bottom of the panel, so the
+// corner handle sits diagonally opposite the edge that actually moves, is invisible until found
+// by accident, and grows the strip downward off the end of a fixed-height panel. Bounds are
+// resolved live against the log body rather than fixed here - the strip can only take what the
+// body can spare, since the panel is a fixed-height flex column.
+const MATCH_MIN_PX = 60;
+const MIN_LOG_BODY_PX = 120;
+const MATCH_KEY_STEP_PX = 24;
+
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
 // controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
@@ -65,10 +75,11 @@ export default {
       // The filtered-results strip: the match list rendered under the log body as its own
       // scrollable pane, single-pane only (multiPane has no room). Off by default - see matchPaneVisible.
       showMatchPane: false,
-      // The strip's dragged height, held here because the list is v-if'd twice over (the pane
-      // toggle, then searchActive) - `resize` writes an inline height on the element, so without
-      // this a resize is thrown away the moment the strip is hidden or the filter is cleared.
+      // The strip's dragged height, held here rather than as an inline style the drag writes
+      // directly, because the list is v-if'd twice over (the pane toggle, then searchActive) and
+      // would otherwise lose the height the moment the strip is hidden or the filter is cleared.
       matchListHeight: null,
+      matchResizing: false,
     };
   },
   computed: {
@@ -136,9 +147,6 @@ export default {
     matchPaneVisible() {
       return this.showMatchPane && !this.multiPane;
     },
-    matchListShown() {
-      return this.matchPaneVisible && this.searchActive;
-    },
     matchListStyle() {
       return this.matchListHeight ? { height: this.matchListHeight + 'px' } : null;
     },
@@ -194,13 +202,6 @@ export default {
     activeHitId() {
       if (this.matchPaneVisible) this.$nextTick(() => this.scrollMatchRowIntoView());
     },
-    // `resize` is a browser-native drag with no event of its own, so a ResizeObserver is the only
-    // way to learn the new height - and the element it watches comes and goes with two separate
-    // v-ifs, hence attaching here rather than once in mounted().
-    matchListShown(shown) {
-      if (shown) this.$nextTick(this.observeMatchList);
-      else this.stopObservingMatchList();
-    },
   },
   mounted() {
     this.startStream();
@@ -221,29 +222,68 @@ export default {
       this._stream = null;
     }
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
-    this.stopObservingMatchList();
+    this.endMatchResize();
     document.removeEventListener('click', this.onDocumentClick);
     document.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
-    observeMatchList() {
-      const el = this.$refs.matchList;
-      if (!el || this._matchListObserver) return;
-      // offsetHeight, not the entry's contentRect: everything here is border-box (style.css's `*`
-      // rule), so offsetHeight is the same box CSS `height` sets, while contentRect excludes the
-      // 1px border-top - feeding that back as an inline height would shrink the strip by a pixel
-      // per firing until it hit min-height. CSS fixes the height otherwise, so nothing but the
-      // user's drag can trip this.
-      this._matchListObserver = new ResizeObserver(() => {
-        const h = el.offsetHeight;
-        if (h > 0 && h !== this.matchListHeight) this.matchListHeight = h;
-      });
-      this._matchListObserver.observe(el);
+    // How tall the strip may currently be: whatever it is now, plus whatever the log body can give
+    // up without dropping under MIN_LOG_BODY_PX. Computed per drag rather than baked into CSS
+    // because the panel's own height varies (fullscreen is a viewport calc, embedded is measured
+    // by LogsView) - a fixed px cap eats the whole log on a short window, and a vh cap is only
+    // right for the fullscreen one.
+    matchMaxHeight() {
+      const list = this.$refs.matchList;
+      const body = this.$refs.logView;
+      const current = list ? list.offsetHeight : MATCH_MIN_PX;
+      if (!body) return current;
+      return current + Math.max(0, body.offsetHeight - MIN_LOG_BODY_PX);
     },
-    stopObservingMatchList() {
-      if (!this._matchListObserver) return;
-      this._matchListObserver.disconnect();
-      this._matchListObserver = null;
+    setMatchListHeight(px) {
+      this.matchListHeight = Math.round(Math.min(this.matchMaxHeight(), Math.max(MATCH_MIN_PX, px)));
+    },
+    // Listeners go on window, not the handle: a fast drag outruns the element under the cursor,
+    // and the pointer regularly ends up over the log body or outside the panel entirely.
+    startMatchResize(ev) {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      // The header doubles as the drag handle, so the ✕ inside it has to keep working as a button -
+      // without this, pressing it starts a zero-distance drag and preventDefault eats the click.
+      if (ev.target.closest('button')) return;
+      const list = this.$refs.matchList;
+      if (!list) return;
+      ev.preventDefault();
+      const startY = ev.clientY;
+      const startH = list.offsetHeight;
+      const maxH = this.matchMaxHeight();
+      this.matchResizing = true;
+      this._matchDrag = {
+        move: (e) => {
+          // The handle is the strip's *top* edge, so dragging up has to make it taller - the
+          // delta is subtracted, not added. Getting this backwards is the whole reason the
+          // native corner handle was wrong for a bottom-anchored pane.
+          this.matchListHeight = Math.round(Math.min(maxH, Math.max(MATCH_MIN_PX, startH - (e.clientY - startY))));
+        },
+        up: () => this.endMatchResize(),
+      };
+      window.addEventListener('pointermove', this._matchDrag.move);
+      window.addEventListener('pointerup', this._matchDrag.up);
+      window.addEventListener('pointercancel', this._matchDrag.up);
+    },
+    endMatchResize() {
+      if (!this._matchDrag) return;
+      window.removeEventListener('pointermove', this._matchDrag.move);
+      window.removeEventListener('pointerup', this._matchDrag.up);
+      window.removeEventListener('pointercancel', this._matchDrag.up);
+      this._matchDrag = null;
+      this.matchResizing = false;
+    },
+    // The handle is a focusable separator, so the strip is resizable without a pointer at all.
+    onMatchResizeKey(ev) {
+      const dir = ev.key === 'ArrowUp' ? 1 : ev.key === 'ArrowDown' ? -1 : 0;
+      if (!dir) return;
+      ev.preventDefault();
+      const list = this.$refs.matchList;
+      this.setMatchListHeight((list ? list.offsetHeight : MATCH_MIN_PX) + dir * MATCH_KEY_STEP_PX);
     },
     startStream() {
       if (this._stream) this._stream.stop();
@@ -634,8 +674,15 @@ export default {
         <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
         <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
-      <div v-if="matchPaneVisible" class="log-match-pane">
-        <div class="log-match-pane-header">
+      <div v-if="matchPaneVisible" class="log-match-pane" :class="{ resizing: matchResizing }">
+        <div
+          class="log-match-pane-header"
+          tabindex="0"
+          aria-label="Match list header - drag, or use the arrow keys, to resize"
+          title="Drag to resize"
+          @pointerdown="startMatchResize"
+          @keydown="onMatchResizeKey"
+        >
           <span class="muted small" v-if="searchActive">{{ matchLines.length }} matching {{ matchLines.length === 1 ? 'line' : 'lines' }}</span>
           <span class="muted small" v-else>Type a filter above to list matching lines here.</span>
           <button class="small-btn log-match-close" @click="showMatchPane = false" title="Hide the match list">✕</button>
