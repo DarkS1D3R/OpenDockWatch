@@ -11,6 +11,10 @@ export default {
   props: {
     hostId: { type: String, required: true },
     groupedContainers: { type: Array, required: true },
+    // Set by the List view's "Logs" button (see app.js's openLogsFor) to land straight on this
+    // container in single-pane mode. Read once at mount - this component is v-if'd, so it remounts
+    // fresh every time the tab is switched into, never patched while already showing.
+    openContainerId: { type: String, default: null },
   },
   data() {
     return {
@@ -81,6 +85,10 @@ export default {
     this._panes = {};
   },
   mounted() {
+    if (this.openContainerId) {
+      this.viewMode = 'single';
+      this.openIds = [this.openContainerId];
+    }
     this.updateWrapHeight();
     // document.body doesn't actually resize with the viewport (its box is content-driven, not
     // viewport-driven - a ResizeObserver on it never fires just because the window did), so the

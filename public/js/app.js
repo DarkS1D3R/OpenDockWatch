@@ -80,6 +80,11 @@ createApp({
       logViewerFullscreen: false,
       logViewerWrap: true,
 
+      // One-shot handoff into the Logs tab's own single-pane state - see openLogsFor. Read once by
+      // LogsView's mounted() (it remounts fresh every time view flips into 'logs', v-if not v-show)
+      // then cleared, so a later plain click on the Logs nav tab doesn't keep reopening this container.
+      logsTabOpenId: null,
+
       settingsOpen: false,
     };
   },
@@ -397,14 +402,17 @@ createApp({
       this.settingsOpen = false;
       this.selectedContainerId = this.selectedContainerId === id ? null : id;
     },
+    // The List view's "Logs" button used to pop open the standalone bottom log-viewer modal - now
+    // it takes you to the Logs tab instead, with this container opened there in single-pane mode,
+    // so there's one place logs are read rather than two.
     async openLogsFor(id) {
       this.settingsOpen = false;
-      this.selectedContainerId = id;
-      // The selectedContainerId watcher closes the log viewer as part of resetting log state for
-      // the new container - wait for that to settle before opening it, or it immediately clobbers
-      // the logViewerOpen flag we're about to set.
+      this.logsTabOpenId = id;
+      await this.setView('logs');
+      // Let LogsView mount and its own mounted() read logsTabOpenId before clearing it - otherwise
+      // a later plain click on the Logs nav tab would keep force-reopening this same container.
       await this.$nextTick();
-      await this.openLogViewer();
+      this.logsTabOpenId = null;
     },
     closeDetail() {
       this.selectedContainerId = null;
@@ -508,6 +516,7 @@ createApp({
             v-if="view === 'logs'"
             :host-id="selectedHostId"
             :grouped-containers="groupedContainers"
+            :open-container-id="logsTabOpenId"
           ></logs-view>
 
           <activity-view
