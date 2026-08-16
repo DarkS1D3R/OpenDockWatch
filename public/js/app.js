@@ -28,7 +28,19 @@ import {
 
 const { createApp } = Vue;
 
-createApp({
+// Nothing else in the client catches these - without a listener here, an exception anywhere
+// during boot (a vendor script failure, a rejected promise outside Vue's own tracking) leaves
+// the page silently blank with zero trace, indistinguishable from "still loading" or a network
+// hang. Logged with console.error so it survives even if the app never renders far enough to
+// show anything - see mounted()'s bootError for the visible counterpart.
+window.addEventListener('error', (e) => {
+  console.error('[opendockwatch] window.onerror', e.error || e.message, e.filename, e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[opendockwatch] unhandledrejection', e.reason);
+});
+
+const app = createApp({
   components: {
     SparkTile,
     HostCard,
@@ -87,6 +99,11 @@ createApp({
       logsTabOpenId: null,
 
       settingsOpen: false,
+
+      // Set only if mounted()'s session/host bootstrap throws - see there. Without this, that
+      // failure left '#app' permanently empty with nothing in the console: identical to a network
+      // hang from the outside, but caused by a client-side error nobody could see.
+      bootError: null,
     };
   },
   computed: {
@@ -157,7 +174,12 @@ createApp({
       this.role = session.role;
       this.appVersion = session.version;
       await this.loadHosts();
-    } catch {
+    } catch (err) {
+      // apiFetch already redirects to /login on 401 - reaching here means something else failed
+      // (server unreachable, a 5xx, a timeout). Previously swallowed silently, which left the page
+      // blank forever with no way to tell "still loading" from "never going to load".
+      console.error('[opendockwatch] boot failed', err);
+      this.bootError = err.message || String(err);
       return;
     }
     if (this.hosts.length) {
@@ -453,6 +475,11 @@ createApp({
   },
   template: `
     <div class="app">
+      <div v-if="bootError" class="boot-error">
+        <p>OpenDockWatch failed to load: {{ bootError }}</p>
+        <p class="muted">Check the browser console and the container's logs for more detail, then reload.</p>
+      </div>
+      <template v-else>
       <header class="topbar">
         <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
         <select v-model="selectedHostId" @change="selectHost(selectedHostId)">
@@ -571,6 +598,17 @@ createApp({
         :container-name="metricsContainer ? metricsContainer.name : metricsContainerId"
         @close="closeMetrics"
       ></container-metrics-modal>
+      </template>
     </div>
   `,
-}).mount('#app');
+});
+
+// Vue's own catch-all for anything thrown inside a component's render/lifecycle/watcher - the
+// window listeners above only see errors outside Vue's tracking (vendor scripts, bare promises).
+// Without this, a bug in a child component during boot failed exactly like a network hang: no
+// console output, '#app' stuck on whatever it last rendered.
+app.config.errorHandler = (err, instance, info) => {
+  console.error('[opendockwatch] vue error', info, err);
+};
+
+app.mount('#app');

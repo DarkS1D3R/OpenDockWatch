@@ -29,7 +29,7 @@ const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-index-test-${process.
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
-const { app, api, requestTimeout, requireHost } = require('../server/index');
+const { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor } = require('../server/index');
 const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
@@ -232,6 +232,46 @@ test('default view (landing tab) setting', async (t) => {
     } finally {
       db.deleteSetting('defaultView');
     }
+  });
+});
+
+test('clientErrorStatus', async (t) => {
+  await t.test('a stalled client gets 408, not 400', () => {
+    // headersTimeout (30s) and requestTimeout (60s) are both set on the server, and Node surfaces
+    // both through clientError as ERR_HTTP_REQUEST_TIMEOUT - its own default answers those 408.
+    // Overriding the event means owning that: a flat 400 tells a merely slow client it sent
+    // garbage, which behind a reverse proxy is a materially different signal.
+    assert.equal(clientErrorStatus('ERR_HTTP_REQUEST_TIMEOUT'), '408 Request Timeout');
+  });
+
+  await t.test('anything genuinely malformed still gets 400', () => {
+    for (const code of ['HPE_INVALID_METHOD', 'HPE_HEADER_OVERFLOW', 'ECONNRESET', undefined]) {
+      assert.equal(clientErrorStatus(code), '400 Bad Request', `${code} should stay a 400`);
+    }
+  });
+});
+
+test('slowThresholdFor', async (t) => {
+  await t.test('ordinary routes use the plain threshold', () => {
+    assert.equal(slowThresholdFor('/hosts/local/containers'), 5000);
+    assert.equal(slowThresholdFor('/session'), 5000);
+  });
+
+  await t.test('routes that are legitimately slow are held to their own timeout instead', () => {
+    // A `docker stop` waiting out SIGTERM routinely takes ten-plus seconds while working exactly
+    // as designed, and `docker system df` was measured at 40-75s cold. Warning about those every
+    // time is noise, and noise is what stopped the last real signal being noticed.
+    for (const p of ['/hosts/local/containers/abc123/stop', '/hosts/local/containers/abc/restart', '/hosts/local/containers/x/start']) {
+      assert.ok(slowThresholdFor(p) > 5000, `${p} should not warn at the ordinary threshold`);
+    }
+    assert.ok(slowThresholdFor('/hosts/local/disk-usage') > 5000);
+    assert.ok(slowThresholdFor('/hosts/local/disk-usage/images') > 5000);
+  });
+
+  await t.test('a route that merely mentions a slow word is not exempted', () => {
+    // The overrides are anchored, so an unrelated route can't inherit a 30-120s grace by accident.
+    assert.equal(slowThresholdFor('/hosts/local/containers/abc/stop/extra'), 5000);
+    assert.equal(slowThresholdFor('/disk-usage-summary'), 5000);
   });
 });
 

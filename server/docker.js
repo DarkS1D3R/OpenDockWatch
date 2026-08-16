@@ -1,4 +1,5 @@
 const { execFile, spawn } = require('child_process');
+const logger = require('./logger');
 
 const CMD_TIMEOUT_MS = 10_000;
 const ALLOWED_ACTIONS = new Set(['start', 'stop', 'restart']);
@@ -30,16 +31,55 @@ const MAX_QUEUE_WAIT_MS = 15_000;
 let active = 0;
 const waiters = [];
 
+// Saturation is a sustained condition, not a series of events. A line per queued call put hundreds
+// in `docker logs` with nothing tying them together, and `active` was worthless on every one of
+// them - reaching the queued path means all MAX_CONCURRENT slots are held, and release() hands a
+// slot straight to a waiter rather than decrementing, so `active` is MAX_CONCURRENT by
+// construction. One line when the queue forms, one when it drains, and the episode's shape in
+// between - the same aggregate shape watchdog.js's lag summary uses.
+let queueEpisode = null;
+
+function noteQueued() {
+  if (!queueEpisode) {
+    queueEpisode = { startedAt: Date.now(), queued: 0, peakDepth: 0, timeouts: 0, waitedMs: 0 };
+    logger.warn('docker.queue.saturated', { limit: MAX_CONCURRENT });
+  }
+  queueEpisode.queued += 1;
+  queueEpisode.peakDepth = Math.max(queueEpisode.peakDepth, waiters.length + 1);
+}
+
+// Called for every waiter that leaves the queue, whichever way it left. The episode closes only
+// once nothing is waiting, so a queue that keeps churning stays one episode rather than logging a
+// drained/saturated pair per call.
+function noteDequeued(waitedMs, timedOut) {
+  if (!queueEpisode) return;
+  queueEpisode.waitedMs += waitedMs;
+  if (timedOut) queueEpisode.timeouts += 1;
+  if (waiters.length > 0) return;
+  const ep = queueEpisode;
+  queueEpisode = null;
+  logger.warn('docker.queue.drained', {
+    forSec: Math.round((Date.now() - ep.startedAt) / 1000),
+    queued: ep.queued,
+    peakDepth: ep.peakDepth,
+    timeouts: ep.timeouts,
+    avgWaitMs: Math.round(ep.waitedMs / ep.queued),
+  });
+}
+
 function acquire() {
   if (active < MAX_CONCURRENT) {
     active++;
     return Promise.resolve();
   }
+  const queuedAt = Date.now();
+  noteQueued();
   return new Promise((resolve, reject) => {
-    const waiter = { resolve, reject, timer: null };
+    const waiter = { resolve, reject, timer: null, queuedAt };
     waiter.timer = setTimeout(() => {
       const idx = waiters.indexOf(waiter);
       if (idx !== -1) waiters.splice(idx, 1);
+      noteDequeued(Date.now() - queuedAt, true);
       reject(new Error(`docker command queued behind ${MAX_CONCURRENT} others for ${MAX_QUEUE_WAIT_MS}ms - daemon is not keeping up`));
     }, MAX_QUEUE_WAIT_MS);
     waiters.push(waiter);
@@ -56,6 +96,14 @@ function release() {
   // stays accurate and a burst of waiters can't all wake into the same one.
   clearTimeout(waiter.timer);
   waiter.resolve();
+  noteDequeued(Date.now() - waiter.queuedAt, false);
+}
+
+// The concurrency limiter's live depth, for the periodic vitals line in index.js. A hang that is
+// really "every docker call is queued behind a wedged daemon" looks like nothing at all otherwise -
+// the queue only logs at its edges, so a sustained backlog needs sampling to show up as sustained.
+function poolStats() {
+  return { active, queued: waiters.length, limit: MAX_CONCURRENT };
 }
 
 // execFile reports a timeout kill as a generic "Command failed: docker ..." with *empty* stderr -
@@ -595,5 +643,7 @@ module.exports = {
   computeRate,
   computeIoRates,
   dockerCommandError,
+  poolStats,
   DISK_USAGE_TIMEOUT_MS,
+  CONTAINER_ACTION_TIMEOUT_MS,
 };

@@ -40,6 +40,32 @@ const globalTimers = [];
 // only goes stale if the loop itself stopped turning, never just because a daemon is down.
 let lastPollCompletedTs = Date.now();
 
+// How long a poll cycle may take before it's worth a line of its own. A healthy local cycle is
+// ~2s of docker calls; the worst legitimate one is a remote host's checkHost (20s) plus the rest,
+// so this only fires when the loop is genuinely falling behind rather than merely slow.
+const SLOW_POLL_MS = Number(process.env.SLOW_POLL_MS) || 15_000;
+
+// Sampled by index.js's vitals line. `maxMs` is since the last read, not since boot: a single bad
+// poll hours ago shouldn't keep pinning the number every minute, and a rising floor across
+// consecutive vitals lines is the thing that actually shows the collector degrading. Watchdog
+// staleness only fires once the loop has stopped entirely - this is what precedes it.
+let pollStats = { lastMs: 0, maxMs: 0, slow: 0 };
+
+function recordPoll(hostId, tookMs) {
+  pollStats.lastMs = tookMs;
+  pollStats.maxMs = Math.max(pollStats.maxMs, tookMs);
+  if (tookMs >= SLOW_POLL_MS) {
+    pollStats.slow += 1;
+    logger.warn('metrics.poll.slow', { host: hostId, tookMs, thresholdMs: SLOW_POLL_MS });
+  }
+}
+
+function takePollStats() {
+  const out = pollStats;
+  pollStats = { lastMs: out.lastMs, maxMs: 0, slow: 0 };
+  return out;
+}
+
 function getLastPollCompletedTs() {
   return lastPollCompletedTs;
 }
@@ -228,6 +254,7 @@ async function pollDiskUsage(host, diskState) {
 function scheduleHostPolling(host, pollState) {
   const tick = async () => {
     if (pollState.stopped) return;
+    const startedAt = Date.now();
     try {
       await pollHost(host);
     } catch (err) {
@@ -237,6 +264,7 @@ function scheduleHostPolling(host, pollState) {
       logger.error('metrics.tick.failed', { host: host.id, error: err.message });
     } finally {
       lastPollCompletedTs = Date.now();
+      recordPoll(host.id, lastPollCompletedTs - startedAt);
       if (!pollState.stopped) pollState.timer = setTimeout(tick, POLL_MS);
     }
   };
@@ -334,6 +362,7 @@ module.exports = {
   getAllSnapshots,
   getLastPollCompletedTs,
   getHostCount,
+  takePollStats,
   nextDiskDelay,
   POLL_MS,
   DISK_POLL_MS,

@@ -680,6 +680,13 @@ table.containers td:nth-child(7) {
 .error {
   color: var(--danger);
 }
+.boot-error {
+  max-width: 480px;
+  margin: 15vh auto 0;
+  padding: 20px;
+  text-align: center;
+  color: var(--danger);
+}
 
 .state-running {
   color: var(--ok);

@@ -25,6 +25,9 @@ const {
   getDiskUsageImages,
   getContainerInspect,
   maskEnvValues,
+  poolStats,
+  CONTAINER_ACTION_TIMEOUT_MS,
+  DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
 const db = require('./db');
 const logger = require('./logger');
@@ -129,6 +132,49 @@ function requestTimeout(ms) {
   };
 }
 
+// A heartbeat, and that is most of the point: when this app went unresponsive for 220s the log
+// held *nothing at all* between the two sides of it, and the outage was only provable afterwards
+// by finding the matching gap in the metrics table. A line on a fixed interval turns the absence
+// of logs into evidence - you can see the beats stop, see how long for, and read the vitals going
+// in and coming back out. Everything on it is a live counter that no other line reports: the
+// open/close pairs elsewhere describe one stream each, and "how many are held right now" is not
+// something you can replay from them while the UI is hung. Set VITALS_INTERVAL_MS=0 to silence.
+const VITALS_INTERVAL_MS = Number(process.env.VITALS_INTERVAL_MS ?? 60_000);
+
+// Live count of held `docker logs -f` children, each also holding one of the browser's ~6
+// per-origin connections. Running out of either is the app's main self-inflicted hang.
+let openLogStreams = 0;
+
+function logVitals() {
+  const mem = process.memoryUsage();
+  const pool = poolStats();
+  const poll = metricsCollector.takePollStats();
+  logger.info('app.vitals', {
+    uptimeSec: Math.round(process.uptime()),
+    rssMb: Math.round(mem.rss / 1048576),
+    heapMb: Math.round(mem.heapUsed / 1048576),
+    lagMs: Math.round(watchdog.status().lagMs || 0),
+    pollLastMs: poll.lastMs,
+    pollMaxMs: poll.maxMs,
+    pollSlow: poll.slow,
+    dockerActive: pool.active,
+    dockerQueued: pool.queued,
+    logStreams: openLogStreams,
+    sseClients: eventWatcher.broadcaster.subscriberCount(),
+    hosts: metricsCollector.getHostCount(),
+  });
+}
+
+// Taking over `clientError` means taking over the response, and the status is NOT always 400:
+// headersTimeout and requestTimeout both surface here as ERR_HTTP_REQUEST_TIMEOUT, which Node's
+// own default answers 408. Answering those 400 tells a merely slow client it sent garbage, and
+// behind a reverse proxy 408 is the expected, retryable keep-alive outcome where 400 reads as a
+// client bug. Pure and exported so the mapping is unit-tested rather than only exercised by a
+// malformed socket - the handler itself lives in the require.main block and can't be.
+function clientErrorStatus(code) {
+  return code === 'ERR_HTTP_REQUEST_TIMEOUT' ? '408 Request Timeout' : '400 Bad Request';
+}
+
 // docker.js's run() attaches the CLI's real stderr to err.stderr; anything else only has
 // err.message. Every docker-backed route reports failure the same way, so this fallback is
 // spelled out once here instead of copy-pasted into every catch block.
@@ -173,6 +219,46 @@ app.use((req, res, next) => {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
     'Cross-Origin-Opener-Policy': 'same-origin',
+  });
+  next();
+});
+
+// Covers every route, not just /api - requestTimeout below is api-only, so this is the only
+// thing that would ever say anything about a slow `/`, `/login` or static asset request. Fires
+// on completion only (res.on('finish')), so it can't fire twice and can't fire for a request that
+// never finishes at all - a request stuck past the socket-level server.requestTimeout still logs
+// nothing of its own, which is a real gap, but Node gives no hook to log a request the raw socket
+// itself is about to kill.
+const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS) || 5000;
+
+// Some routes are legitimately slow and warning about them is noise, not signal: a container
+// start/stop/restart shells out with CONTAINER_ACTION_TIMEOUT_MS (30s) and a `docker stop` waiting
+// out SIGTERM routinely takes ten-plus seconds while behaving exactly as designed, and the disk
+// route can shell out to `docker system df`, measured at 40-75s cold on WSL2. Those get the
+// timeout they're actually bounded by as their threshold, so the line still fires when they exceed
+// even that - it just stops firing for working normally.
+const SLOW_ROUTE_OVERRIDES = [
+  { re: /\/containers\/[^/]+\/(start|stop|restart)$/, ms: CONTAINER_ACTION_TIMEOUT_MS },
+  { re: /\/disk-usage(\/images)?$/, ms: DISK_USAGE_TIMEOUT_MS },
+];
+
+function slowThresholdFor(path) {
+  const override = SLOW_ROUTE_OVERRIDES.find((o) => o.re.test(path));
+  return override ? override.ms : SLOW_REQUEST_MS;
+}
+
+app.use((req, res, next) => {
+  // SSE routes are held open by design (see the connection-budget section of CLAUDE.md) - logging
+  // one every time a log/event stream finally closes after minutes or hours would be noise, not
+  // signal, and those already get their own open/close pair with heldSec.
+  if (STREAMING_PATH_RE.test(req.path)) return next();
+  const startedAt = Date.now();
+  const threshold = slowThresholdFor(req.path);
+  res.on('finish', () => {
+    const tookMs = Date.now() - startedAt;
+    if (tookMs >= threshold) {
+      logger.warn('request.slow', { method: req.method, path: req.originalUrl, status: res.statusCode, tookMs, thresholdMs: threshold });
+    }
   });
   next();
 });
@@ -853,14 +939,20 @@ api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (
   // the pair is the app's main way of running out of either. closedBy says which side ended it:
   // 'client' is a normal pane close or tab suspend, 'child' is docker exiting under us.
   const openedAt = Date.now();
-  logger.info('logs.stream.open', { host: host.id, container: req.params.id, tail, user: req.session.username });
-  const logClose = (closedBy) =>
+  openLogStreams += 1;
+  logger.info('logs.stream.open', { host: host.id, container: req.params.id, tail, user: req.session.username, open: openLogStreams });
+  // Decremented here rather than in cleanup() so it can't be missed by a future early return -
+  // cleanup is the single place that calls this, and it self-guards against running twice.
+  const logClose = (closedBy) => {
+    openLogStreams = Math.max(0, openLogStreams - 1);
     logger.info('logs.stream.close', {
       host: host.id,
       container: req.params.id,
       closedBy,
       heldSec: Math.round((Date.now() - openedAt) / 1000),
+      open: openLogStreams,
     });
+  };
 
   // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
   // streams) so a line split across chunk boundaries isn't emitted as two SSE
@@ -959,6 +1051,7 @@ app.use((err, req, res, next) => {
 // not when require()'d, which is how test/index.test.js loads `app` for supertest. Without this
 // guard, importing the module for its routes would also open a port and start polling.
 if (require.main === module) {
+  let vitalsTimer = null;
   const server = app.listen(PORT, () => {
     // Through logger.js, not console: the Log Viewer filters on the [LEVEL] tag, so a banner on
     // plain console is invisible in the app's own log view - which is where someone checking
@@ -976,6 +1069,11 @@ if (require.main === module) {
     eventWatcher.start();
     metricsCollector.start();
     watchdog.start();
+    if (VITALS_INTERVAL_MS) {
+      // Never the reason the process stays alive - the HTTP server is. Same as watchdog's timer.
+      vitalsTimer = setInterval(logVitals, VITALS_INTERVAL_MS);
+      if (vitalsTimer.unref) vitalsTimer.unref();
+    }
   });
 
   // Node defaults to 300s here - five minutes of a held connection slot for a request that's
@@ -984,6 +1082,31 @@ if (require.main === module) {
   server.requestTimeout = REQUEST_TIMEOUT_MS + 10_000;
   server.headersTimeout = 30_000;
   server.keepAliveTimeout = 20_000;
+
+  // Nothing here reaches Express, so no middleware above (request.slow included) can ever see it -
+  // a malformed request, or a client that stalls mid-headers, is otherwise destroyed by Node with
+  // no application-level trace. ECONNRESET is the common, boring case (a client closing early) and
+  // stays quiet; anything else is the interesting one, e.g. a corrupt request line from a proxy.
+  //
+  // See clientErrorStatus for why the response isn't a flat 400.
+  server.on('clientError', (err, socket) => {
+    if (err.code !== 'ECONNRESET') {
+      logger.warn('http.client_error', { code: err.code, message: err.message });
+    }
+    // Node's default declines to write once the socket is gone or a response has already begun;
+    // not matching that turns socket.end() into a silent no-op that reads like a reply was sent,
+    // or corrupts a partly-written one.
+    if (!socket.writable || socket.bytesWritten > 0) return socket.destroy();
+    socket.end(`HTTP/1.1 ${clientErrorStatus(err.code)}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  });
+
+  // There is deliberately no server.on('timeout') listener and no server.timeout. It defaults to 0
+  // (disabled) in Node >= 13, so a listener alone can never fire - and merely attaching one
+  // suppresses Node's default socket destruction, so turning server.timeout on to "fix" that would
+  // leak every timed-out socket unless the handler destroyed them itself. It also can't be turned
+  // on safely here regardless: server.timeout is whole-socket inactivity, and this app's SSE log
+  // and event streams are idle by design between 30s heartbeats. requestTimeout/headersTimeout
+  // above are the bounded, per-request equivalents, and they don't touch a streaming response.
 
   // Most unhandled rejections here are one failed docker call or db write - losing a poll is
   // recoverable, losing the process isn't - so they're logged and swallowed. An uncaught
@@ -1003,6 +1126,7 @@ if (require.main === module) {
     // identical in `docker logs` unless the graceful path says so itself.
     logger.info('app.shutdown', { signal, uptimeSec: Math.round(process.uptime()) });
     watchdog.stop();
+    if (vitalsTimer) clearInterval(vitalsTimer);
     metricsCollector.stop();
     eventWatcher.stop();
     alerts.stop();
@@ -1025,4 +1149,4 @@ if (require.main === module) {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = { app, api, requestTimeout, requireHost };
+module.exports = { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor };
