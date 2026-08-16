@@ -58,8 +58,19 @@ const FAKE_ALERT_ID = 999999999;
 // unlike a list of routes copied out of index.js by hand, it keeps working when someone adds a
 // new mutating route six months from now and simply forgets the middleware, which is exactly how
 // the original gap happened.
+// Exemptions are a map, not a skip, so each one carries its reason and a stale entry fails loudly
+// rather than quietly widening the check's blind spot. Two properties are required to be in here:
+// the route changes no state, and there is a real reason a non-admin must reach it.
+const ADMIN_EXEMPT = new Map([
+  [
+    'post /client-error',
+    'writes one log line and no state; a viewer’s browser breaks like an admin’s, so it must work for both. Rate-limited instead.',
+  ],
+]);
+
 test('every non-GET /api route has requireAdmin in its middleware stack', () => {
   const checked = [];
+  const usedExemptions = new Set();
   for (const layer of api.stack) {
     if (!layer.route) continue; // skips api.use(requireAuth) and the router's own path-matching layers
     const { path, methods, stack } = layer.route;
@@ -67,11 +78,21 @@ test('every non-GET /api route has requireAdmin in its middleware stack', () => 
       if (method === 'get' || method === 'head') continue;
       const label = `${method.toUpperCase()} /api${path}`;
       checked.push(label);
+      const key = `${method} ${path}`;
+      if (ADMIN_EXEMPT.has(key)) {
+        usedExemptions.add(key);
+        continue;
+      }
       assert.ok(
         stack.some((s) => s.handle === requireAdmin),
         `${label} mutates state but has no requireAdmin middleware`
       );
     }
+  }
+  // A route that gets renamed or removed must not leave its exemption behind waiting to silently
+  // cover something else that later takes the same path.
+  for (const key of ADMIN_EXEMPT.keys()) {
+    assert.ok(usedExemptions.has(key), `stale admin exemption for "${key}" - no such route is registered any more`);
   }
   // Guards the check above against silently checking nothing - if a future Express upgrade
   // changes Route's internal shape (.methods/.stack), this fails loudly instead of the loop above
@@ -438,5 +459,44 @@ test('requestTimeout', async (t) => {
     assert.equal(res.status, 200);
     assert.equal(cleared, true);
     assert.match(res.text, /data: line/);
+  });
+});
+
+test('POST /api/client-error', async (t) => {
+  await t.test('accepts a report from a viewer, not just an admin', async () => {
+    // The whole point: a viewer's browser fails the same way an admin's does, and a blank page is
+    // exactly what the person least able to describe it is looking at.
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const res = await viewer.post('/api/client-error').send({ kind: 'vue', message: 'boom', source: 'render function', line: 12 });
+    assert.equal(res.status, 204);
+    assert.equal(res.text, '', 'fire-and-forget: nothing for the client to parse or fail on');
+  });
+
+  await t.test('still requires a session', async () => {
+    assert.equal((await request(app).post('/api/client-error').send({ message: 'x' })).status, 401);
+  });
+
+  await t.test('survives a junk or empty body rather than 500ing', async () => {
+    // It's called from a global error handler, so a report that itself errors would loop.
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.post('/api/client-error').send({})).status, 204);
+    assert.equal((await agent.post('/api/client-error').send({ kind: null, message: 12345, line: 'nope' })).status, 204);
+  });
+
+  await t.test('a huge message is truncated rather than becoming a megabyte log line', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const lines = [];
+    const logger = require('../server/logger');
+    const realWarn = logger.warn;
+    logger.warn = (event, fields) => lines.push({ event, fields });
+    try {
+      await agent.post('/api/client-error').send({ message: 'x'.repeat(50_000), source: 'y'.repeat(50_000) });
+      const rec = lines.find((l) => l.event === 'client.error');
+      assert.ok(rec, 'should have logged');
+      assert.equal(rec.fields.message.length, 300);
+      assert.equal(rec.fields.source.length, 200);
+    } finally {
+      logger.warn = realWarn;
+    }
   });
 });

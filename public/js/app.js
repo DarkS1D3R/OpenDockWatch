@@ -24,6 +24,7 @@ import {
   apiGetAlerts,
   apiAckAlert,
   apiAckAllAlerts,
+  reportClientError,
 } from './api.js';
 
 const { createApp } = Vue;
@@ -33,11 +34,43 @@ const { createApp } = Vue;
 // the page silently blank with zero trace, indistinguishable from "still loading" or a network
 // hang. Logged with console.error so it survives even if the app never renders far enough to
 // show anything - see mounted()'s bootError for the visible counterpart.
+// ...and mirrored to the server so they land in `docker logs` next to everything else, since a
+// console nobody has open is not somewhere failures can be found later. Capped hard: a render
+// error inside a watcher can fire every frame, and each report would take one of the browser's ~6
+// per-origin connections - the same budget the poll loop and the log streams live on. An unbounded
+// beacon would cause exactly the hang it exists to diagnose. So: dedup on what makes an error
+// distinct, then stop entirely after MAX_CLIENT_ERROR_REPORTS for the life of the page.
+const MAX_CLIENT_ERROR_REPORTS = 5;
+const seenClientErrors = new Set();
+let clientErrorsSent = 0;
+
+// Truncated here as well as on the server: no reason to put a whole stack trace on the wire.
+function errText(value) {
+  if (value === null || value === undefined) return '';
+  return String((typeof value === 'object' && value.message) || value).slice(0, 300);
+}
+
+function reportOnce(kind, message, source, line) {
+  // Cap checked before the dedup set is touched, not after: a runaway loop throwing *distinct*
+  // messages (a counter in the text, say) would otherwise keep growing the set forever long after
+  // reporting had stopped - a memory leak inside the very guard meant to stop the beacon becoming
+  // the problem. The cap also bounds recursion by construction: even if reporting an error somehow
+  // caused another error, it can only happen MAX_CLIENT_ERROR_REPORTS times.
+  if (!message || clientErrorsSent >= MAX_CLIENT_ERROR_REPORTS) return;
+  const key = `${kind}|${message}|${source}|${line}`;
+  if (seenClientErrors.has(key)) return;
+  seenClientErrors.add(key);
+  clientErrorsSent += 1;
+  reportClientError({ kind, message, source, line });
+}
+
 window.addEventListener('error', (e) => {
   console.error('[opendockwatch] window.onerror', e.error || e.message, e.filename, e.lineno);
+  reportOnce('window.onerror', errText(e.error || e.message), e.filename, e.lineno);
 });
 window.addEventListener('unhandledrejection', (e) => {
   console.error('[opendockwatch] unhandledrejection', e.reason);
+  reportOnce('unhandledrejection', errText(e.reason), null, null);
 });
 
 const app = createApp({
@@ -180,6 +213,9 @@ const app = createApp({
       // blank forever with no way to tell "still loading" from "never going to load".
       console.error('[opendockwatch] boot failed', err);
       this.bootError = err.message || String(err);
+      // Reported rather than only shown: a blank-page-on-load report is the one a user is least
+      // likely to be able to describe, and most likely to hit right after a deploy.
+      reportOnce('boot', errText(err), null, null);
       return;
     }
     if (this.hosts.length) {
@@ -609,6 +645,9 @@ const app = createApp({
 // console output, '#app' stuck on whatever it last rendered.
 app.config.errorHandler = (err, instance, info) => {
   console.error('[opendockwatch] vue error', info, err);
+  // `info` (the Vue lifecycle hook that threw) is the useful half here, so it goes in the source
+  // slot rather than being dropped - "render function" vs "watcher callback" narrows it a lot.
+  reportOnce('vue', errText(err), info, null);
 };
 
 app.mount('#app');

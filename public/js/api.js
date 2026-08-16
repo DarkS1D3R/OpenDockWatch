@@ -36,6 +36,23 @@ async function jsonOrThrow(res) {
   return res.json();
 }
 
+// Deliberately not apiFetch, and deliberately not async: this is called from the global error
+// handlers, so it must never throw (anything it threw would land back in the handler that called
+// it and loop), never redirect on 401 the way apiFetch does, and never retry. keepalive lets a
+// report survive the page unloading, which is exactly when a boot failure tends to be reported.
+export function reportClientError(payload) {
+  try {
+    fetch('/api/client-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* a failed report must never become an error of its own */
+  }
+}
+
 export async function apiGetHosts() {
   return jsonOrThrow(await apiFetch('/api/hosts'));
 }

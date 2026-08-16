@@ -326,6 +326,13 @@ async function retryFailedWebhooks() {
 
   const sinceTs = Date.now() - WEBHOOK_RETRY_WINDOW_MS;
   const pending = db.getPendingWebhookRetries({ maxAttempts: WEBHOOK_MAX_ATTEMPTS, sinceTs, limit: WEBHOOK_RETRY_BATCH_LIMIT });
+  // The individual retry_delivered/retry_failed lines below each describe one alert; none of them
+  // says how deep the backlog is. An endpoint that's been down for a day otherwise shows only a
+  // trickle of unrelated-looking failures, with nothing saying they're the same growing queue.
+  // Capped at WEBHOOK_RETRY_BATCH_LIMIT, so `atBatchLimit` is the tell that there are likely more.
+  if (pending.length) {
+    logger.warn('alert.webhook.backlog', { pending: pending.length, atBatchLimit: pending.length === WEBHOOK_RETRY_BATCH_LIMIT });
+  }
   for (const row of pending) {
     const alert = {
       id: row.id,

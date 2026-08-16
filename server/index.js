@@ -149,6 +149,10 @@ function logVitals() {
   const mem = process.memoryUsage();
   const pool = poolStats();
   const poll = metricsCollector.takePollStats();
+  // dbMaxMs alongside lagMs is the pairing that matters: better-sqlite3 is synchronous, so if the
+  // loop stalled and the worst write of that same window was long, the storage is the cause. If
+  // lag is high and dbMaxMs is not, it was something else - which is equally worth knowing.
+  const write = db.takeWriteStats();
   logger.info('app.vitals', {
     uptimeSec: Math.round(process.uptime()),
     rssMb: Math.round(mem.rss / 1048576),
@@ -157,10 +161,14 @@ function logVitals() {
     pollLastMs: poll.lastMs,
     pollMaxMs: poll.maxMs,
     pollSlow: poll.slow,
+    dbLastMs: write.lastMs,
+    dbMaxMs: write.maxMs,
+    dbSlow: write.slow,
     dockerActive: pool.active,
     dockerQueued: pool.queued,
     logStreams: openLogStreams,
     sseClients: eventWatcher.broadcaster.subscriberCount(),
+    events: eventWatcher.takeIngestCount(),
     hosts: metricsCollector.getHostCount(),
   });
 }
@@ -292,6 +300,14 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'too many login attempts, try again later' },
+  // Without a handler this blocks silently, and the silence is the problem: once the limiter
+  // trips, requests stop reaching verifyLogin, so `auth.failure` stops being logged too. A
+  // sustained brute-force attempt therefore reads in the log as though it stopped, exactly when
+  // it's most active. This is the only line that says otherwise.
+  handler: (req, res, next, options) => {
+    logger.warn('auth.rate_limited', { ip: req.ip, user: (req.body && req.body.username) || null, limit: options.limit });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 // Anything the pre-auth session held keeps its id through a login without this, so a session id
@@ -377,6 +393,44 @@ app.get('/', requireAuth, (req, res) => {
 const api = express.Router();
 api.use(requireAuth);
 api.use(requestTimeout(REQUEST_TIMEOUT_MS));
+
+// Never trust a length from the client, and never let one log line become a megabyte: a stack
+// trace is unbounded and this value is entirely attacker-influenced. Newlines need no special
+// handling - logger.js's formatFields JSON.stringifies any value containing whitespace, so they
+// come out escaped and can't forge a second log line.
+function clip(value, max) {
+  if (value === undefined || value === null) return null;
+  return String(value).slice(0, max) || null;
+}
+
+// Generous enough that a real burst of distinct errors still gets through, tight enough that a
+// client which somehow defeats its own per-page cap can't flood the log. The client's cap is the
+// real defence (see app.js) because the connection cost is paid browser-side; this is the backstop
+// for a client that isn't ours.
+const clientErrorLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: { error: 'too many client error reports' },
+});
+
+// The frontend compiles its Vue templates in the browser, so a broken render is a blank page with
+// a completely healthy server log - "the site is broken" and "the server is fine" both true, and
+// nothing reconciling them without someone opening devtools. This puts client failures in the same
+// log as everything else. 204 with no body: the client is fire-and-forget and must not care about
+// the answer, so there's nothing for it to parse and nothing for it to fail on.
+api.post('/client-error', clientErrorLimiter, (req, res) => {
+  const { kind, message, source, line } = req.body || {};
+  logger.warn('client.error', {
+    user: req.session.username,
+    kind: clip(kind, 40),
+    message: clip(message, 300),
+    source: clip(source, 200),
+    line: Number.isFinite(Number(line)) ? Number(line) : null,
+  });
+  res.status(204).end();
+});
 
 api.get('/session', (req, res) => {
   res.json({ username: req.session.username, role: req.session.role, version: appVersion, defaultView: getDefaultView() });
@@ -1131,18 +1185,24 @@ if (require.main === module) {
     eventWatcher.stop();
     alerts.stop();
 
+    const startedAt = Date.now();
     let closed = false;
-    const finish = () => {
+    // Which of the two paths got here is worth knowing and was previously invisible: 'drained'
+    // means every connection ended on its own, 'timeout' means streams were still held after 5s
+    // and are being dropped. A shutdown that always reports 'timeout' is the connection-budget
+    // problem showing up at the one moment it's easy to observe.
+    const finish = (endedBy) => {
       if (closed) return;
       closed = true;
+      logger.info('app.shutdown.complete', { endedBy, tookMs: Date.now() - startedAt, logStreams: openLogStreams });
       db.close();
       process.exit(0);
     };
 
     // server.close() waits for open connections to end, but log/event SSE streams
     // are intentionally long-lived - don't let them block shutdown indefinitely.
-    server.close(finish);
-    setTimeout(finish, 5000);
+    server.close(() => finish('drained'));
+    setTimeout(() => finish('timeout'), 5000);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

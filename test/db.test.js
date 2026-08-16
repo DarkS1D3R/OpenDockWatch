@@ -154,3 +154,57 @@ test('container_alert_rules CRUD', async (t) => {
     assert.deepEqual(after, reordered);
   });
 });
+
+// Timing the synchronous writes is what makes event-loop lag attributable: watchdog.js can say the
+// loop stalled, but only this says whether sqlite was the reason. Sampled into app.vitals.
+test('write timing stats', async (t) => {
+  await t.test('a metrics write is timed and reported', () => {
+    db.takeWriteStats(); // clear anything earlier tests left behind
+    db.insertContainerMetrics([
+      {
+        hostId: 'wstat',
+        containerId: 'c1',
+        ts: Date.now(),
+        cpuPerc: 1,
+        memUsedBytes: 1,
+        memPerc: 1,
+        netRxBytes: 0,
+        netTxBytes: 0,
+        blockReadBytes: 0,
+        blockWriteBytes: 0,
+      },
+    ]);
+    const stats = db.takeWriteStats();
+    assert.ok(stats.maxMs >= 0, 'a duration should have been recorded');
+    assert.equal(stats.op, 'insertContainerMetrics', 'and attributed to the statement that took it');
+  });
+
+  await t.test('maxMs resets on read so one slow write cannot pin the number forever', () => {
+    // The property that makes a rising floor across consecutive vitals lines meaningful: without
+    // it, a single bad commit at boot would keep reporting itself every minute thereafter.
+    db.insertContainerMetrics([
+      {
+        hostId: 'wstat',
+        containerId: 'c2',
+        ts: Date.now(),
+        cpuPerc: 1,
+        memUsedBytes: 1,
+        memPerc: 1,
+        netRxBytes: 0,
+        netTxBytes: 0,
+        blockReadBytes: 0,
+        blockWriteBytes: 0,
+      },
+    ]);
+    db.takeWriteStats();
+    const second = db.takeWriteStats();
+    assert.equal(second.maxMs, 0, 'a window with no writes reports no maximum');
+    assert.equal(second.slow, 0);
+  });
+
+  await t.test('an empty sample list is not timed at all - it never reaches sqlite', () => {
+    db.takeWriteStats();
+    db.insertContainerMetrics([]);
+    assert.equal(db.takeWriteStats().op, null);
+  });
+});

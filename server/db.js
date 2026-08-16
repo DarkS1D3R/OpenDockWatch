@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const logger = require('./logger');
 const { withIoRates, BUCKET_EXPR } = require('./metricsHistory');
 
 const DATA_DIR = path.join(__dirname, '../data');
@@ -290,7 +291,43 @@ function insertContainerMetrics(samples) {
   // better-sqlite3 would happily run an empty transaction; skipping it avoids a pointless commit
   // on a host whose containers are all stopped, which is every poll for an idle host.
   if (!samples.length) return;
-  insertContainerMetricsTx(samples);
+  timed('insertContainerMetrics', () => insertContainerMetricsTx(samples));
+}
+
+// better-sqlite3 is synchronous, so every write here is event-loop time, and at WAL's default
+// synchronous=FULL a commit is an fsync - which is why a slow bind-mounted volume shows up as
+// application lag. watchdog.js can say the loop stalled but never why; this is the attribution.
+// Only the two writes big enough to matter are wrapped (the per-poll transaction and the hourly
+// prune, which is a full table scan) - timing every single-row statement would cost more than it
+// tells you. Rounded on read, not per call, to keep the hot path to one subtraction.
+const SLOW_DB_WRITE_MS = Number(process.env.SLOW_DB_WRITE_MS) || 250;
+let writeStats = { lastMs: 0, maxMs: 0, slow: 0, op: null };
+
+function timed(op, fn) {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return fn();
+  } finally {
+    const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    writeStats.lastMs = ms;
+    if (ms > writeStats.maxMs) {
+      writeStats.maxMs = ms;
+      writeStats.op = op;
+    }
+    if (ms >= SLOW_DB_WRITE_MS) {
+      writeStats.slow += 1;
+      logger.warn('db.write.slow', { op, tookMs: Math.round(ms), thresholdMs: SLOW_DB_WRITE_MS });
+    }
+  }
+}
+
+// Same contract as metricsCollector.takePollStats: maxMs is since the last read, so a rising
+// floor across consecutive vitals lines is the storage degrading rather than one bad commit
+// hours ago pinning the number forever.
+function takeWriteStats() {
+  const out = { ...writeStats, lastMs: Math.round(writeStats.lastMs), maxMs: Math.round(writeStats.maxMs) };
+  writeStats = { lastMs: writeStats.lastMs, maxMs: 0, slow: 0, op: null };
+  return out;
 }
 
 function insertHostMetric(sample) {
@@ -497,13 +534,13 @@ function close() {
 // is the only path in the app that deletes anything, and it used to leave no trace at all.
 function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
   const now = Date.now();
-  return {
+  return timed('pruneOld', () => ({
     containerMetrics: stmts.pruneContainerMetrics.run(now - metricsRetentionMs).changes,
     hostMetrics: stmts.pruneHostMetrics.run(now - metricsRetentionMs).changes,
     events: stmts.pruneEvents.run(now - eventsRetentionMs).changes,
     auditLog: stmts.pruneAuditLog.run(now - auditRetentionMs).changes,
     alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
-  };
+  }));
 }
 
 module.exports = {
@@ -539,6 +576,7 @@ module.exports = {
   deleteSetting,
   ping,
   pruneOld,
+  takeWriteStats,
   close,
   getContainerAlertRules,
   insertContainerAlertRule,

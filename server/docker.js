@@ -158,11 +158,28 @@ async function getHostInfo(host) {
   };
 }
 
+// Why the last probe failed, kept per host so the reason survives the boolean this returns.
+// "Became unreachable" without a cause is the least useful alert the app can send - timed out,
+// host key verification failed, permission denied and daemon-not-running need completely
+// different responses. testHostConnection exists purely because that boolean wasn't enough for a
+// human pressing "Test connection"; the automatic probe deserves the same information, so it's
+// recorded here and read on the reachable -> unreachable transition rather than every 5s.
+const lastCheckErrors = new Map();
+
+function lastCheckError(hostId) {
+  return lastCheckErrors.get(hostId) || null;
+}
+
 async function checkHost(host) {
   try {
     await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
+    lastCheckErrors.delete(host.id);
     return true;
-  } catch {
+  } catch (err) {
+    // stderr first: `docker` puts the useful line there ("Permission denied (publickey)"), while
+    // err.message is the generic "Command failed". A timeout has neither and gets its own message
+    // from dockerCommandError.
+    lastCheckErrors.set(host.id, (err.stderr || '').trim() || err.message);
     return false;
   }
 }
@@ -459,6 +476,7 @@ async function getTopologyMeta(host, containers) {
 // daemon entirely.
 function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
+  lastCheckErrors.delete(hostId);
 }
 
 async function getTopology(host, snapshot) {
@@ -644,6 +662,7 @@ module.exports = {
   computeIoRates,
   dockerCommandError,
   poolStats,
+  lastCheckError,
   DISK_USAGE_TIMEOUT_MS,
   CONTAINER_ACTION_TIMEOUT_MS,
 };

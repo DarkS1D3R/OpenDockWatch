@@ -42,10 +42,23 @@ function parseEventLine(line, host) {
   };
 }
 
+// Every ingested event is a synchronous sqlite write on the same event loop everything else runs
+// on, so a container in a tight restart loop is a real source of lag with no signal of its own.
+// Counted rather than logged per event - logging the flood would *be* the flood. Read (and reset)
+// by index.js's vitals line, so the rate is visible as a rate.
+let ingested = 0;
+
+function takeIngestCount() {
+  const out = ingested;
+  ingested = 0;
+  return out;
+}
+
 // One event line's fan-out: persistence, live SSE push, rule engine. Deliberately never throws -
 // it runs inside a stdout 'data' handler, so anything escaping becomes an uncaughtException and
 // index.js exits on those, losing monitoring for every host over one failed sqlite write.
 function ingestEvent(event) {
+  ingested += 1;
   try {
     db.insertEvent({
       hostId: event.hostId,
@@ -151,4 +164,4 @@ function stop() {
   watchers.clear();
 }
 
-module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent };
+module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent, takeIngestCount };

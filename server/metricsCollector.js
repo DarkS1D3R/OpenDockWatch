@@ -5,6 +5,7 @@ const {
   getHostInfo,
   getDiskUsage,
   checkHost,
+  lastCheckError,
   parseMemUsedBytes,
   computeIoRates,
   forgetHost: forgetDockerHost,
@@ -96,7 +97,14 @@ function sampleLocalSystemUsage(hostId) {
 async function pollHost(host) {
   const prev = snapshots.get(host.id);
   const reachable = await checkHost(host);
-  alerts.handleHostReachability(host.id, host.name || host.id, reachable, prev ? prev.reachable : true);
+  const wasReachable = prev ? prev.reachable : true;
+  // On the transition only, never per poll: the alert says "became unreachable" and stops there,
+  // but "timed out after 20000ms" and "Permission denied (publickey)" call for entirely different
+  // responses. checkHost keeps the reason behind its boolean - see lastCheckError.
+  if (wasReachable && !reachable) {
+    logger.warn('host.unreachable', { host: host.id, error: lastCheckError(host.id) || 'no error reported' });
+  }
+  alerts.handleHostReachability(host.id, host.name || host.id, reachable, wasReachable);
 
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
   // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
