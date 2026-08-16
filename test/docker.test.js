@@ -5,6 +5,7 @@ const {
   parseMemUsedBytes,
   parseLabels,
   parseHealth,
+  parseNetworks,
   networkEdges,
   dependsOnEdges,
   customDependsOnEdges,
@@ -462,5 +463,39 @@ test('maskEnvValues', async (t) => {
     const out = maskEnvValues(['A=secret-one', 'B=secret-two', 'C=']).join('\n');
     assert.equal(out.includes('secret-one'), false);
     assert.equal(out.includes('secret-two'), false);
+  });
+});
+
+test('parseNetworks', async (t) => {
+  await t.test("drops docker's three built-ins", () => {
+    // Every container sits on one of these, so keeping them would put an edge from nearly every
+    // node to a hub that says nothing about how the system is actually wired.
+    assert.deepEqual(parseNetworks('bridge'), []);
+    assert.deepEqual(parseNetworks('host'), []);
+    assert.deepEqual(parseNetworks('none'), []);
+    assert.deepEqual(parseNetworks('bridge,host,none'), []);
+  });
+
+  await t.test('keeps user-defined networks, which are the ones that carry information', () => {
+    assert.deepEqual(parseNetworks('bm_default'), ['bm_default']);
+    assert.deepEqual(parseNetworks('bridge,bm_default,none'), ['bm_default']);
+    assert.deepEqual(parseNetworks('a,b'), ['a', 'b']);
+  });
+
+  await t.test('trims whitespace and drops empties rather than emitting blank node ids', () => {
+    assert.deepEqual(parseNetworks(' a , b '), ['a', 'b']);
+    assert.deepEqual(parseNetworks('a,,b'), ['a', 'b']);
+    assert.deepEqual(parseNetworks(','), []);
+  });
+
+  await t.test('a missing or empty value is an empty list, not a crash', () => {
+    // docker ps omits Networks entirely for a container that has none.
+    assert.deepEqual(parseNetworks(undefined), []);
+    assert.deepEqual(parseNetworks(null), []);
+    assert.deepEqual(parseNetworks(''), []);
+  });
+
+  await t.test('the match is exact - a name merely containing a builtin is kept', () => {
+    assert.deepEqual(parseNetworks('bridge-net,my-host,none-such'), ['bridge-net', 'my-host', 'none-such']);
   });
 });

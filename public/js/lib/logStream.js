@@ -7,12 +7,15 @@ const defaultDoc = typeof document === 'undefined' ? null : document;
 // EventSource reconnects forever, and the server spawns a `docker logs` process per connection -
 // for a deleted container that's a permanent reconnect loop leaking child processes. Genuine
 // restarts reconnect within budget (any line resets the count); only a totally silent stream gives up.
-const MAX_CONSECUTIVE_ERRORS = 5;
+export const MAX_CONSECUTIVE_ERRORS = 5;
 
 // How long the tab stays hidden before an open stream gives up its connection - a backgrounded
 // tab otherwise holds a browser connection and a server-side `docker logs -f` child indefinitely.
 // Not immediate: resuming resets the pane (re-tails), so a brief tab-glance shouldn't cost that.
-const HIDDEN_SUSPEND_GRACE_MS = 60_000;
+// Exported only so the default can be asserted: every test injects its own hiddenGraceMs (nobody
+// waits 60s in a unit test), which left the shipped value itself unverified - setting it to 0
+// would re-tail every pane on every tab switch and no test noticed.
+export const HIDDEN_SUSPEND_GRACE_MS = 60_000;
 
 export function createLogStream({
   url,

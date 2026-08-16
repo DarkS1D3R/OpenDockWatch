@@ -191,7 +191,21 @@ async function testHostConnection(host) {
   await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
 }
 
+// Docker's three built-ins. Every container is on one of them, so drawing them in the Flow graph
+// would add an edge from almost every node to a hub that says nothing about how the system is
+// wired - only user-defined networks carry that information.
 const IGNORED_NETWORKS = new Set(['bridge', 'host', 'none']);
+
+// Pulled out of listContainers so it's unit-testable without mocking child_process, the same
+// reason parseLabels/parseHealth/parseMountsList below are separate. It was inline, which put the
+// only thing enforcing IGNORED_NETWORKS inside a function no test can reach - emptying that set
+// survived the entire suite.
+function parseNetworks(networksStr) {
+  return (networksStr || '')
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n && !IGNORED_NETWORKS.has(n));
+}
 
 function parseLabels(labelsStr) {
   const out = {};
@@ -221,10 +235,7 @@ async function listContainers(host) {
     .map((line) => {
       const raw = JSON.parse(line);
       const labels = parseLabels(raw.Labels);
-      const networks = (raw.Networks || '')
-        .split(',')
-        .map((n) => n.trim())
-        .filter((n) => n && !IGNORED_NETWORKS.has(n));
+      const networks = parseNetworks(raw.Networks);
       return {
         id: raw.ID,
         name: raw.Names,
@@ -654,6 +665,7 @@ module.exports = {
   parseMemUsedBytes,
   parseLabels,
   parseHealth,
+  parseNetworks,
   networkEdges,
   dependsOnEdges,
   customDependsOnEdges,
