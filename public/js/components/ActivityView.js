@@ -2,6 +2,7 @@ import { MAX_ACTIVITY_EVENTS } from '../constants.js';
 import { apiGetEvents, apiClearEvents, eventsStreamUrl } from '../api.js';
 import { eventSeverity } from '../format.js';
 import { groupCounts } from '../lib/activityCounts.js';
+import { filterAlerts, filterEvents } from '../lib/activityFilter.js';
 
 // The Activity tab: an alerts column (search + acknowledge) and an events column (SSE-backed
 // search). Mounted fresh (v-if) each time opened, so its own mounted()/beforeUnmount() own the
@@ -20,6 +21,9 @@ export default {
     return {
       alertSearch: '',
       eventSearch: '',
+      // Set by clicking a badge, and deliberately not the same field as the search above it.
+      alertRuleFilter: '',
+      eventActionFilter: '',
       events: [],
       alertsAtTop: true,
       eventsAtTop: true,
@@ -33,31 +37,27 @@ export default {
     hasUnacknowledged() {
       return this.alerts.some((a) => !a.acknowledged);
     },
+    alertView() {
+      return filterAlerts(this.alerts, { search: this.alertSearch, rule: this.alertRuleFilter });
+    },
+    eventView() {
+      return filterEvents(this.events, { search: this.eventSearch, action: this.eventActionFilter });
+    },
     searchedAlerts() {
-      const q = this.alertSearch.trim().toLowerCase();
-      if (!q) return this.alerts;
-      return this.alerts.filter(
-        (a) =>
-          (a.rule || '').toLowerCase().includes(q) ||
-          (a.message || '').toLowerCase().includes(q) ||
-          (a.containerName || '').toLowerCase().includes(q)
-      );
+      return this.alertView.shown;
     },
     searchedEvents() {
-      const q = this.eventSearch.trim().toLowerCase();
-      if (!q) return this.events;
-      return this.events.filter(
-        (e) => (e.containerName || e.containerId || '').toLowerCase().includes(q) || (e.action || '').toLowerCase().includes(q)
-      );
+      return this.eventView.shown;
     },
-    // Counted off the *searched* lists, not the raw ones, so the badges always describe the rows
-    // actually on screen - a breakdown that disagreed with the list under it would be worse than
-    // none. Alerts group by rule and carry their severity for colouring; events group by action.
+    // Counted off the *searched* lists, not the raw ones, so the badges describe the rows the
+    // search left - a breakdown that disagreed with the list under it would be worse than none.
+    // Not off the badge-filtered ones though: see CLAUDE.md. Alerts group by rule and carry their
+    // severity for colouring; events group by action.
     alertCounts() {
-      return groupCounts(this.searchedAlerts, (a) => a.rule, { metaOf: (a) => a.severity });
+      return groupCounts(this.alertView.searched, (a) => a.rule, { metaOf: (a) => a.severity });
     },
     eventCounts() {
-      return groupCounts(this.searchedEvents, (e) => e.action, { metaOf: (e) => e.severity });
+      return groupCounts(this.eventView.searched, (e) => e.action, { metaOf: (e) => e.severity });
     },
   },
   watch: {
@@ -151,14 +151,22 @@ export default {
       if (el) el.scrollTop = 0;
       this.eventsAtTop = true;
     },
-    // Badges double as filter toggles: clicking one sets the search box to its exact key, reusing
-    // the existing substring search rather than a second filter mechanism - clicking the already-
-    // active badge (or its own ✕) clears it back to the unfiltered list.
+    // Badges double as filter toggles, on their own exact-match field rather than the search box -
+    // clicking the active badge clears it. Both filters apply together, so a search can be narrowed
+    // to one rule/action and vice versa.
     toggleAlertFilter(key) {
-      this.alertSearch = this.alertSearch.trim().toLowerCase() === key.toLowerCase() ? '' : key;
+      this.alertRuleFilter = this.alertRuleFilter === key ? '' : key;
     },
     toggleEventFilter(key) {
-      this.eventSearch = this.eventSearch.trim().toLowerCase() === key.toLowerCase() ? '' : key;
+      this.eventActionFilter = this.eventActionFilter === key ? '' : key;
+    },
+    clearAlertFilters() {
+      this.alertSearch = '';
+      this.alertRuleFilter = '';
+    },
+    clearEventFilters() {
+      this.eventSearch = '';
+      this.eventActionFilter = '';
     },
   },
   template: `
@@ -171,8 +179,8 @@ export default {
               v-for="c in alertCounts.shown"
               :key="c.key"
               class="activity-badge"
-              :class="['severity-' + (c.meta || 'warning'), { active: alertSearch.trim().toLowerCase() === c.key.toLowerCase() }]"
-              :title="'Filter by ' + c.key + ' (' + c.count + ')'"
+              :class="['severity-' + (c.meta || 'warning'), { active: alertRuleFilter === c.key }]"
+              :title="(alertRuleFilter === c.key ? 'Stop filtering by ' : 'Filter by ') + c.key + ' (' + c.count + ')'"
               @click="toggleAlertFilter(c.key)"
             >{{ c.key }} <b>{{ c.count }}</b></span>
             <span
@@ -182,7 +190,7 @@ export default {
             >+{{ alertCounts.hidden.length }} more <b>{{ alertCounts.hiddenTotal }}</b></span>
           </div>
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
-          <button v-if="alertSearch" class="small-btn" @click="alertSearch = ''">Clear filters</button>
+          <button v-if="alertSearch || alertRuleFilter" class="small-btn" @click="clearAlertFilters">Clear filters</button>
           <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear activity</button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
@@ -213,8 +221,8 @@ export default {
               v-for="c in eventCounts.shown"
               :key="c.key"
               class="activity-badge"
-              :class="[c.meta ? 'severity-' + c.meta : null, { active: eventSearch.trim().toLowerCase() === c.key.toLowerCase() }]"
-              :title="'Filter by ' + c.key + ' (' + c.count + ')'"
+              :class="[c.meta ? 'severity-' + c.meta : null, { active: eventActionFilter === c.key }]"
+              :title="(eventActionFilter === c.key ? 'Stop filtering by ' : 'Filter by ') + c.key + ' (' + c.count + ')'"
               @click="toggleEventFilter(c.key)"
             >{{ c.key }} <b>{{ c.count }}</b></span>
             <span
@@ -223,7 +231,7 @@ export default {
               :title="eventCounts.hidden.map(h => h.count + ' × ' + h.key).join(', ')"
             >+{{ eventCounts.hidden.length }} more <b>{{ eventCounts.hiddenTotal }}</b></span>
           </div>
-          <button v-if="eventSearch" class="small-btn" @click="eventSearch = ''">Clear filters</button>
+          <button v-if="eventSearch || eventActionFilter" class="small-btn" @click="clearEventFilters">Clear filters</button>
           <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear events</button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
