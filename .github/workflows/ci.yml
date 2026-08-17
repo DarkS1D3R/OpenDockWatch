@@ -39,4 +39,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: docker build -t opendockwatch:ci .
+      - uses: docker/setup-buildx-action@v4
+      # This job exists to prove the image still builds; nothing consumes the result, so
+      # type=cacheonly says exactly that - every step runs, no image is exported. Measured on a
+      # pruned builder: a cold build is ~107s, nearly all of it `apk add python3 make g++` plus
+      # better-sqlite3 compiling from source (there is no musl prebuild - prebuild-install fails
+      # and node-gyp runs, see the Dockerfile). With the cache restored and only the source
+      # changed - the shape of a normal CI run - that drops to ~8s.
+      #
+      # mode=min, not max: measured at 82MB of cache against 200MB, and it *still* reports CACHED
+      # for the deps stage's apk and npm ci. Worth writing down because it reads wrong - min
+      # exports only the final image's layers, but buildkit records enough of the chain for
+      # `COPY --from=deps` to hit without the intermediate stage's own layers being exported.
+      # Both modes restored in the same ~8-10s, so the extra 118MB of cache bought nothing.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=min

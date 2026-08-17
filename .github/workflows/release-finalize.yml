@@ -145,6 +145,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Deliberately uncached, unlike the verification builds in ci.yml and release.yml. This is
+      # the only build whose output anyone actually pulls, it runs a handful of times a year, and
+      # GitHub evicts caches unused for 7 days - so a cache here would almost always be cold
+      # anyway. Paying a couple of minutes for a build with nothing carried over is the right
+      # trade for the published artifact.
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7

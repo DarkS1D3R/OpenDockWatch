@@ -28,7 +28,9 @@ npm run format:check                         # prettier --check .  (what CI runs
 docker compose up -d --build                 # run OpenDockWatch itself in a container
 ```
 
-CI (`.github/workflows/ci.yml`) runs `npm run lint && npm run format:check && npm test`, then a plain `docker build`. Always run the same three before considering a change done.
+CI (`.github/workflows/ci.yml`) runs `npm run lint && npm run format:check && npm test`, plus a parallel job that builds the image. Always run the same three before considering a change done.
+
+**The image builds are cached, and which ones are is a deliberate split.** A cold build was measured at **~107s on a pruned builder**, nearly all of it `apk add python3 make g++` plus better-sqlite3 compiling from source — verified that it really does compile, by building without the toolchain and watching `prebuild-install` fail through to a node-gyp error, so the Dockerfile's comment about there being no musl prebuild is accurate. With a restored layer cache and only the source changed — the shape of a normal CI run — it drops to **~8s**. The two _verification_ builds (`ci.yml`'s `docker-build`, and the one inside `release.yml`'s prepare job) therefore use `cache-from`/`cache-to: type=gha` with `outputs: type=cacheonly`, since nothing consumes the image and it only has to build. **`mode=min`, not `mode=max`** — 82MB of cache against 200MB, and min _still_ reports `CACHED` for the deps stage's `apk` and `npm ci`, which reads wrong (min exports only the final image's layers) but is what buildkit actually does: it records enough of the chain for `COPY --from=deps` to hit without the intermediate stage's layers being exported. Both modes restored in the same ~8-10s, so `max` bought nothing for 118MB more cache. **The build that publishes to Docker Hub (`release-finalize.yml`) is deliberately left uncached**: it is the only build anyone pulls, it runs a handful of times a year, and GitHub evicts caches unused for 7 days, so it would usually be cold regardless.
 
 ## Code comments
 
