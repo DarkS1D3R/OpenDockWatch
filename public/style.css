@@ -334,18 +334,49 @@ body {
   stroke-dasharray: 2, 2;
   pointer-events: none;
 }
-.spark-hover-time {
+/* The hovered values, shown for as long as the pointer is anywhere over the chart. They used to
+   be `title` attributes on the 6px hover dots, which is the wrong mechanism twice over: a native
+   tooltip needs the pointer held still on the element itself for about a second, and it vanishes
+   the moment that element moves - which the dots do on every poll, since the line redraws every
+   5s. Aiming at a 6px target that walks away from you is not a way to read a chart. The crosshair
+   already tracks horizontal position alone (SparkTile.onHover), so this rides along with it. */
+.spark-readout {
   position: absolute;
-  top: -2px;
-  transform: translate(-50%, -100%);
+  top: 6px;
+  margin-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 11px;
+  line-height: 1.45;
   color: var(--text);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 4px 6px;
   white-space: nowrap;
+  /* Must never take the pointer: the mousemove that positions this is on the chart underneath,
+     so a readout that swallowed it would freeze itself the instant it appeared. */
   pointer-events: none;
+  z-index: 2;
+}
+/* Flipped to the near side past the halfway mark rather than clamped at the edge - clamping would
+   park it on top of the very line it is annotating. See hoverReadout in SparkTile.js. */
+.spark-readout-flip {
+  transform: translateX(-100%);
+  margin-left: -8px;
+}
+.spark-readout-time {
+  color: var(--muted);
+}
+.spark-readout-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.spark-readout-value {
+  margin-left: auto;
+  font-weight: 600;
 }
 .spark-axis {
   position: relative;
@@ -548,16 +579,19 @@ body {
   color: #fff;
 }
 
+.container-list-search-wrap {
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 12px;
+}
 .container-list-search {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 6px 10px;
+  padding: 6px 26px 6px 10px;
   font-size: 13px;
   width: 100%;
-  max-width: 320px;
-  margin-bottom: 12px;
 }
 .group-block {
   margin-bottom: 16px;
@@ -763,7 +797,7 @@ table.containers td:nth-child(7) {
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 160px;
 }
@@ -1473,7 +1507,9 @@ table.containers td:nth-child(7) {
 }
 .filter-clear-btn {
   position: absolute;
+  top: 50%;
   right: 4px;
+  transform: translateY(-50%);
   background: none;
   border: none;
   color: var(--muted);
@@ -1484,6 +1520,12 @@ table.containers td:nth-child(7) {
 }
 .filter-clear-btn:hover {
   color: var(--text);
+}
+/* Shared by every other search/filter box (List, Flow, Logs side menu, Activity's alert/event
+   search) that wants the same ✕-to-clear .filter-clear-btn the Log Viewer's filter has, minus its
+   left 🔍 icon - just a positioning context for the button to sit inside the input's right edge. */
+.search-clear-wrap {
+  position: relative;
 }
 /* The plain Unicode arrow renders as a thin, hard-to-read stroke at .small-btn's 11px - unlike the
    emoji icons on the other buttons here (🕐, 🔍, ☰), which already carry enough visual weight at
@@ -1502,6 +1544,13 @@ table.containers td:nth-child(7) {
 .small-btn.active {
   background: var(--accent);
   border-color: var(--accent);
+  color: #fff;
+}
+/* An armed ConfirmButton. Filled rather than outlined, so the one button on screen that will do
+   something destructive on the next click doesn't read as just another control in the row. */
+.confirm-btn.armed {
+  background: var(--danger);
+  border-color: var(--danger);
   color: #fff;
 }
 .filter-error-text {
@@ -1891,15 +1940,18 @@ table.containers td:nth-child(7) {
 .logs-tab-viewmode .small-btn {
   flex: 1;
 }
+.logs-tab-search-wrap {
+  width: 100%;
+  margin-bottom: 8px;
+}
 .logs-tab-search {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 100%;
-  margin-bottom: 8px;
 }
 .logs-tab-wrap-toggle {
   width: 100%;
@@ -2011,15 +2063,18 @@ button.log-pane-main-btn.active:hover {
 .activity-column .log-section-header {
   margin: 0;
 }
+.activity-search-wrap {
+  width: 100%;
+  margin-bottom: 10px;
+}
 .activity-search {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 100%;
-  margin-bottom: 10px;
 }
 .activity-list-wrap {
   position: relative;
@@ -2105,6 +2160,9 @@ button.log-pane-main-btn.active:hover {
 .activity-column .log-section-header {
   gap: 10px;
   margin-bottom: 18px;
+  /* Up to three buttons (Acknowledge all / Clear filters / Clear alerts or events) plus the
+     badge row can outgrow a narrow column - wrap instead of overflowing it. */
+  flex-wrap: wrap;
 }
 .activity-column .log-section-header h3 {
   margin-bottom: 0;
@@ -2120,6 +2178,20 @@ button.log-pane-main-btn.active:hover {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+  cursor: pointer;
+}
+.activity-badge:hover {
+  border-color: var(--accent);
+}
+/* Doubles as a filter toggle - clicking a badge sets the search box to its key, so the active one
+   is whichever badge's key is the current search text (see ActivityView's toggle*Filter methods). */
+.activity-badge.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+.activity-badge-more:hover {
+  border-color: var(--border);
 }
 /* The count itself is the part being scanned for, so it gets the readable colour and the weight. */
 .activity-badge b {
@@ -2137,9 +2209,11 @@ button.log-pane-main-btn.active:hover {
 .activity-badge.severity-ok {
   border-left-color: var(--ok);
 }
+/* The +N "more" badge aggregates several keys at once - there's no single filter it can toggle. */
 .activity-badge-more {
   border-left-width: 1px;
   font-style: italic;
+  cursor: default;
 }
 /* Event rows get the same left accent the alert rows carry, via an inset shadow on the first cell
    rather than a border - the events table is border-collapse, where a per-cell border-left fights
@@ -2200,7 +2274,7 @@ button.log-pane-main-btn.active:hover {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  width: min(1000px, 100%);
+  width: min(80vw, 100%);
   max-height: 100%;
   display: flex;
   flex-direction: column;

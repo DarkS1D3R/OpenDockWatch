@@ -12,8 +12,8 @@ const V_GRID_DIVISIONS = 10;
 const V_GRID_DIVISIONS_DETAILED = 20;
 
 // One metric tile: header, optional corner box, sparkline SVG (primary + optional secondary
-// line sharing one peak), hover crosshair, x-axis, legend. Hover is a controlled prop (parent
-// owns one shared hoverIndex) so every tile's crosshair moves together. See CLAUDE.md.
+// line sharing one peak), hover crosshair + readout, x-axis, legend. Hover is a controlled prop
+// (parent owns one shared hoverIndex) so every tile's crosshair moves together. See CLAUDE.md.
 export default {
   name: 'SparkTile',
   props: {
@@ -21,12 +21,12 @@ export default {
     label: { type: String, required: true }, // host-tile-label text, e.g. "16 CPU" or "16.4 GB"
     samples: { type: Array, required: true }, // raw primary samples, unpadded
     secondarySamples: { type: Array, default: null }, // raw second-series samples, unpadded; null/omitted hides that layer entirely
-    primaryLabel: { type: String, default: 'Docker' }, // hover-dot title + legend text for the primary series
-    secondaryLabel: { type: String, default: 'host total' }, // hover-dot title + legend text for the second series
+    primaryLabel: { type: String, default: 'Docker' }, // hover-readout + legend text for the primary series
+    secondaryLabel: { type: String, default: 'host total' }, // hover-readout + legend text for the second series
     hostTotalLabel: { type: String, default: null }, // precomputed "host total" box text; null hides the box
     hostTotalHeading: { type: String, default: 'host total' }, // corner-box heading - see hostMemory.js for the LXC-divergence case
     extraHostLabel: { type: String, default: null }, // optional small line under the corner box (e.g. a demoted physical-host total)
-    formatValue: { type: Function, required: true }, // raw sample -> display string, used for now/avg/peak and dot titles
+    formatValue: { type: Function, required: true }, // raw sample -> display string, used for now/avg/peak and the hover readout
     sampleTimes: { type: Array, default: () => [] }, // bucket timestamps (ms), unpadded, aligned 1:1 with `samples`
     hoverIndex: { type: Number, default: null }, // shared hover position, owned by the parent - see HostCard
     // Total chart width in slots - samples are right-aligned into this many, so a series shorter
@@ -110,6 +110,32 @@ export default {
       const t = this.timeSlots[this.hoverIndex];
       return t == null ? null : this.formatTime(t);
     },
+    // The values behind the crosshair, as a readout that shows the whole time the pointer is over
+    // the chart. They used to be `title` attributes on the 6px hover dots, which made reading one
+    // an exercise in aiming at a moving target - see the CSS note on .spark-readout.
+    hoverReadout() {
+      if (!this.hoverPts) return null;
+      const rows = [];
+      if (this.hoverPts.primary) {
+        rows.push({
+          key: 'p',
+          label: this.primaryLabel,
+          value: this.formatValue(this.hoverPts.primary.v),
+          swatch: 'bar-swatch-' + this.variant,
+        });
+      }
+      if (this.hoverPts.secondary) {
+        rows.push({
+          key: 's',
+          label: this.secondaryLabel,
+          value: this.formatValue(this.hoverPts.secondary.v),
+          swatch: 'bar-swatch-' + this.variant + '-alt',
+        });
+      }
+      // Past halfway the readout would run off the right edge, so it swaps to the other side of
+      // the crosshair. Clamping instead would let it sit on top of the line it is annotating.
+      return { x: this.hoverPts.x, flip: this.hoverPts.x > 50, time: this.hoverTimeLabel, rows };
+    },
   },
   methods: {
     onHover(event) {
@@ -179,25 +205,36 @@ export default {
             vector-effect="non-scaling-stroke"
           ></line>
         </svg>
+        <!-- No title attributes on any of these: the dot is the visual marker, the readout below
+             is what carries the numbers. A native tooltip here would need the pointer parked on a
+             6px target and would fight the readout for the same hover. -->
         <span
           v-if="primaryPaths.dot && !hoverPts"
           :class="'spark-dot spark-dot-' + variant"
           :style="{ left: primaryPaths.dot.x + '%', top: (primaryPaths.dot.y / 30 * 100) + '%' }"
-          :title="formatValue(now)"
         ></span>
         <span
           v-if="hoverPts && hoverPts.primary"
           :class="'spark-dot spark-dot-' + variant"
           :style="{ left: hoverPts.primary.x + '%', top: (hoverPts.primary.y / 30 * 100) + '%' }"
-          :title="primaryLabel + ': ' + formatValue(hoverPts.primary.v)"
         ></span>
         <span
           v-if="hoverPts && hoverPts.secondary"
           :class="'spark-dot spark-dot-' + variant + '-alt'"
           :style="{ left: hoverPts.secondary.x + '%', top: (hoverPts.secondary.y / 30 * 100) + '%' }"
-          :title="secondaryLabel + ': ' + formatValue(hoverPts.secondary.v)"
         ></span>
-        <span v-if="hoverPts && hoverTimeLabel" class="spark-hover-time" :style="{ left: hoverPts.x + '%' }">{{ hoverTimeLabel }}</span>
+        <div
+          v-if="hoverReadout"
+          class="spark-readout"
+          :class="{ 'spark-readout-flip': hoverReadout.flip }"
+          :style="{ left: hoverReadout.x + '%' }"
+        >
+          <span v-if="hoverReadout.time" class="spark-readout-time">{{ hoverReadout.time }}</span>
+          <span v-for="row in hoverReadout.rows" :key="row.key" class="spark-readout-row">
+            <span class="bar-swatch" :class="row.swatch"></span>{{ row.label }}
+            <strong class="spark-readout-value">{{ row.value }}</strong>
+          </span>
+        </div>
       </div>
       <div class="spark-axis">
         <span

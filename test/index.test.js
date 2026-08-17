@@ -657,6 +657,82 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
   });
 });
 
+// The Activity tab's "Clear" buttons over HTTP: that each route reaches the right db call for the
+// host it was given, and answers a bad one properly. What a clear does to the rows - soft, scoped,
+// and what stays visible to the cooldown and the restart counters - is db.test.js's job, not a
+// second copy here. Auth is covered structurally: see the requireAdmin walk at the top of the file.
+test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const now = Date.now();
+
+  await t.test('DELETE /alerts 400s without a hostId - a Clear button acts on one host, never all of them', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.delete('/api/alerts')).status, 400);
+  });
+
+  await t.test('admin clears alerts and events for the host, and reports what it cleared', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    db.insertAlert({
+      ts: now,
+      hostId,
+      containerId: 'aaaaaaaaaaaa',
+      containerName: 'web',
+      rule: 'container_cpu',
+      severity: 'warning',
+      message: 'x',
+    });
+    db.insertEvent({ hostId, containerId: 'aaaaaaaaaaaa', containerName: 'web', action: 'start', ts: now, rawJson: '{}' });
+
+    // Other test blocks in this file seed alerts on the real host too, so the pre-clear count
+    // isn't necessarily just the one inserted above - read it rather than assume it.
+    const beforeCount = (await admin.get(`/api/alerts?hostId=${hostId}`)).body.length;
+    assert.ok(beforeCount >= 1, 'nothing to clear - the seed above did not land');
+
+    const clearAlerts = await admin.delete(`/api/alerts?hostId=${hostId}`);
+    assert.equal(clearAlerts.status, 200);
+    assert.equal(clearAlerts.body.count, beforeCount);
+    assert.equal((await admin.get(`/api/alerts?hostId=${hostId}`)).body.length, 0);
+
+    const beforeEventCount = (await admin.get(`/api/hosts/${hostId}/events`)).body.length;
+    assert.ok(beforeEventCount >= 1, 'nothing to clear - the seed above did not land');
+
+    const clearEvents = await admin.delete(`/api/hosts/${hostId}/events`);
+    assert.equal(clearEvents.status, 200);
+    assert.equal(clearEvents.body.count, beforeEventCount);
+    assert.equal((await admin.get(`/api/hosts/${hostId}/events`)).body.length, 0);
+  });
+
+  // The two clears scope their host differently - a path segment for events, ?hostId= for alerts -
+  // and used to answer an unknown host differently with it: 404 from requireHost, versus a 200 and
+  // a count of 0 for a typo'd id that matched no rows because no such host was ever monitored.
+  await t.test('both clears 404 for an unknown host', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.delete(`/api/hosts/${FAKE_HOST_ID}/events`)).status, 404);
+    assert.equal((await admin.delete(`/api/alerts?hostId=${FAKE_HOST_ID}`)).status, 404);
+  });
+
+  // cleared_at records when a clear happened; only the audit log records who, and it is the one
+  // table a clear doesn't touch. The subtest above already issued one of each as ADMIN_USER.
+  await t.test('both clears leave an audit row naming the admin who ran them', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const rows = (await admin.get(`/api/audit?hostId=${hostId}`)).body;
+    for (const action of ['clear_alerts', 'clear_events']) {
+      const row = rows.find((r) => r.action === action);
+      assert.ok(row, `no audit row for ${action}`);
+      assert.equal(row.username, ADMIN_USER);
+      assert.equal(row.result, 'ok');
+      assert.equal(row.container_id, null, 'a clear is host-wide, not about one container');
+    }
+  });
+
+  // The manual-stop/start suppression in alerts.js reads the same table by action, and a clear
+  // row that landed in either count would suppress a real crash_loop or container_crashed alert.
+  await t.test('a clear row cannot be read as a manual container action', () => {
+    assert.equal(db.countManualStopsSince(hostId, 'aaaaaaaaaaaa', 0), 0);
+    assert.equal(db.countManualStartsSince(hostId, 'aaaaaaaaaaaa', 0), 0);
+  });
+});
+
 // A page load is ~44 separate requests because there is no build step, and every one of them used
 // to be a conditional round trip. These cover the two halves of the fix: assets are cacheable
 // forever under a version-pinned URL, and the HTML that points at them never is.

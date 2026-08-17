@@ -249,7 +249,10 @@ export default {
         <button @click="exportFlowPng" title="Exports exactly what's on screen right now - zoom/pan in first to crop it">Export PNG</button>
         <button @click="exportFlowSvg" title="Vector export of the whole graph - no size ceiling, good for hosts with a lot of compose projects">Export SVG</button>
         <span class="toolbar-sep"></span>
-        <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
+        <div class="search-clear-wrap">
+          <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
+          <button v-if="flowFilterText" class="filter-clear-btn" @click="flowFilterText = ''" title="Clear filter">✕</button>
+        </div>
         <span class="toolbar-sep"></span>
         <template v-if="flowMode === 'graph'">
           <label class="edge-toggle"><input type="checkbox" v-model="edgeFilters.dependsOn" /> depends-on</label>

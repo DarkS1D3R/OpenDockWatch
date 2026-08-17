@@ -102,6 +102,15 @@ function requireHost(req, res, next) {
   next();
 }
 
+// Same 400/404 pair for the routes that scope by ?hostId= rather than a path segment, so a typo'd
+// host id can't come back 200 having done nothing. Sets no req.odwHost: these routes only ever
+// hand the id to sqlite, never to the docker CLI, so there is nothing to resolve it to.
+function requireHostQuery(req, res, next) {
+  if (!req.query.hostId) return res.status(400).json({ error: 'hostId required' });
+  if (!getHost(req.query.hostId)) return res.status(404).json({ error: 'unknown host' });
+  next();
+}
+
 // A browser allows ~6 connections per origin over HTTP/1.1, some held open indefinitely by
 // design (SSE streams) - a request that never answers holds a slot until the tab can't issue
 // any request at all. So: answer, always, even 504. SSE routes are exempt by path suffix.
@@ -673,6 +682,29 @@ api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   );
 });
 
+// The clears are soft, so `cleared_at` already records when - this records *who*, which is the
+// audit question and the one thing that column can't answer. No container, and no pending/ok pair
+// either: unlike a container action the delete is synchronous, so there is no window to report.
+function auditClear(req, hostId, action) {
+  db.insertAuditLog({
+    ts: Date.now(),
+    username: req.session.username || null,
+    hostId,
+    containerId: null,
+    containerName: null,
+    action,
+    result: 'ok',
+    error: null,
+  });
+}
+
+api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
+  const count = db.clearEvents(req.params.hostId);
+  auditClear(req, req.params.hostId, 'clear_events');
+  logger.info('events.clear', { host: req.params.hostId, user: req.session.username, count });
+  res.json({ ok: true, count });
+});
+
 // Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
 // the Activity tab is open, so "which streams are actually open right now" is worth being able to
 // reconstruct from the log when the UI goes unresponsive. See CLAUDE.md's connection budget.
@@ -711,6 +743,14 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   const hostId = req.query.hostId;
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.ackAllAlerts(hostId);
+  res.json({ ok: true, count });
+});
+
+api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
+  const hostId = req.query.hostId;
+  const count = db.clearAlerts(hostId);
+  auditClear(req, hostId, 'clear_alerts');
+  logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });
 

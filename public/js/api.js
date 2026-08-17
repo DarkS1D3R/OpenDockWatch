@@ -130,12 +130,20 @@ export function eventsStreamUrl(hostId) {
   return `/api/hosts/${hostId}/events/stream`;
 }
 
+export async function apiClearEvents(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/events`, { method: 'DELETE' }));
+}
+
 export async function apiAckAlert(id) {
   return jsonOrThrow(await apiFetch(`/api/alerts/${id}/ack`, { method: 'POST' }));
 }
 
 export async function apiAckAllAlerts(hostId) {
   return jsonOrThrow(await apiFetch(`/api/alerts/ack-all?hostId=${encodeURIComponent(hostId)}`, { method: 'POST' }));
+}
+
+export async function apiClearAlerts(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/alerts?hostId=${encodeURIComponent(hostId)}`, { method: 'DELETE' }));
 }
 
 export async function apiGetDefaultView() {

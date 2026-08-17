@@ -66,7 +66,10 @@ export default {
   },
   template: `
     <div>
-      <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
+      <div class="search-clear-wrap container-list-search-wrap">
+        <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
+        <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+      </div>
       <p v-if="search.trim() && !filteredGroups.length" class="muted">No containers match "{{ search.trim() }}".</p>
       <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="group-block">
         <div class="group-header" @click="toggleGroup(groupName)">

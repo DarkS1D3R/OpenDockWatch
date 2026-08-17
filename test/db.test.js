@@ -91,6 +91,128 @@ test('insertMetrics', async (t) => {
   });
 });
 
+// clearEvents is a soft delete for the same reason clearAlerts below is: the events table is the
+// source for the crash_loop rule and the List view's restartCount1h, so a hard delete empties a
+// list *and* silently resets both - a container mid-crash-loop stops being detected as one.
+test('clearEvents hides events without losing the restart history', async (t) => {
+  const CLEAR_HOST = 'db-test-clear-events-host';
+  const OTHER_HOST = 'db-test-clear-events-other';
+  const CONTAINER = 'dddddddddddd';
+  const event = (hostId, overrides = {}) => ({
+    hostId,
+    containerId: CONTAINER,
+    containerName: 'web',
+    action: 'restart',
+    ts: (nextTs += 1000),
+    rawJson: '{}',
+    ...overrides,
+  });
+
+  await t.test('cleared events leave the feed, scoped to one host', () => {
+    db.insertEvent(event(CLEAR_HOST));
+    db.insertEvent(event(CLEAR_HOST, { action: 'start' }));
+    db.insertEvent(event(OTHER_HOST));
+
+    assert.equal(db.getEvents(CLEAR_HOST).length, 2);
+    assert.equal(db.clearEvents(CLEAR_HOST), 2, 'changes should count the rows actually cleared');
+    assert.equal(db.getEvents(CLEAR_HOST).length, 0);
+    assert.equal(db.getEvents(OTHER_HOST).length, 1, "clearing one host cleared another host's events");
+    assert.equal(db.clearEvents(CLEAR_HOST), 0, 'an already-cleared row must not be counted again');
+  });
+
+  // The whole point of the soft delete: both restart counters are what the container did, not what
+  // the Activity tab is showing.
+  await t.test('the restart counters still see the cleared events', () => {
+    assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2, 'clearing reset crash-loop detection');
+    assert.equal(db.getRestartCountsByContainer(CLEAR_HOST, 0).get(CONTAINER), 2, 'clearing walked restartCount1h back to zero');
+  });
+
+  await t.test('events arriving after a clear are visible again', () => {
+    db.insertEvent(event(CLEAR_HOST, { action: 'die' }));
+    assert.equal(db.getEvents(CLEAR_HOST).length, 1);
+    assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2, 'a die is not a restart');
+  });
+
+  // The plain (host_id, ts) index would walk every cleared row to answer this, which right after a
+  // Clear is the host's whole retained history for an empty page. See the partial index in db.js.
+  await t.test('getEvents plans against the partial index', () => {
+    const plan = db.client
+      .prepare('EXPLAIN QUERY PLAN SELECT * FROM events WHERE host_id = ? AND ts >= ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?')
+      .all(CLEAR_HOST, 0, 200);
+    const detail = plan.map((r) => r.detail).join(' | ');
+    assert.match(detail, /idx_events_host_ts_active/, `getEvents no longer uses the partial index: ${detail}`);
+    assert.doesNotMatch(detail, /TEMP B-TREE/, `getEvents is sorting rather than walking the index: ${detail}`);
+  });
+});
+
+// clearAlerts is a soft delete, and the reason is the last subtest here: the alerts table is also
+// alerts.js's cooldown store (getLastAlertFireTs), so a hard delete re-arms every rule on the host
+// and a still-breaching one re-fires - webhook included - on the next 5s poll.
+test('clearAlerts hides alerts without re-arming the cooldown', async (t) => {
+  const CLEAR_HOST = 'db-test-clear-host';
+  const OTHER_HOST = 'db-test-clear-other';
+  const alert = (hostId, overrides = {}) => ({
+    ts: (nextTs += 1000),
+    hostId,
+    containerId: 'cccccccccccc',
+    containerName: 'web',
+    rule: 'container_cpu',
+    severity: 'warning',
+    message: 'cpu high',
+    ...overrides,
+  });
+
+  await t.test('cleared alerts leave the list, the open count and the per-container count', () => {
+    db.insertAlert(alert(CLEAR_HOST));
+    db.insertAlert(alert(CLEAR_HOST, { rule: 'container_mem' }));
+    db.insertAlert(alert(OTHER_HOST));
+
+    assert.equal(db.getAlerts(CLEAR_HOST).length, 2);
+    assert.equal(db.clearAlerts(CLEAR_HOST), 2, 'changes should count the rows actually cleared');
+    assert.equal(db.getAlerts(CLEAR_HOST).length, 0);
+    assert.equal(db.countOpenAlerts(CLEAR_HOST), 0);
+    assert.equal(db.getOpenAlertCountsByContainer(CLEAR_HOST).size, 0);
+    assert.equal(db.getAlerts(null).filter((a) => a.host_id === CLEAR_HOST).length, 0, 'the all-hosts list still shows cleared rows');
+  });
+
+  await t.test('scoped to one host, and clearing twice is a no-op', () => {
+    assert.equal(db.getAlerts(OTHER_HOST).length, 1, "clearing one host cleared another host's alerts");
+    assert.equal(db.clearAlerts(CLEAR_HOST), 0, 'an already-cleared row must not be counted again');
+  });
+
+  await t.test('a cleared alert can no longer be acknowledged', () => {
+    const id = db.insertAlert(alert(CLEAR_HOST, { rule: 'crash_loop' }));
+    db.clearAlerts(CLEAR_HOST);
+    db.ackAlert(id);
+    assert.equal(db.client.prepare('SELECT acknowledged FROM alerts WHERE id = ?').get(id).acknowledged, 0);
+    assert.equal(db.ackAllAlerts(CLEAR_HOST), 0);
+  });
+
+  // The whole point of the soft delete.
+  await t.test('the cooldown still sees the cleared alert', () => {
+    const ts = (nextTs += 1000);
+    db.insertAlert(alert(CLEAR_HOST, { rule: 'host_cpu', containerId: null, ts }));
+    db.clearAlerts(CLEAR_HOST);
+    assert.equal(db.getAlerts(CLEAR_HOST).length, 0);
+    assert.equal(
+      db.getLastAlertFireTs(CLEAR_HOST, null, 'host_cpu'),
+      ts,
+      'clearing re-armed the cooldown - the alert will re-fire and re-notify'
+    );
+  });
+
+  // A cleared alert is gone from the UI, so delivering it late would be a notification for
+  // something nobody can see any more. A hard delete had the same effect, by losing the row.
+  await t.test('a cleared alert drops out of the webhook retry queue', () => {
+    const id = db.insertAlert(alert(CLEAR_HOST, { rule: 'unhealthy' }));
+    db.markWebhookAttemptFailed(id);
+    const pending = () => db.getPendingWebhookRetries({ maxAttempts: 5, sinceTs: 0, limit: 10 }).some((a) => a.id === id);
+    assert.equal(pending(), true);
+    db.clearAlerts(CLEAR_HOST);
+    assert.equal(pending(), false);
+  });
+});
+
 test('container_alert_rules CRUD', async (t) => {
   await t.test('insertContainerAlertRule assigns increasing sort_order, returned in order by getContainerAlertRules', () => {
     const a = db.insertContainerAlertRule({ matchType: 'name', matchValue: 'redis' });
