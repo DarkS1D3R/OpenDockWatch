@@ -657,43 +657,24 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
   });
 });
 
-// The Activity tab's "Clear" buttons - a full delete, not the age-based retention prune. Scoping
-// is the thing worth getting wrong here (a clear on one host must not touch another's rows).
+// The Activity tab's "Clear" buttons over HTTP: that each route reaches the right db call for the
+// host it was given, and answers a bad one properly. What a clear does to the rows - soft, scoped,
+// and what stays visible to the cooldown and the restart counters - is db.test.js's job, not a
+// second copy here. Auth is covered structurally: see the requireAdmin walk at the top of the file.
 test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async (t) => {
   const hostId = loadHosts()[0].id;
-  const OTHER_HOST = '__index_test_clear_other_host__';
   const now = Date.now();
-
-  await t.test('needs a session', async () => {
-    assert.equal((await request(app).delete(`/api/alerts?hostId=${hostId}`)).status, 401);
-    assert.equal((await request(app).delete(`/api/hosts/${hostId}/events`)).status, 401);
-  });
-
-  await t.test('viewer is blocked from both', async () => {
-    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
-    assert.equal((await viewer.delete(`/api/alerts?hostId=${hostId}`)).status, 403);
-    assert.equal((await viewer.delete(`/api/hosts/${hostId}/events`)).status, 403);
-  });
 
   await t.test('DELETE /alerts 400s without a hostId - a Clear button acts on one host, never all of them', async () => {
     const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     assert.equal((await admin.delete('/api/alerts')).status, 400);
   });
 
-  await t.test('admin clears alerts and events for the host, scoped to it', async () => {
+  await t.test('admin clears alerts and events for the host, and reports what it cleared', async () => {
     const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     db.insertAlert({
       ts: now,
       hostId,
-      containerId: 'aaaaaaaaaaaa',
-      containerName: 'web',
-      rule: 'container_cpu',
-      severity: 'warning',
-      message: 'x',
-    });
-    db.insertAlert({
-      ts: now,
-      hostId: OTHER_HOST,
       containerId: 'aaaaaaaaaaaa',
       containerName: 'web',
       rule: 'container_cpu',
@@ -711,11 +692,6 @@ test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async 
     assert.equal(clearAlerts.status, 200);
     assert.equal(clearAlerts.body.count, beforeCount);
     assert.equal((await admin.get(`/api/alerts?hostId=${hostId}`)).body.length, 0);
-    assert.equal(
-      (await admin.get(`/api/alerts?hostId=${OTHER_HOST}`)).body.length,
-      1,
-      "clearing one host deleted the other host's alert too"
-    );
 
     const beforeEventCount = (await admin.get(`/api/hosts/${hostId}/events`)).body.length;
     assert.ok(beforeEventCount >= 1, 'nothing to clear - the seed above did not land');
