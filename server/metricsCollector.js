@@ -1,15 +1,10 @@
 const { loadHosts } = require('./hosts');
-const {
-  listContainers,
-  getStats,
-  getHostInfo,
-  getDiskUsage,
-  checkHost,
-  lastCheckError,
-  parseMemUsedBytes,
-  computeIoRates,
-  forgetHost: forgetDockerHost,
-} = require('./docker');
+// Everything pollHost shells out with goes through the module object rather than a destructured
+// binding, so test/metricsCollector.test.js can swap it for a stub and drive the reachability
+// branches - which now depend on which of these calls fail - without a docker daemon. The pure
+// helpers below have nothing to mock and stay destructured.
+const docker = require('./docker');
+const { getDiskUsage, parseMemUsedBytes, computeIoRates, forgetHost: forgetDockerHost } = require('./docker');
 const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
@@ -96,17 +91,27 @@ function sampleLocalSystemUsage(hostId) {
   return { cpuPercent, memUsedBytes: mem.usedBytes, memTotalBytes: mem.totalBytes };
 }
 
-async function pollHost(host) {
-  const prev = snapshots.get(host.id);
-  const reachable = await checkHost(host);
-  const wasReachable = prev ? prev.reachable : true;
+// Everything a poll has to do once it knows the host is down, in one place because it has three
+// callers and the alert must fire exactly once per poll. The previous poll's containers/stats are
+// cleared here rather than kept: unlike a slow poll, an unreachable host has nothing on the way.
+function markUnreachable(snapshot, host, wasReachable) {
+  snapshot.reachable = false;
+  snapshot.containers = [];
+  snapshot.stats = {};
+  snapshot.hostInfo = null;
+  snapshot.statsTs = undefined;
   // On the transition only, never per poll: the alert says "became unreachable" and stops there,
   // but "timed out after 20000ms" and "Permission denied (publickey)" call for entirely different
-  // responses. checkHost keeps the reason behind its boolean - see lastCheckError.
-  if (wasReachable && !reachable) {
-    logger.warn('host.unreachable', { host: host.id, error: lastCheckError(host.id) || 'no error reported' });
+  // responses. The reason is kept behind the boolean in docker.js - see lastCheckError.
+  if (wasReachable) {
+    logger.warn('host.unreachable', { host: host.id, error: docker.lastCheckError(host.id) || 'no error reported' });
   }
-  alerts.handleHostReachability(host.id, host.name || host.id, reachable, wasReachable);
+  alerts.handleHostReachability(host.id, host.name || host.id, false, wasReachable);
+}
+
+async function pollHost(host) {
+  const prev = snapshots.get(host.id);
+  const wasReachable = prev ? prev.reachable : true;
 
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
   // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
@@ -116,27 +121,60 @@ async function pollHost(host) {
   // Keep serving the previous poll's containers/stats/hostInfo until fresh values are ready,
   // rather than clearing them up front - the docker calls below take a noticeable fraction of a
   // poll interval, and a request landing in that window would otherwise flash "-" for every row.
-  const keepPrev = reachable && prev;
   const snapshot = {
-    containers: keepPrev ? prev.containers : [],
-    stats: keepPrev ? prev.stats : {},
-    hostInfo: keepPrev ? prev.hostInfo : null,
+    containers: prev ? prev.containers : [],
+    stats: prev ? prev.stats : {},
+    hostInfo: prev ? prev.hostInfo : null,
     diskUsage: prev ? prev.diskUsage : null,
-    statsTs: keepPrev ? prev.statsTs : undefined,
-    reachable,
+    statsTs: prev ? prev.statsTs : undefined,
+    reachable: wasReachable,
     ts: Date.now(),
   };
   snapshots.set(host.id, snapshot);
-  if (!reachable) return;
+
+  // The probe runs only for a host already believed to be down. A host that is up establishes its
+  // own reachability through the calls below - it was making them anyway - and `docker version`
+  // sitting serially in front of them cost ~190ms of every 5s poll to re-answer a question they
+  // answer for free. The asymmetry is the point: against a host that *is* down, one probe failing
+  // fast is cheaper than three calls each waiting out their own timeout, so the probe stays for
+  // exactly that case and a host stuck offline never advances past this line.
+  if (!wasReachable && !(await docker.checkHost(host))) {
+    markUnreachable(snapshot, host, wasReachable);
+    return;
+  }
+
+  // Read before the await so it reflects the stream as of this poll's start, and kept alongside
+  // the other two so the fallback still runs in parallel rather than after them. `docker stats
+  // --no-stream` measured at 1.3-2.0s against a two-container daemon - a third of the poll
+  // interval, and a concurrency slot held for all of it - so the steady-state path is
+  // statsWatcher's long-lived stream and the one-shot call is only what a dead stream costs.
+  const streamed = statsWatcher.getSamples(host.id);
+  // allSettled, not all: reachability is now derived from these, and "one of the three failed" is
+  // not the same fact as "the daemon is gone". Failing all three is the second fact; anything less
+  // is a failed poll on a host that is demonstrably still answering, and firing host_unreachable
+  // for it would be a worse answer than the probe used to give.
+  const results = await Promise.allSettled([docker.listContainers(host), streamed || docker.getStats(host), docker.getHostInfo(host)]);
+  const failure = results.find((r) => r.status === 'rejected');
+
+  if (!results.some((r) => r.status === 'fulfilled')) {
+    docker.noteHostFailure(host.id, failure.reason);
+    markUnreachable(snapshot, host, wasReachable);
+    return;
+  }
+  docker.noteHostReachable(host.id);
+  snapshot.reachable = true;
+  alerts.handleHostReachability(host.id, host.name || host.id, true, wasReachable);
+
+  // A partial failure leaves the snapshot on the previous poll's values, exactly as the single
+  // try/catch around all three used to: a half-updated poll would diff this poll's stats against
+  // themselves and write an instant of history that never happened.
+  if (failure) {
+    logger.error('metrics.poll.failed', { host: host.id, error: failure.reason.stderr || failure.reason.message });
+    return;
+  }
 
   try {
-    // Read before the await so it reflects the stream as of this poll's start, and kept in the
-    // Promise.all so the fallback still runs alongside the other two rather than after them.
-    // `docker stats --no-stream` measured at 1.3-2.0s against a two-container daemon - a third of
-    // the poll interval, and a concurrency slot held for all of it - so the steady-state path is
-    // statsWatcher's long-lived stream and the one-shot call is only what a dead stream costs.
-    const streamed = statsWatcher.getSamples(host.id);
-    const [containers, stats, hostInfo] = await Promise.all([listContainers(host), streamed || getStats(host), getHostInfo(host)]);
+    const [containers, stats, hostInfo] = results.map((r) => r.value);
     snapshot.containers = containers;
     snapshot.stats = stats;
     snapshot.hostInfo = hostInfo;
@@ -394,6 +432,10 @@ module.exports = {
   getLastPollCompletedTs,
   getHostCount,
   takePollStats,
+  // Exported for test/metricsCollector.test.js only: reachability is now derived from which of
+  // the poll's own calls fail, and the branches that follow from that (the probe gate, the
+  // exactly-once alert, what the snapshot keeps) are worth asserting directly.
+  pollHost,
   nextDiskDelay,
   POLL_MS,
   DISK_POLL_MS,

@@ -170,16 +170,32 @@ function lastCheckError(hostId) {
   return lastCheckErrors.get(hostId) || null;
 }
 
+// Written from two places, which is why they are functions rather than inline map writes: the
+// probe below, and metricsCollector when a host's *ordinary* poll calls all fail. A reachable host
+// no longer runs the probe at all, so that second path is where most of these reasons now come
+// from - and `lastCheckError` has to keep answering either way.
+function noteHostFailure(hostId, err) {
+  // stderr first: `docker` puts the useful line there ("Permission denied (publickey)"), while
+  // err.message is the generic "Command failed". A timeout has neither and gets its own message
+  // from dockerCommandError.
+  lastCheckErrors.set(hostId, (err.stderr || '').trim() || err.message);
+}
+
+function noteHostReachable(hostId) {
+  lastCheckErrors.delete(hostId);
+}
+
+// Only run against a host already believed to be down - see pollHost. A host that is up proves it
+// with the calls the poll was making anyway, and this probe measured ~190ms sitting serially in
+// front of every one of them. Against a host that is down it is the cheap option instead: one
+// process that fails fast, rather than three each waiting out their own timeout.
 async function checkHost(host) {
   try {
     await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
-    lastCheckErrors.delete(host.id);
+    noteHostReachable(host.id);
     return true;
   } catch (err) {
-    // stderr first: `docker` puts the useful line there ("Permission denied (publickey)"), while
-    // err.message is the generic "Command failed". A timeout has neither and gets its own message
-    // from dockerCommandError.
-    lastCheckErrors.set(host.id, (err.stderr || '').trim() || err.message);
+    noteHostFailure(host.id, err);
     return false;
   }
 }
@@ -695,6 +711,8 @@ module.exports = {
   dockerCommandError,
   poolStats,
   lastCheckError,
+  noteHostFailure,
+  noteHostReachable,
   DISK_USAGE_TIMEOUT_MS,
   CONTAINER_ACTION_TIMEOUT_MS,
 };
