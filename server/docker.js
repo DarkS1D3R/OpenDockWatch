@@ -1,4 +1,5 @@
 const { execFile, spawn } = require('child_process');
+const logger = require('./logger');
 
 const CMD_TIMEOUT_MS = 10_000;
 const ALLOWED_ACTIONS = new Set(['start', 'stop', 'restart']);
@@ -30,16 +31,55 @@ const MAX_QUEUE_WAIT_MS = 15_000;
 let active = 0;
 const waiters = [];
 
+// Saturation is a sustained condition, not a series of events. A line per queued call put hundreds
+// in `docker logs` with nothing tying them together, and `active` was worthless on every one of
+// them - reaching the queued path means all MAX_CONCURRENT slots are held, and release() hands a
+// slot straight to a waiter rather than decrementing, so `active` is MAX_CONCURRENT by
+// construction. One line when the queue forms, one when it drains, and the episode's shape in
+// between - the same aggregate shape watchdog.js's lag summary uses.
+let queueEpisode = null;
+
+function noteQueued() {
+  if (!queueEpisode) {
+    queueEpisode = { startedAt: Date.now(), queued: 0, peakDepth: 0, timeouts: 0, waitedMs: 0 };
+    logger.warn('docker.queue.saturated', { limit: MAX_CONCURRENT });
+  }
+  queueEpisode.queued += 1;
+  queueEpisode.peakDepth = Math.max(queueEpisode.peakDepth, waiters.length + 1);
+}
+
+// Called for every waiter that leaves the queue, whichever way it left. The episode closes only
+// once nothing is waiting, so a queue that keeps churning stays one episode rather than logging a
+// drained/saturated pair per call.
+function noteDequeued(waitedMs, timedOut) {
+  if (!queueEpisode) return;
+  queueEpisode.waitedMs += waitedMs;
+  if (timedOut) queueEpisode.timeouts += 1;
+  if (waiters.length > 0) return;
+  const ep = queueEpisode;
+  queueEpisode = null;
+  logger.warn('docker.queue.drained', {
+    forSec: Math.round((Date.now() - ep.startedAt) / 1000),
+    queued: ep.queued,
+    peakDepth: ep.peakDepth,
+    timeouts: ep.timeouts,
+    avgWaitMs: Math.round(ep.waitedMs / ep.queued),
+  });
+}
+
 function acquire() {
   if (active < MAX_CONCURRENT) {
     active++;
     return Promise.resolve();
   }
+  const queuedAt = Date.now();
+  noteQueued();
   return new Promise((resolve, reject) => {
-    const waiter = { resolve, reject, timer: null };
+    const waiter = { resolve, reject, timer: null, queuedAt };
     waiter.timer = setTimeout(() => {
       const idx = waiters.indexOf(waiter);
       if (idx !== -1) waiters.splice(idx, 1);
+      noteDequeued(Date.now() - queuedAt, true);
       reject(new Error(`docker command queued behind ${MAX_CONCURRENT} others for ${MAX_QUEUE_WAIT_MS}ms - daemon is not keeping up`));
     }, MAX_QUEUE_WAIT_MS);
     waiters.push(waiter);
@@ -56,6 +96,14 @@ function release() {
   // stays accurate and a burst of waiters can't all wake into the same one.
   clearTimeout(waiter.timer);
   waiter.resolve();
+  noteDequeued(Date.now() - waiter.queuedAt, false);
+}
+
+// The concurrency limiter's live depth, for the periodic vitals line in index.js. A hang that is
+// really "every docker call is queued behind a wedged daemon" looks like nothing at all otherwise -
+// the queue only logs at its edges, so a sustained backlog needs sampling to show up as sustained.
+function poolStats() {
+  return { active, queued: waiters.length, limit: MAX_CONCURRENT };
 }
 
 // execFile reports a timeout kill as a generic "Command failed: docker ..." with *empty* stderr -
@@ -97,10 +145,38 @@ async function run(args, timeoutMs = CMD_TIMEOUT_MS) {
   }
 }
 
+// Nearly everything `docker info` reports is fixed for a daemon's lifetime - CPU count, total
+// memory, server version, hostname - so refetching it every 5s bought nothing and cost a process
+// per host per poll. A TTL rather than "once, forever" because a VM resize or a daemon upgrade
+// should still land, just not within one poll.
+const HOST_INFO_TTL_MS = Number(process.env.HOST_INFO_TTL_MS) || 60_000;
+const hostInfoCache = new Map(); // hostId -> { ts, info }
+
+// The cached value if it is still fresh, else null. Exported so metricsCollector can tell whether
+// a poll's info came from the daemon or from here - a value served from memory says nothing about
+// whether the host is still reachable, and reachability is derived from the poll's live calls.
+function cachedHostInfo(hostId) {
+  const cached = hostInfoCache.get(hostId);
+  return cached && Date.now() - cached.ts < HOST_INFO_TTL_MS ? cached.info : null;
+}
+
+// The two counts are the only fields on `docker info` that move between polls, and `docker ps -a`
+// carries the same facts - the collector already fetches it every poll, so they are recomputed
+// from that rather than being a reason to refetch the whole thing. Pure and exported for testing.
+function containerCounts(containers) {
+  let running = 0;
+  for (const c of containers) {
+    if (c.state === 'running') running += 1;
+  }
+  return { containers: containers.length, containersRunning: running };
+}
+
+// Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
+// cache here rather than in a wrapper keeps the two from disagreeing about what was last fetched.
 async function getHostInfo(host) {
   const stdout = await run([...hostArgs(host), 'info', '--format', '{{json .}}']);
   const raw = JSON.parse(stdout);
-  return {
+  const info = {
     ncpu: raw.NCPU,
     memTotalBytes: raw.MemTotal,
     serverVersion: raw.ServerVersion,
@@ -108,13 +184,48 @@ async function getHostInfo(host) {
     containersRunning: raw.ContainersRunning,
     hostname: raw.Name,
   };
+  hostInfoCache.set(host.id, { ts: Date.now(), info });
+  return info;
 }
 
+// Why the last probe failed, kept per host so the reason survives the boolean this returns.
+// "Became unreachable" without a cause is the least useful alert the app can send - timed out,
+// host key verification failed, permission denied and daemon-not-running need completely
+// different responses. testHostConnection exists purely because that boolean wasn't enough for a
+// human pressing "Test connection"; the automatic probe deserves the same information, so it's
+// recorded here and read on the reachable -> unreachable transition rather than every 5s.
+const lastCheckErrors = new Map();
+
+function lastCheckError(hostId) {
+  return lastCheckErrors.get(hostId) || null;
+}
+
+// Written from two places, which is why they are functions rather than inline map writes: the
+// probe below, and metricsCollector when a host's *ordinary* poll calls all fail. A reachable host
+// no longer runs the probe at all, so that second path is where most of these reasons now come
+// from - and `lastCheckError` has to keep answering either way.
+function noteHostFailure(hostId, err) {
+  // stderr first: `docker` puts the useful line there ("Permission denied (publickey)"), while
+  // err.message is the generic "Command failed". A timeout has neither and gets its own message
+  // from dockerCommandError.
+  lastCheckErrors.set(hostId, (err.stderr || '').trim() || err.message);
+}
+
+function noteHostReachable(hostId) {
+  lastCheckErrors.delete(hostId);
+}
+
+// Only run against a host already believed to be down - see pollHost. A host that is up proves it
+// with the calls the poll was making anyway, and this probe measured ~190ms sitting serially in
+// front of every one of them. Against a host that is down it is the cheap option instead: one
+// process that fails fast, rather than three each waiting out their own timeout.
 async function checkHost(host) {
   try {
     await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
+    noteHostReachable(host.id);
     return true;
-  } catch {
+  } catch (err) {
+    noteHostFailure(host.id, err);
     return false;
   }
 }
@@ -126,7 +237,21 @@ async function testHostConnection(host) {
   await run([...hostArgs(host), 'version', '--format', '{{.Server.Version}}'], checkTimeoutMs(host));
 }
 
+// Docker's three built-ins. Every container is on one of them, so drawing them in the Flow graph
+// would add an edge from almost every node to a hub that says nothing about how the system is
+// wired - only user-defined networks carry that information.
 const IGNORED_NETWORKS = new Set(['bridge', 'host', 'none']);
+
+// Pulled out of listContainers so it's unit-testable without mocking child_process, the same
+// reason parseLabels/parseHealth/parseMountsList below are separate. It was inline, which put the
+// only thing enforcing IGNORED_NETWORKS inside a function no test can reach - emptying that set
+// survived the entire suite.
+function parseNetworks(networksStr) {
+  return (networksStr || '')
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n && !IGNORED_NETWORKS.has(n));
+}
 
 function parseLabels(labelsStr) {
   const out = {};
@@ -156,10 +281,7 @@ async function listContainers(host) {
     .map((line) => {
       const raw = JSON.parse(line);
       const labels = parseLabels(raw.Labels);
-      const networks = (raw.Networks || '')
-        .split(',')
-        .map((n) => n.trim())
-        .filter((n) => n && !IGNORED_NETWORKS.has(n));
+      const networks = parseNetworks(raw.Networks);
       return {
         id: raw.ID,
         name: raw.Names,
@@ -216,6 +338,28 @@ function computeIoRates(current, prev, elapsedSec) {
   };
 }
 
+// One `{{json .}}` row from `docker stats` -> the sample shape the rest of the app consumes.
+// Shared by the one-shot getStats below and statsWatcher's stream parser, which read the exact
+// same rows from the exact same CLI - separate copies would be free to drift apart silently.
+function statsRowToSample(raw) {
+  const netIO = parseIOPair(raw.NetIO);
+  const blockIO = parseIOPair(raw.BlockIO);
+  return {
+    cpuPerc: raw.CPUPerc,
+    memUsage: raw.MemUsage,
+    memPerc: raw.MemPerc,
+    netIO: raw.NetIO,
+    blockIO: raw.BlockIO,
+    netRxBytes: netIO.in,
+    netTxBytes: netIO.out,
+    blockReadBytes: blockIO.in,
+    blockWriteBytes: blockIO.out,
+  };
+}
+
+// The one-shot form, kept as statsWatcher's fallback rather than as the steady-state path: it
+// measured at 1.3-2.0s per call against a two-container daemon, because the CLI collects a whole
+// sample cycle before it can print a CPU percentage and only then exits. See streamStats.
 async function getStats(host) {
   const stdout = await run([...hostArgs(host), 'stats', '--no-stream', '--format', '{{json .}}']);
   const byId = {};
@@ -224,19 +368,7 @@ async function getStats(host) {
     .map((l) => l.trim())
     .filter(Boolean)) {
     const raw = JSON.parse(line);
-    const netIO = parseIOPair(raw.NetIO);
-    const blockIO = parseIOPair(raw.BlockIO);
-    byId[raw.Container.slice(0, 12)] = {
-      cpuPerc: raw.CPUPerc,
-      memUsage: raw.MemUsage,
-      memPerc: raw.MemPerc,
-      netIO: raw.NetIO,
-      blockIO: raw.BlockIO,
-      netRxBytes: netIO.in,
-      netTxBytes: netIO.out,
-      blockReadBytes: blockIO.in,
-      blockWriteBytes: blockIO.out,
-    };
+    byId[raw.Container.slice(0, 12)] = statsRowToSample(raw);
   }
   return byId;
 }
@@ -411,6 +543,8 @@ async function getTopologyMeta(host, containers) {
 // daemon entirely.
 function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
+  hostInfoCache.delete(hostId);
+  lastCheckErrors.delete(hostId);
 }
 
 async function getTopology(host, snapshot) {
@@ -513,6 +647,14 @@ function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
 
+// The streaming form of `docker stats`: one long-lived process per host that reprints every
+// running container roughly twice a second, instead of a fresh 1.3-2.0s process every 5s poll.
+// Deliberately outside run()'s semaphore, same as streamEvents/streamLogs - the whole point is
+// that it stops holding one of MAX_CONCURRENT slots for a third of every poll interval.
+function streamStats(host) {
+  return spawn('docker', [...hostArgs(host), 'stats', '--format', '{{json .}}']);
+}
+
 // `docker system df` deduplicates shared image layers by walking the whole overlay2 tree, so it
 // gets its own much longer timeout - it is not in the same cost class as any other call here.
 // **How much longer depends on the storage, not on the number of images**: measured on the same
@@ -576,18 +718,23 @@ module.exports = {
   streamLogs,
   downloadLogs,
   streamEvents,
+  streamStats,
   getStats,
+  statsRowToSample,
   getTopology,
   getHostInfo,
   getDiskUsage,
   getDiskUsageImages,
   parseDiskUsageImages,
+  cachedHostInfo,
+  containerCounts,
   getContainerInspect,
   maskEnvValues,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,
   parseHealth,
+  parseNetworks,
   networkEdges,
   dependsOnEdges,
   customDependsOnEdges,
@@ -595,5 +742,10 @@ module.exports = {
   computeRate,
   computeIoRates,
   dockerCommandError,
+  poolStats,
+  lastCheckError,
+  noteHostFailure,
+  noteHostReachable,
   DISK_USAGE_TIMEOUT_MS,
+  CONTAINER_ACTION_TIMEOUT_MS,
 };

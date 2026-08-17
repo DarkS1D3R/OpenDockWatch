@@ -5,6 +5,7 @@ const {
   parseMemUsedBytes,
   parseLabels,
   parseHealth,
+  parseNetworks,
   networkEdges,
   dependsOnEdges,
   customDependsOnEdges,
@@ -13,6 +14,7 @@ const {
   computeIoRates,
   parseDiskUsageImages,
   maskEnvValues,
+  containerCounts,
   dockerCommandError,
   DISK_USAGE_TIMEOUT_MS,
 } = require('../server/docker');
@@ -462,5 +464,59 @@ test('maskEnvValues', async (t) => {
     const out = maskEnvValues(['A=secret-one', 'B=secret-two', 'C=']).join('\n');
     assert.equal(out.includes('secret-one'), false);
     assert.equal(out.includes('secret-two'), false);
+  });
+});
+
+test('parseNetworks', async (t) => {
+  await t.test("drops docker's three built-ins", () => {
+    // Every container sits on one of these, so keeping them would put an edge from nearly every
+    // node to a hub that says nothing about how the system is actually wired.
+    assert.deepEqual(parseNetworks('bridge'), []);
+    assert.deepEqual(parseNetworks('host'), []);
+    assert.deepEqual(parseNetworks('none'), []);
+    assert.deepEqual(parseNetworks('bridge,host,none'), []);
+  });
+
+  await t.test('keeps user-defined networks, which are the ones that carry information', () => {
+    assert.deepEqual(parseNetworks('bm_default'), ['bm_default']);
+    assert.deepEqual(parseNetworks('bridge,bm_default,none'), ['bm_default']);
+    assert.deepEqual(parseNetworks('a,b'), ['a', 'b']);
+  });
+
+  await t.test('trims whitespace and drops empties rather than emitting blank node ids', () => {
+    assert.deepEqual(parseNetworks(' a , b '), ['a', 'b']);
+    assert.deepEqual(parseNetworks('a,,b'), ['a', 'b']);
+    assert.deepEqual(parseNetworks(','), []);
+  });
+
+  await t.test('a missing or empty value is an empty list, not a crash', () => {
+    // docker ps omits Networks entirely for a container that has none.
+    assert.deepEqual(parseNetworks(undefined), []);
+    assert.deepEqual(parseNetworks(null), []);
+    assert.deepEqual(parseNetworks(''), []);
+  });
+
+  await t.test('the match is exact - a name merely containing a builtin is kept', () => {
+    assert.deepEqual(parseNetworks('bridge-net,my-host,none-such'), ['bridge-net', 'my-host', 'none-such']);
+  });
+});
+
+// The two counts on `docker info` are the only fields that move between polls, so the collector
+// recomputes them from the `docker ps` it already made rather than refetching the whole thing.
+test('containerCounts', async (t) => {
+  await t.test('counts all containers and the running subset', () => {
+    assert.deepEqual(containerCounts([{ state: 'running' }, { state: 'exited' }, { state: 'running' }, { state: 'created' }]), {
+      containers: 4,
+      containersRunning: 2,
+    });
+  });
+
+  await t.test('an empty host counts as zero, not as missing', () => {
+    assert.deepEqual(containerCounts([]), { containers: 0, containersRunning: 0 });
+  });
+
+  // `created` and `paused` are not running, and the naive `!== 'exited'` gets both wrong.
+  await t.test('only `running` counts as running', () => {
+    assert.equal(containerCounts([{ state: 'created' }, { state: 'paused' }, { state: 'restarting' }]).containersRunning, 0);
   });
 });

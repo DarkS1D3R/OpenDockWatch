@@ -67,7 +67,19 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
-      - run: docker build -t opendockwatch:release-check .
+
+      # Same verification build and same layer cache as ci.yml's docker-build job - a release runs
+      # rarely enough that the cache will usually be warm from CI rather than from a previous
+      # release, which is the point. Nothing consumes this image either; it only has to build.
+      # Note this is deliberately *not* done for the build that actually publishes to Docker Hub
+      # (release-finalize.yml) - see the note there. Why mode=min is explained in ci.yml.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
 
       - name: Configure git identity
         run: |

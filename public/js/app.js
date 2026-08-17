@@ -13,22 +13,65 @@ import { parseMemUsedBytes } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
-  apiGetStats,
+  apiGetDashboard,
   apiGetTopology,
   apiGetHostInfo,
   apiContainerAction,
   apiLogout,
   apiGetSession,
   apiGetDiskUsage,
-  apiGetMetricsHistory,
-  apiGetAlerts,
   apiAckAlert,
   apiAckAllAlerts,
+  reportClientError,
 } from './api.js';
 
 const { createApp } = Vue;
 
-createApp({
+// Nothing else in the client catches these - without a listener here, an exception anywhere
+// during boot (a vendor script failure, a rejected promise outside Vue's own tracking) leaves
+// the page silently blank with zero trace, indistinguishable from "still loading" or a network
+// hang. Logged with console.error so it survives even if the app never renders far enough to
+// show anything - see mounted()'s bootError for the visible counterpart.
+// ...and mirrored to the server so they land in `docker logs` next to everything else, since a
+// console nobody has open is not somewhere failures can be found later. Capped hard: a render
+// error inside a watcher can fire every frame, and each report would take one of the browser's ~6
+// per-origin connections - the same budget the poll loop and the log streams live on. An unbounded
+// beacon would cause exactly the hang it exists to diagnose. So: dedup on what makes an error
+// distinct, then stop entirely after MAX_CLIENT_ERROR_REPORTS for the life of the page.
+const MAX_CLIENT_ERROR_REPORTS = 5;
+const seenClientErrors = new Set();
+let clientErrorsSent = 0;
+
+// Truncated here as well as on the server: no reason to put a whole stack trace on the wire.
+function errText(value) {
+  if (value === null || value === undefined) return '';
+  return String((typeof value === 'object' && value.message) || value).slice(0, 300);
+}
+
+function reportOnce(kind, message, source, line) {
+  // Cap checked before the dedup set is touched, not after: a runaway loop throwing *distinct*
+  // messages (a counter in the text, say) would otherwise keep growing the set forever long after
+  // reporting had stopped - a memory leak inside the very guard meant to stop the beacon becoming
+  // the problem. The cap also bounds recursion by construction: even if reporting an error somehow
+  // caused another error, it can only happen MAX_CLIENT_ERROR_REPORTS times.
+  if (!message || clientErrorsSent >= MAX_CLIENT_ERROR_REPORTS) return;
+  const key = `${kind}|${message}|${source}|${line}`;
+  if (seenClientErrors.has(key)) return;
+  seenClientErrors.add(key);
+  clientErrorsSent += 1;
+  reportClientError({ kind, message, source, line });
+}
+
+window.addEventListener('error', (e) => {
+  console.error('[opendockwatch] window.onerror', e.error || e.message, e.filename, e.lineno);
+  reportOnce('window.onerror', errText(e.error || e.message), e.filename, e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[opendockwatch] unhandledrejection', e.reason);
+  reportOnce('unhandledrejection', errText(e.reason), null, null);
+});
+
+const app = createApp({
   components: {
     SparkTile,
     HostCard,
@@ -87,6 +130,11 @@ createApp({
       logsTabOpenId: null,
 
       settingsOpen: false,
+
+      // Set only if mounted()'s session/host bootstrap throws - see there. Without this, that
+      // failure left '#app' permanently empty with nothing in the console: identical to a network
+      // hang from the outside, but caused by a client-side error nobody could see.
+      bootError: null,
     };
   },
   computed: {
@@ -157,7 +205,15 @@ createApp({
       this.role = session.role;
       this.appVersion = session.version;
       await this.loadHosts();
-    } catch {
+    } catch (err) {
+      // apiFetch already redirects to /login on 401 - reaching here means something else failed
+      // (server unreachable, a 5xx, a timeout). Previously swallowed silently, which left the page
+      // blank forever with no way to tell "still loading" from "never going to load".
+      console.error('[opendockwatch] boot failed', err);
+      this.bootError = err.message || String(err);
+      // Reported rather than only shown: a blank-page-on-load report is the one a user is least
+      // likely to be able to describe, and most likely to hit right after a deploy.
+      reportOnce('boot', errText(err), null, null);
       return;
     }
     if (this.hosts.length) {
@@ -217,8 +273,8 @@ createApp({
       this.pollInFlight = true;
       try {
         await this.refresh();
-        // refresh()'s sub-fetches each swallow their own errors (they're best-effort), but
-        // fetchContainers records its failure - the one that means the host itself is answering.
+        // fetchDashboard swallows its own failure into containersError rather than throwing, so
+        // the backoff reads that instead of relying on the catch below.
         this.pollFailures = this.containersError ? this.pollFailures + 1 : 0;
       } catch {
         this.pollFailures++;
@@ -244,13 +300,38 @@ createApp({
       this.pollFailures = 0;
       this.schedulePoll(0);
     },
+    // A cycle was five requests awaited one after another - containers, stats, history, alerts,
+    // and topology in Flow view - so it cost five round trips and five turns of the browser's ~6
+    // connections per open tab, every POLL_MS, for data the server already holds in memory. Four
+    // of them are now fields of one /dashboard response; topology stays its own request (it can
+    // shell out to docker) but runs alongside rather than after it, so Flow view is two requests
+    // and one round trip. fetchTopology swallows its own errors, so Promise.all can't reject on it.
     async refresh() {
-      await this.fetchContainers();
-      await this.fetchStats();
-      this.recordMetricsSample();
-      await this.fetchHostMetricsHistory();
-      await this.fetchAlerts();
-      if (this.view === 'flow') await this.fetchTopology();
+      await Promise.all([this.fetchDashboard(), this.view === 'flow' ? this.fetchTopology() : null]);
+    },
+    // Same host-switch guard as every other fetch here: a slow response for the host you just
+    // navigated away from must not land on the host you are now looking at.
+    async fetchDashboard() {
+      if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
+      this.loadingContainers = true;
+      try {
+        const data = await apiGetDashboard(hostId);
+        if (this.selectedHostId !== hostId) return;
+        this.containers = data.containers;
+        this.containersError = null;
+        this.stats = data.stats;
+        this.recordMetricsSample();
+        this.hostMetricsHistory = data.metricsHistory.slice(-HOST_METRICS_HISTORY_LEN);
+        this.alerts = data.alerts;
+      } catch (err) {
+        if (this.selectedHostId !== hostId) return;
+        this.containersError = err.message;
+      } finally {
+        // Only this call's own loading flag - don't clear it out from under a newer, still
+        // in-flight fetch for the host the user has since switched to.
+        if (this.selectedHostId === hostId) this.loadingContainers = false;
+      }
     },
     async fetchHostInfo() {
       if (!this.selectedHostId) return;
@@ -275,26 +356,6 @@ createApp({
         this.diskUsageError = usage.error || null;
       } catch {
         /* disk usage is best-effort */
-      }
-    },
-    async fetchHostMetricsHistory() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const rows = await apiGetMetricsHistory(hostId, { range: '1h' });
-        if (this.selectedHostId === hostId) this.hostMetricsHistory = rows.slice(-HOST_METRICS_HISTORY_LEN);
-      } catch {
-        /* history is best-effort */
-      }
-    },
-    async fetchAlerts() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const alerts = await apiGetAlerts(hostId, 100);
-        if (this.selectedHostId === hostId) this.alerts = alerts;
-      } catch {
-        /* alerts are best-effort */
       }
     },
     async ackAlertAction(alert) {
@@ -362,16 +423,6 @@ createApp({
         // Only this call's own loading flag - don't clear it out from under a newer, still
         // in-flight fetchContainers for the host the user has since switched to.
         if (this.selectedHostId === hostId) this.loadingContainers = false;
-      }
-    },
-    async fetchStats() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const stats = await apiGetStats(hostId);
-        if (this.selectedHostId === hostId) this.stats = stats;
-      } catch {
-        /* stats are best-effort */
       }
     },
     async fetchTopology() {
@@ -453,6 +504,11 @@ createApp({
   },
   template: `
     <div class="app">
+      <div v-if="bootError" class="boot-error">
+        <p>OpenDockWatch failed to load: {{ bootError }}</p>
+        <p class="muted">Check the browser console and the container's logs for more detail, then reload.</p>
+      </div>
+      <template v-else>
       <header class="topbar">
         <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
         <select v-model="selectedHostId" @change="selectHost(selectedHostId)">
@@ -571,6 +627,20 @@ createApp({
         :container-name="metricsContainer ? metricsContainer.name : metricsContainerId"
         @close="closeMetrics"
       ></container-metrics-modal>
+      </template>
     </div>
   `,
-}).mount('#app');
+});
+
+// Vue's own catch-all for anything thrown inside a component's render/lifecycle/watcher - the
+// window listeners above only see errors outside Vue's tracking (vendor scripts, bare promises).
+// Without this, a bug in a child component during boot failed exactly like a network hang: no
+// console output, '#app' stuck on whatever it last rendered.
+app.config.errorHandler = (err, instance, info) => {
+  console.error('[opendockwatch] vue error', info, err);
+  // `info` (the Vue lifecycle hook that threw) is the useful half here, so it goes in the source
+  // slot rather than being dropped - "render function" vs "watcher callback" narrows it a lot.
+  reportOnce('vue', errText(err), info, null);
+};
+
+app.mount('#app');

@@ -346,3 +346,66 @@ test('createLogStream suspension', async (t) => {
     assert.deepEqual(events.suspendChanges, [true, false]);
   });
 });
+
+// Every test above injects hiddenGraceMs so it doesn't have to wait a real minute, which means the
+// value that actually ships was never exercised by any of them - a mutation setting it to 0
+// survived the whole suite. These assert the defaults themselves, in the same spirit as the
+// watchdog's recovery-budget guard.
+test('shipped defaults', async (t) => {
+  await t.test('the hidden-tab grace is long enough that a glance at another tab costs nothing', () => {
+    // Resuming re-tails and resets the pane, so a short grace turns every alt-tab into a visible
+    // flush of every open log pane.
+    assert.ok(
+      logStream.HIDDEN_SUSPEND_GRACE_MS >= 30_000,
+      `${logStream.HIDDEN_SUSPEND_GRACE_MS}ms would re-tail every pane on a brief tab switch`
+    );
+  });
+
+  await t.test('the grace is not so long that a backgrounded tab holds its connection all day', () => {
+    // The other half of the trade: the stream holds one of the browser's ~6 per-origin
+    // connections and a server-side `docker logs -f` child for the whole grace.
+    assert.ok(logStream.HIDDEN_SUSPEND_GRACE_MS <= 300_000);
+  });
+
+  await t.test('the reconnect budget is finite - EventSource retries forever on its own', () => {
+    assert.ok(Number.isFinite(logStream.MAX_CONSECUTIVE_ERRORS));
+    assert.ok(logStream.MAX_CONSECUTIVE_ERRORS >= 1 && logStream.MAX_CONSECUTIVE_ERRORS <= 20);
+  });
+
+  await t.test('a caller that injects no grace gets the shipped one wired into the timer', () => {
+    // Guards the wiring, not just the constant: if the default stopped being referenced, the
+    // bounds asserted above would keep passing while the shipped behaviour changed underneath.
+    // Captures what delay the hidden-tab timer is actually scheduled at.
+    let onVisibility = null;
+    const doc = {
+      hidden: false,
+      addEventListener: (_event, fn) => (onVisibility = fn),
+      removeEventListener() {},
+    };
+    const delays = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms) => {
+      delays.push(ms);
+      return realSetTimeout(() => {}, 0); // never actually fire - this test only cares about the delay
+    };
+    let stream;
+    try {
+      stream = logStream.createLogStream({
+        url: '/x',
+        onFlush() {},
+        onLoadingChange() {},
+        EventSourceImpl: StubEventSource,
+        schedule: makeSync(),
+        doc,
+      });
+      stream.start();
+      delays.length = 0; // drop the loading-spinner timer, it isn't what's under test
+      doc.hidden = true;
+      onVisibility();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      if (stream) stream.stop();
+    }
+    assert.deepEqual(delays, [logStream.HIDDEN_SUSPEND_GRACE_MS], 'the hidden timer should use the default grace');
+  });
+});

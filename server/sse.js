@@ -19,6 +19,14 @@ class Broadcaster {
     this.emitter.emit(channel(hostId), payload);
   }
 
+  // One listener per subscribed response, so the listener count *is* the number of held event
+  // streams. Sampled by index.js's periodic vitals line: the open/close pair either side of a
+  // stream tells you about one stream, and answering "how many are held right now" from those
+  // alone means replaying the whole log - which is not something you can do while the UI is hung.
+  subscriberCount() {
+    return this.emitter.eventNames().reduce((n, name) => n + this.emitter.listenerCount(name), 0);
+  }
+
   subscribe(res, hostId) {
     res.set({
       'Content-Type': 'text/event-stream',

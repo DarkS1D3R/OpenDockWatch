@@ -29,11 +29,12 @@ const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-index-test-${process.
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
-const { app, api, requestTimeout, requireHost } = require('../server/index');
+const { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor } = require('../server/index');
 const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
+const metricsCollector = require('../server/metricsCollector');
 
 test.after(() => {
   db.close();
@@ -58,8 +59,19 @@ const FAKE_ALERT_ID = 999999999;
 // unlike a list of routes copied out of index.js by hand, it keeps working when someone adds a
 // new mutating route six months from now and simply forgets the middleware, which is exactly how
 // the original gap happened.
+// Exemptions are a map, not a skip, so each one carries its reason and a stale entry fails loudly
+// rather than quietly widening the check's blind spot. Two properties are required to be in here:
+// the route changes no state, and there is a real reason a non-admin must reach it.
+const ADMIN_EXEMPT = new Map([
+  [
+    'post /client-error',
+    'writes one log line and no state; a viewer’s browser breaks like an admin’s, so it must work for both. Rate-limited instead.',
+  ],
+]);
+
 test('every non-GET /api route has requireAdmin in its middleware stack', () => {
   const checked = [];
+  const usedExemptions = new Set();
   for (const layer of api.stack) {
     if (!layer.route) continue; // skips api.use(requireAuth) and the router's own path-matching layers
     const { path, methods, stack } = layer.route;
@@ -67,11 +79,21 @@ test('every non-GET /api route has requireAdmin in its middleware stack', () => 
       if (method === 'get' || method === 'head') continue;
       const label = `${method.toUpperCase()} /api${path}`;
       checked.push(label);
+      const key = `${method} ${path}`;
+      if (ADMIN_EXEMPT.has(key)) {
+        usedExemptions.add(key);
+        continue;
+      }
       assert.ok(
         stack.some((s) => s.handle === requireAdmin),
         `${label} mutates state but has no requireAdmin middleware`
       );
     }
+  }
+  // A route that gets renamed or removed must not leave its exemption behind waiting to silently
+  // cover something else that later takes the same path.
+  for (const key of ADMIN_EXEMPT.keys()) {
+    assert.ok(usedExemptions.has(key), `stale admin exemption for "${key}" - no such route is registered any more`);
   }
   // Guards the check above against silently checking nothing - if a future Express upgrade
   // changes Route's internal shape (.methods/.stack), this fails loudly instead of the loop above
@@ -129,7 +151,9 @@ test('security headers are set on every response', async (t) => {
   await t.test('login.html has no inline script for the CSP to block', async () => {
     const res = await request(app).get('/login');
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(res.text), false, 'login.html still contains an inline <script>');
-    assert.match(res.text, /<script src="\/assets\/js\/login\.js">/);
+    // Matched loosely on the prefix because the asset paths are version-pinned on the way out -
+    // what this test is about is that the handler is an external file at all, not where it lives.
+    assert.match(res.text, /<script src="\/assets\/[^"]*\/js\/login\.js">/);
   });
 });
 
@@ -232,6 +256,46 @@ test('default view (landing tab) setting', async (t) => {
     } finally {
       db.deleteSetting('defaultView');
     }
+  });
+});
+
+test('clientErrorStatus', async (t) => {
+  await t.test('a stalled client gets 408, not 400', () => {
+    // headersTimeout (30s) and requestTimeout (60s) are both set on the server, and Node surfaces
+    // both through clientError as ERR_HTTP_REQUEST_TIMEOUT - its own default answers those 408.
+    // Overriding the event means owning that: a flat 400 tells a merely slow client it sent
+    // garbage, which behind a reverse proxy is a materially different signal.
+    assert.equal(clientErrorStatus('ERR_HTTP_REQUEST_TIMEOUT'), '408 Request Timeout');
+  });
+
+  await t.test('anything genuinely malformed still gets 400', () => {
+    for (const code of ['HPE_INVALID_METHOD', 'HPE_HEADER_OVERFLOW', 'ECONNRESET', undefined]) {
+      assert.equal(clientErrorStatus(code), '400 Bad Request', `${code} should stay a 400`);
+    }
+  });
+});
+
+test('slowThresholdFor', async (t) => {
+  await t.test('ordinary routes use the plain threshold', () => {
+    assert.equal(slowThresholdFor('/hosts/local/containers'), 5000);
+    assert.equal(slowThresholdFor('/session'), 5000);
+  });
+
+  await t.test('routes that are legitimately slow are held to their own timeout instead', () => {
+    // A `docker stop` waiting out SIGTERM routinely takes ten-plus seconds while working exactly
+    // as designed, and `docker system df` was measured at 40-75s cold. Warning about those every
+    // time is noise, and noise is what stopped the last real signal being noticed.
+    for (const p of ['/hosts/local/containers/abc123/stop', '/hosts/local/containers/abc/restart', '/hosts/local/containers/x/start']) {
+      assert.ok(slowThresholdFor(p) > 5000, `${p} should not warn at the ordinary threshold`);
+    }
+    assert.ok(slowThresholdFor('/hosts/local/disk-usage') > 5000);
+    assert.ok(slowThresholdFor('/hosts/local/disk-usage/images') > 5000);
+  });
+
+  await t.test('a route that merely mentions a slow word is not exempted', () => {
+    // The overrides are anchored, so an unrelated route can't inherit a 30-120s grace by accident.
+    assert.equal(slowThresholdFor('/hosts/local/containers/abc/stop/extra'), 5000);
+    assert.equal(slowThresholdFor('/disk-usage-summary'), 5000);
   });
 });
 
@@ -398,5 +462,278 @@ test('requestTimeout', async (t) => {
     assert.equal(res.status, 200);
     assert.equal(cleared, true);
     assert.match(res.text, /data: line/);
+  });
+});
+
+test('POST /api/client-error', async (t) => {
+  await t.test('accepts a report from a viewer, not just an admin', async () => {
+    // The whole point: a viewer's browser fails the same way an admin's does, and a blank page is
+    // exactly what the person least able to describe it is looking at.
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const res = await viewer.post('/api/client-error').send({ kind: 'vue', message: 'boom', source: 'render function', line: 12 });
+    assert.equal(res.status, 204);
+    assert.equal(res.text, '', 'fire-and-forget: nothing for the client to parse or fail on');
+  });
+
+  await t.test('still requires a session', async () => {
+    assert.equal((await request(app).post('/api/client-error').send({ message: 'x' })).status, 401);
+  });
+
+  await t.test('survives a junk or empty body rather than 500ing', async () => {
+    // It's called from a global error handler, so a report that itself errors would loop.
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.post('/api/client-error').send({})).status, 204);
+    assert.equal((await agent.post('/api/client-error').send({ kind: null, message: 12345, line: 'nope' })).status, 204);
+  });
+
+  await t.test('a huge message is truncated rather than becoming a megabyte log line', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const lines = [];
+    const logger = require('../server/logger');
+    const realWarn = logger.warn;
+    logger.warn = (event, fields) => lines.push({ event, fields });
+    try {
+      await agent.post('/api/client-error').send({ message: 'x'.repeat(50_000), source: 'y'.repeat(50_000) });
+      const rec = lines.find((l) => l.event === 'client.error');
+      assert.ok(rec, 'should have logged');
+      assert.equal(rec.fields.message.length, 300);
+      assert.equal(rec.fields.source.length, 200);
+    } finally {
+      logger.warn = realWarn;
+    }
+  });
+});
+
+// The four fields of /dashboard are the four routes the poll loop used to call one after another.
+// They share builder functions precisely so the bundle can't drift from them - these assert that
+// it hasn't, field by field, which is the failure this consolidation could actually cause: a
+// change to /containers that never reaches the response the app is now reading instead.
+//
+// The snapshot is stubbed so nothing here shells out to docker, keeping this file's existing
+// property that `npm test` never spawns a CLI. Note the bundle deliberately excludes topology -
+// that one can shell out, so it stays its own route and the client runs it in parallel instead.
+test('GET /hosts/:hostId/dashboard', async (t) => {
+  // Whichever host this checkout's config actually has - the example config in CI and a real
+  // hosts.json locally both work, and hardcoding an id would pass in one and 404 in the other.
+  const hostId = loadHosts()[0].id;
+  const SNAPSHOT = {
+    reachable: true,
+    statsTs: Date.now(),
+    containers: [
+      { id: 'aaaaaaaaaaaa', name: 'web', state: 'running', image: 'nginx', composeProject: 'shop' },
+      { id: 'bbbbbbbbbbbb', name: 'db', state: 'exited', image: 'postgres', composeProject: 'shop' },
+    ],
+    stats: { aaaaaaaaaaaa: { cpuPerc: '1.5%', memUsage: '10MiB / 1GiB', memPerc: '1.0%', netRxBytes: 12 } },
+    hostInfo: { ncpu: 4, memTotalBytes: 1e9 },
+  };
+
+  const withSnapshot = (t2) => t2.mock.method(metricsCollector, 'getSnapshot', () => SNAPSHOT);
+
+  // Seeded, and this is load-bearing rather than incidental: against an empty database every
+  // parity assertion below compares two empty arrays and passes no matter what the bundle asked
+  // for. Verified by mutation - pointing metricsHistory at the 24h range, and dropping the host
+  // scope from the alerts read, both survived the whole suite until these rows existed. So the
+  // history spans the 1h boundary and the alerts span two hosts, giving each one something to be
+  // wrong about.
+  const now = Date.now();
+  const OTHER_HOST = '__index_test_other_host__';
+  for (const agoMs of [60_000, 120_000, 5 * 3_600_000]) {
+    db.insertHostMetric({
+      hostId,
+      ts: now - agoMs,
+      cpuPercent: 12.5,
+      memUsedBytes: 1024,
+      systemCpuPercent: null,
+      systemMemUsedBytes: null,
+      systemMemTotalBytes: null,
+    });
+  }
+  for (const [h, rule] of [
+    [hostId, 'container_cpu'],
+    [hostId, 'container_mem'],
+    [OTHER_HOST, 'container_cpu'],
+  ]) {
+    db.insertAlert({
+      ts: now - 60_000,
+      hostId: h,
+      containerId: 'aaaaaaaaaaaa',
+      containerName: 'web',
+      rule,
+      severity: 'warning',
+      message: `${rule} on ${h}`,
+    });
+  }
+
+  await t.test('carries exactly the four fields, and not topology', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(res.body).sort(), ['alerts', 'containers', 'metricsHistory', 'stats']);
+  });
+
+  await t.test('its containers match GET /containers exactly', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/containers`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.containers, single.body);
+    // Not just equal to each other but actually built: the restart count is the field /containers
+    // adds on top of the snapshot, and two empty arrays would satisfy a bare deepEqual.
+    assert.equal(bundle.body.containers.length, 2);
+    assert.ok('restartCount1h' in bundle.body.containers[0]);
+  });
+
+  await t.test('its stats match GET /stats exactly', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/stats`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.stats, single.body);
+    assert.equal(bundle.body.stats.aaaaaaaaaaaa.cpuPerc, '1.5%');
+  });
+
+  // The bundle hardcodes the 1h range because that is the window the host card's live tiles draw;
+  // if the route's default ever moved, the two would quietly start returning different buckets.
+  await t.test('its history matches GET /metrics/history at the 1h range', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.metricsHistory, single.body);
+    // Two of the three seeded rows are inside the hour and one is five hours out. Compared by
+    // window rather than by row count: both ranges happen to bucket those three into two rows
+    // each (15s vs 5min buckets), so a length comparison discriminates nothing.
+    const wider = await agent.get(`/api/hosts/${hostId}/metrics/history?range=24h`);
+    const anHourAgo = Date.now() - 3_600_000;
+    assert.ok(bundle.body.metricsHistory.length > 0, 'nothing to compare - the seed did not land');
+    assert.ok(
+      bundle.body.metricsHistory.every((r) => r.bucket >= anHourAgo - 60_000),
+      'the bundle returned buckets older than an hour, so it is not pinned to the 1h range'
+    );
+    assert.ok(
+      wider.body.some((r) => r.bucket < anHourAgo),
+      'the 24h range returned nothing older than an hour, so the check above proves nothing'
+    );
+  });
+
+  await t.test('its alerts match GET /alerts for the same host and limit', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/alerts?hostId=${encodeURIComponent(hostId)}&limit=100`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.alerts, single.body);
+    assert.ok(bundle.body.alerts.length > 0, 'nothing to compare - the seed did not land');
+  });
+
+  // It is scoped to one host, unlike /alerts which serves every host when given no hostId - and
+  // the seed puts an alert on a second host specifically so an unscoped read would show up here.
+  await t.test('its alerts are scoped to the host in the path', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const allHosts = await agent.get('/api/alerts?limit=100');
+    for (const a of bundle.body.alerts) assert.equal(a.host_id, hostId);
+    assert.ok(allHosts.body.length > bundle.body.alerts.length, 'the unscoped read returned no more, so scoping proves nothing here');
+  });
+
+  await t.test('a viewer can read it - it replaced four routes a viewer could already read', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${hostId}/dashboard`)).status, 200);
+  });
+
+  await t.test('an unknown host 404s rather than building an empty bundle', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/dashboard`)).status, 404);
+  });
+
+  await t.test('it needs a session', async () => {
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/dashboard`)).status, 401);
+  });
+});
+
+// A page load is ~44 separate requests because there is no build step, and every one of them used
+// to be a conditional round trip. These cover the two halves of the fix: assets are cacheable
+// forever under a version-pinned URL, and the HTML that points at them never is.
+test('asset caching', async (t) => {
+  const { version } = require('../package.json');
+  const PREFIX = `/assets/v${version}`;
+
+  await t.test('a version-pinned asset is immutable and cacheable for a year', async () => {
+    const res = await request(app).get(`${PREFIX}/js/app.js`);
+    assert.equal(res.status, 200);
+    const cc = res.headers['cache-control'];
+    assert.match(cc, /max-age=31536000/, `expected a year of max-age, got "${cc}"`);
+    assert.match(cc, /immutable/, `expected immutable, got "${cc}"`);
+  });
+
+  await t.test('vendor scripts get it too - they are the bulk of the bytes', async () => {
+    const res = await request(app).get(`${PREFIX}/vendor/vue.global.prod.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers['cache-control'], /immutable/);
+  });
+
+  // The whole approach rests on this: relative imports resolve against the importing module's own
+  // URL, so pointing the HTML at the pinned prefix pulls the entire module graph under it. If the
+  // nested path did not resolve, 34 of the 35 modules would quietly fall back to the bare mount.
+  await t.test('nested modules resolve under the prefix, which is what pins the whole graph', async () => {
+    for (const p of ['/js/format.js', '/js/components/LogViewer.js', '/js/lib/logStream.js', '/style.css']) {
+      const res = await request(app).get(PREFIX + p);
+      assert.equal(res.status, 200, `${p} is not served under the version prefix`);
+      assert.match(res.headers['cache-control'], /immutable/);
+    }
+  });
+
+  // A browser still holding the previous release's index.html must keep working rather than 404
+  // its way to a blank page, so the bare paths stay served - just not cached anywhere near as long.
+  await t.test('the bare path still serves, and is not immutable', async () => {
+    const res = await request(app).get('/assets/js/app.js');
+    assert.equal(res.status, 200);
+    assert.equal(/immutable/.test(res.headers['cache-control'] || ''), false, 'the unversioned path must stay revalidatable');
+  });
+
+  await t.test('a stale version prefix 404s rather than serving something', async () => {
+    assert.equal((await request(app).get('/assets/v0.0.0-not-a-release/js/app.js')).status, 404);
+  });
+
+  // The HTML is the pointer to everything above. Serve a stale copy and the browser keeps loading
+  // the previous release's assets out of its own cache, indefinitely and with no way to notice.
+  await t.test('the HTML pages are never cached', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const [label, res] of [
+      ['login', await request(app).get('/login')],
+      ['index', await agent.get('/')],
+    ]) {
+      assert.equal(res.status, 200);
+      assert.match(res.headers['cache-control'] || '', /no-cache/, `${label} is cacheable`);
+      assert.doesNotMatch(res.headers['cache-control'] || '', /max-age=[1-9]/, `${label} carries a real max-age`);
+    }
+  });
+
+  await t.test('both pages point at the version-pinned prefix, not the bare one', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const [label, res] of [
+      ['login', await request(app).get('/login')],
+      ['index', await agent.get('/')],
+    ]) {
+      assert.match(res.text, new RegExp(PREFIX.replace(/\./g, '\\.')), `${label} references no pinned asset`);
+      // No bare /assets/ reference may survive the rewrite, or that asset alone would be served
+      // from the short-lived mount while everything around it is pinned.
+      assert.doesNotMatch(res.text, /"\/assets\/(?!v)/, `${label} still references an unpinned /assets/ path`);
+    }
+  });
+
+  await t.test('the index page still carries the module entry point and every vendor script', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get('/');
+    assert.match(res.text, new RegExp(`<script type="module" src="${PREFIX.replace(/\./g, '\\.')}/js/app\\.js"`));
+    for (const v of ['vue.global.prod.js', 'cytoscape.min.js', 'dagre.min.js', 'html2canvas-pro.min.js']) {
+      assert.ok(res.text.includes(`${PREFIX}/vendor/${v}`), `${v} is not loaded from the pinned prefix`);
+    }
   });
 });

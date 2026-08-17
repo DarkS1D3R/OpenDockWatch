@@ -114,8 +114,11 @@ function createWatchdog({
       const monoDelta = mono - lastTick.mono;
       // Wall time this tick took that the monotonic clock never saw pass - the suspend itself.
       awayMs = t - lastTick.wall - monoDelta;
-      const resumed = awayMs >= SUSPEND_JUMP_MS;
-      lastLagMs = resumed ? 0 : Math.max(0, monoDelta - LAG_SAMPLE_MS);
+      // No special case for a suspend here, deliberately: this reads the monotonic delta, which by
+      // definition does not advance while the host is away, so a resume already measures as ~zero
+      // lag. An earlier version zeroed it explicitly and a mutation proved the branch could never
+      // change the result. The suspend handling that *does* matter is the awayMs check below.
+      lastLagMs = Math.max(0, monoDelta - LAG_SAMPLE_MS);
       if (lastLagMs >= LAG_NOTICE_MS) recordLag(mono, lastLagMs);
       if (lastLagMs >= LAG_WARN_MS) {
         logger.warn('watchdog.event_loop_lag', { lagMs: Math.round(lastLagMs) });

@@ -1,14 +1,11 @@
 const { loadHosts } = require('./hosts');
-const {
-  listContainers,
-  getStats,
-  getHostInfo,
-  getDiskUsage,
-  checkHost,
-  parseMemUsedBytes,
-  computeIoRates,
-  forgetHost: forgetDockerHost,
-} = require('./docker');
+// Everything pollHost shells out with goes through the module object rather than a destructured
+// binding, so test/metricsCollector.test.js can swap it for a stub and drive the reachability
+// branches - which now depend on which of these calls fail - without a docker daemon. The pure
+// helpers below have nothing to mock and stay destructured.
+const docker = require('./docker');
+const { getDiskUsage, parseMemUsedBytes, computeIoRates, containerCounts, forgetHost: forgetDockerHost } = require('./docker');
+const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
@@ -40,6 +37,33 @@ const globalTimers = [];
 // only goes stale if the loop itself stopped turning, never just because a daemon is down.
 let lastPollCompletedTs = Date.now();
 
+// How long a poll cycle may take before it's worth a line of its own. A healthy local cycle is
+// now ~80ms of docker calls (it was ~2s before statsWatcher took `docker stats` off this path);
+// the worst legitimate one is still a remote host's checkHost (20s) plus the rest, so the
+// threshold stays where it is - it only fires when the loop is falling behind, not merely slow.
+const SLOW_POLL_MS = Number(process.env.SLOW_POLL_MS) || 15_000;
+
+// Sampled by index.js's vitals line. `maxMs` is since the last read, not since boot: a single bad
+// poll hours ago shouldn't keep pinning the number every minute, and a rising floor across
+// consecutive vitals lines is the thing that actually shows the collector degrading. Watchdog
+// staleness only fires once the loop has stopped entirely - this is what precedes it.
+let pollStats = { lastMs: 0, maxMs: 0, slow: 0 };
+
+function recordPoll(hostId, tookMs) {
+  pollStats.lastMs = tookMs;
+  pollStats.maxMs = Math.max(pollStats.maxMs, tookMs);
+  if (tookMs >= SLOW_POLL_MS) {
+    pollStats.slow += 1;
+    logger.warn('metrics.poll.slow', { host: hostId, tookMs, thresholdMs: SLOW_POLL_MS });
+  }
+}
+
+function takePollStats() {
+  const out = pollStats;
+  pollStats = { lastMs: out.lastMs, maxMs: 0, slow: 0 };
+  return out;
+}
+
 function getLastPollCompletedTs() {
   return lastPollCompletedTs;
 }
@@ -67,10 +91,27 @@ function sampleLocalSystemUsage(hostId) {
   return { cpuPercent, memUsedBytes: mem.usedBytes, memTotalBytes: mem.totalBytes };
 }
 
+// Everything a poll has to do once it knows the host is down, in one place because it has three
+// callers and the alert must fire exactly once per poll. The previous poll's containers/stats are
+// cleared here rather than kept: unlike a slow poll, an unreachable host has nothing on the way.
+function markUnreachable(snapshot, host, wasReachable) {
+  snapshot.reachable = false;
+  snapshot.containers = [];
+  snapshot.stats = {};
+  snapshot.hostInfo = null;
+  snapshot.statsTs = undefined;
+  // On the transition only, never per poll: the alert says "became unreachable" and stops there,
+  // but "timed out after 20000ms" and "Permission denied (publickey)" call for entirely different
+  // responses. The reason is kept behind the boolean in docker.js - see lastCheckError.
+  if (wasReachable) {
+    logger.warn('host.unreachable', { host: host.id, error: docker.lastCheckError(host.id) || 'no error reported' });
+  }
+  alerts.handleHostReachability(host.id, host.name || host.id, false, wasReachable);
+}
+
 async function pollHost(host) {
   const prev = snapshots.get(host.id);
-  const reachable = await checkHost(host);
-  alerts.handleHostReachability(host.id, host.name || host.id, reachable, prev ? prev.reachable : true);
+  const wasReachable = prev ? prev.reachable : true;
 
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
   // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
@@ -80,23 +121,79 @@ async function pollHost(host) {
   // Keep serving the previous poll's containers/stats/hostInfo until fresh values are ready,
   // rather than clearing them up front - the docker calls below take a noticeable fraction of a
   // poll interval, and a request landing in that window would otherwise flash "-" for every row.
-  const keepPrev = reachable && prev;
   const snapshot = {
-    containers: keepPrev ? prev.containers : [],
-    stats: keepPrev ? prev.stats : {},
-    hostInfo: keepPrev ? prev.hostInfo : null,
+    containers: prev ? prev.containers : [],
+    stats: prev ? prev.stats : {},
+    hostInfo: prev ? prev.hostInfo : null,
     diskUsage: prev ? prev.diskUsage : null,
-    statsTs: keepPrev ? prev.statsTs : undefined,
-    reachable,
+    statsTs: prev ? prev.statsTs : undefined,
+    reachable: wasReachable,
     ts: Date.now(),
   };
   snapshots.set(host.id, snapshot);
-  if (!reachable) return;
+
+  // The probe runs only for a host already believed to be down. A host that is up establishes its
+  // own reachability through the calls below - it was making them anyway - and `docker version`
+  // sitting serially in front of them cost ~190ms of every 5s poll to re-answer a question they
+  // answer for free. The asymmetry is the point: against a host that *is* down, one probe failing
+  // fast is cheaper than three calls each waiting out their own timeout, so the probe stays for
+  // exactly that case and a host stuck offline never advances past this line.
+  if (!wasReachable && !(await docker.checkHost(host))) {
+    markUnreachable(snapshot, host, wasReachable);
+    return;
+  }
+
+  // Both read before the await so they reflect this poll's start, and both kept in the settle list
+  // so a fallback still runs in parallel rather than after the others. Two of the three calls are
+  // routinely answered without touching the daemon at all: stats from statsWatcher's long-lived
+  // stream (`docker stats --no-stream` measured at 1.3-2.0s against a two-container daemon), and
+  // info from its TTL cache (almost everything it reports is fixed for a daemon's lifetime).
+  const streamed = statsWatcher.getSamples(host.id);
+  const cachedInfo = docker.cachedHostInfo(host.id);
+  // allSettled, not all: reachability is derived from these, and "one of the three failed" is not
+  // the same fact as "the daemon is gone". Anything short of every live call failing is a failed
+  // poll on a host that is demonstrably still answering, and firing host_unreachable for that
+  // would be a worse answer than the probe this replaced used to give.
+  const results = await Promise.allSettled([
+    docker.listContainers(host),
+    streamed || docker.getStats(host),
+    cachedInfo || docker.getHostInfo(host),
+  ]);
+  const failure = results.find((r) => r.status === 'rejected');
+
+  // Only the calls that actually reached the daemon count towards reachability. A value served
+  // from a stream buffer or a cache says nothing about whether the host is still there, so
+  // counting one would leave a dead host looking reachable for as long as those stayed warm -
+  // up to STALE_SAMPLES_MS or HOST_INFO_TTL_MS of a dashboard reporting a host that is gone.
+  // listContainers is always live, so this is never empty.
+  const wentToDaemon = [true, !streamed, !cachedInfo];
+  const liveResults = results.filter((_, i) => wentToDaemon[i]);
+
+  if (liveResults.every((r) => r.status === 'rejected')) {
+    docker.noteHostFailure(host.id, failure.reason);
+    markUnreachable(snapshot, host, wasReachable);
+    return;
+  }
+  docker.noteHostReachable(host.id);
+  snapshot.reachable = true;
+  alerts.handleHostReachability(host.id, host.name || host.id, true, wasReachable);
+
+  // A partial failure leaves the snapshot on the previous poll's values, exactly as the single
+  // try/catch around all three used to: a half-updated poll would diff this poll's stats against
+  // themselves and write an instant of history that never happened.
+  if (failure) {
+    logger.error('metrics.poll.failed', { host: host.id, error: failure.reason.stderr || failure.reason.message });
+    return;
+  }
 
   try {
-    const [containers, stats, hostInfo] = await Promise.all([listContainers(host), getStats(host), getHostInfo(host)]);
+    const [containers, stats, info] = results.map((r) => r.value);
     snapshot.containers = containers;
     snapshot.stats = stats;
+    // The container counts are the only part of `docker info` that moves between polls, and the
+    // list just fetched carries the same facts - so they are recomputed rather than being a reason
+    // to refetch. Spread onto a copy: `info` is the object every poll inside the TTL shares.
+    const hostInfo = { ...info, ...containerCounts(containers) };
     snapshot.hostInfo = hostInfo;
 
     const ts = Date.now();
@@ -105,7 +202,7 @@ async function pollHost(host) {
     let cpuSum = 0;
     let memSum = 0;
     // Collected first, then written in one transaction and only then alerted on. Inserting per
-    // container cost a commit (and an fsync) each; alerting per container mid-loop would have put
+    // container cost a commit each; alerting per container mid-loop would have put
     // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
     const samples = [];
     const alertSamples = [];
@@ -144,7 +241,24 @@ async function pollHost(host) {
       });
     }
 
-    db.insertContainerMetrics(samples);
+    // Built here rather than after the write, so it can go into the same transaction as the
+    // container samples instead of taking a commit of its own straight afterwards. The
+    // alerting it feeds still happens after, below - handleHostSample does its own db writes and
+    // fire() is an async webhook, neither of which may be inside a synchronous transaction.
+    const hostSample =
+      hostInfo && hostInfo.ncpu
+        ? {
+            hostId: host.id,
+            ts,
+            cpuPercent: cpuSum / hostInfo.ncpu,
+            memUsedBytes: memSum,
+            systemCpuPercent: localSystemUsage ? localSystemUsage.cpuPercent : null,
+            systemMemUsedBytes: localSystemUsage ? localSystemUsage.memUsedBytes : null,
+            systemMemTotalBytes: localSystemUsage ? localSystemUsage.memTotalBytes : null,
+          }
+        : null;
+
+    db.insertMetrics(samples, hostSample);
     // One settings+rules read for the whole poll rather than one per container - resolved lazily so
     // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
     const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);
@@ -157,21 +271,19 @@ async function pollHost(host) {
       host.id,
       containers.map((c) => c.id)
     );
+    // Same idea for the stats stream, but against the *running* set: `docker stats` only ever
+    // reports running containers, so this is what keeps a stopped one's last sample from
+    // outliving it and a churning host from accumulating an entry per id it has ever seen.
+    statsWatcher.retainContainers(
+      host.id,
+      containers.filter((c) => c.state === 'running').map((c) => c.id)
+    );
 
-    if (hostInfo && hostInfo.ncpu) {
-      db.insertHostMetric({
-        hostId: host.id,
-        ts,
-        cpuPercent: cpuSum / hostInfo.ncpu,
-        memUsedBytes: memSum,
-        systemCpuPercent: localSystemUsage ? localSystemUsage.cpuPercent : null,
-        systemMemUsedBytes: localSystemUsage ? localSystemUsage.memUsedBytes : null,
-        systemMemTotalBytes: localSystemUsage ? localSystemUsage.memTotalBytes : null,
-      });
+    if (hostSample) {
       alerts.handleHostSample({
         hostId: host.id,
         hostName: host.name || host.id,
-        cpuPercent: cpuSum / hostInfo.ncpu,
+        cpuPercent: hostSample.cpuPercent,
         memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
         ts,
       });
@@ -228,6 +340,7 @@ async function pollDiskUsage(host, diskState) {
 function scheduleHostPolling(host, pollState) {
   const tick = async () => {
     if (pollState.stopped) return;
+    const startedAt = Date.now();
     try {
       await pollHost(host);
     } catch (err) {
@@ -237,6 +350,7 @@ function scheduleHostPolling(host, pollState) {
       logger.error('metrics.tick.failed', { host: host.id, error: err.message });
     } finally {
       lastPollCompletedTs = Date.now();
+      recordPoll(host.id, lastPollCompletedTs - startedAt);
       if (!pollState.stopped) pollState.timer = setTimeout(tick, POLL_MS);
     }
   };
@@ -268,6 +382,10 @@ function addHost(host) {
   const pollState = { stopped: false, timer: null };
   const diskState = { stopped: false, timer: null, failures: 0, lastDurationMs: 0 };
   hostStates.set(host.id, { pollState, diskState });
+  // Driven from here rather than from index.js alongside eventWatcher: the stats stream exists
+  // only to feed this collector, so its lifecycle is this collector's, and the settings/hosts
+  // routes get it for free through the addHost/removeHost pair they already call.
+  statsWatcher.addHost(host);
   // pollDiskUsage reads the snapshot pollHost writes (snapshot.reachable, set after checkHost
   // resolves) - firing both in parallel left diskUsage empty until the next 60s tick, since the
   // first call found no snapshot yet. pollHost never rejects, so this chain needs no .catch.
@@ -291,6 +409,7 @@ function removeHost(hostId) {
   hostStates.delete(hostId);
   snapshots.delete(hostId);
   localCpuTimesPrev.delete(hostId);
+  statsWatcher.removeHost(hostId);
   alerts.forgetHost(hostId);
   forgetDockerHost(hostId);
   logger.info('metrics.host.stopped', { host: hostId });
@@ -323,6 +442,9 @@ function stop() {
   for (const t of globalTimers) clearInterval(t);
   globalTimers.length = 0;
   for (const hostId of [...hostStates.keys()]) removeHost(hostId);
+  // removeHost already tore down each watched host's stream; this catches any left over from a
+  // host that was added to the stream but never reached hostStates.
+  statsWatcher.stop();
 }
 
 module.exports = {
@@ -334,6 +456,11 @@ module.exports = {
   getAllSnapshots,
   getLastPollCompletedTs,
   getHostCount,
+  takePollStats,
+  // Exported for test/metricsCollector.test.js only: reachability is now derived from which of
+  // the poll's own calls fail, and the branches that follow from that (the probe gate, the
+  // exactly-once alert, what the snapshot keeps) are worth asserting directly.
+  pollHost,
   nextDiskDelay,
   POLL_MS,
   DISK_POLL_MS,

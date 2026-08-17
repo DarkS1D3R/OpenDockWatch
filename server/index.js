@@ -2,6 +2,7 @@
 // a promotional third-party URL) so it doesn't pollute the container's log output alongside the
 // structured [opendockwatch] lines below.
 require('dotenv').config({ quiet: true });
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -25,12 +26,16 @@ const {
   getDiskUsageImages,
   getContainerInspect,
   maskEnvValues,
+  poolStats,
+  CONTAINER_ACTION_TIMEOUT_MS,
+  DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
 const db = require('./db');
 const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
+const statsWatcher = require('./statsWatcher');
 const prometheus = require('./prometheus');
 const { createWatchdog } = require('./watchdog');
 const { version: appVersion } = require('../package.json');
@@ -129,6 +134,61 @@ function requestTimeout(ms) {
   };
 }
 
+// A heartbeat, and that is most of the point: when this app went unresponsive for 220s the log
+// held *nothing at all* between the two sides of it, and the outage was only provable afterwards
+// by finding the matching gap in the metrics table. A line on a fixed interval turns the absence
+// of logs into evidence - you can see the beats stop, see how long for, and read the vitals going
+// in and coming back out. Everything on it is a live counter that no other line reports: the
+// open/close pairs elsewhere describe one stream each, and "how many are held right now" is not
+// something you can replay from them while the UI is hung. Set VITALS_INTERVAL_MS=0 to silence.
+const VITALS_INTERVAL_MS = Number(process.env.VITALS_INTERVAL_MS ?? 60_000);
+
+// Live count of held `docker logs -f` children, each also holding one of the browser's ~6
+// per-origin connections. Running out of either is the app's main self-inflicted hang.
+let openLogStreams = 0;
+
+function logVitals() {
+  const mem = process.memoryUsage();
+  const pool = poolStats();
+  const poll = metricsCollector.takePollStats();
+  // dbMaxMs alongside lagMs is the pairing that matters: better-sqlite3 is synchronous, so if the
+  // loop stalled and the worst write of that same window was long, the storage is the cause. If
+  // lag is high and dbMaxMs is not, it was something else - which is equally worth knowing.
+  const write = db.takeWriteStats();
+  logger.info('app.vitals', {
+    uptimeSec: Math.round(process.uptime()),
+    rssMb: Math.round(mem.rss / 1048576),
+    heapMb: Math.round(mem.heapUsed / 1048576),
+    lagMs: Math.round(watchdog.status().lagMs || 0),
+    pollLastMs: poll.lastMs,
+    pollMaxMs: poll.maxMs,
+    pollSlow: poll.slow,
+    dbLastMs: write.lastMs,
+    dbMaxMs: write.maxMs,
+    dbSlow: write.slow,
+    dockerActive: pool.active,
+    dockerQueued: pool.queued,
+    logStreams: openLogStreams,
+    sseClients: eventWatcher.broadcaster.subscriberCount(),
+    events: eventWatcher.takeIngestCount(),
+    hosts: metricsCollector.getHostCount(),
+    // Read against `hosts`: below it, some host's stats stream is down and that host is paying
+    // for the 1.3-2.0s one-shot `docker stats` on every 5s poll. The stream's own restart lines
+    // say so as it happens; this is what says it is *still* happening an hour later.
+    statsLive: statsWatcher.liveCount(),
+  });
+}
+
+// Taking over `clientError` means taking over the response, and the status is NOT always 400:
+// headersTimeout and requestTimeout both surface here as ERR_HTTP_REQUEST_TIMEOUT, which Node's
+// own default answers 408. Answering those 400 tells a merely slow client it sent garbage, and
+// behind a reverse proxy 408 is the expected, retryable keep-alive outcome where 400 reads as a
+// client bug. Pure and exported so the mapping is unit-tested rather than only exercised by a
+// malformed socket - the handler itself lives in the require.main block and can't be.
+function clientErrorStatus(code) {
+  return code === 'ERR_HTTP_REQUEST_TIMEOUT' ? '408 Request Timeout' : '400 Bad Request';
+}
+
 // docker.js's run() attaches the CLI's real stderr to err.stderr; anything else only has
 // err.message. Every docker-backed route reports failure the same way, so this fallback is
 // spelled out once here instead of copy-pasted into every catch block.
@@ -177,6 +237,46 @@ app.use((req, res, next) => {
   next();
 });
 
+// Covers every route, not just /api - requestTimeout below is api-only, so this is the only
+// thing that would ever say anything about a slow `/`, `/login` or static asset request. Fires
+// on completion only (res.on('finish')), so it can't fire twice and can't fire for a request that
+// never finishes at all - a request stuck past the socket-level server.requestTimeout still logs
+// nothing of its own, which is a real gap, but Node gives no hook to log a request the raw socket
+// itself is about to kill.
+const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS) || 5000;
+
+// Some routes are legitimately slow and warning about them is noise, not signal: a container
+// start/stop/restart shells out with CONTAINER_ACTION_TIMEOUT_MS (30s) and a `docker stop` waiting
+// out SIGTERM routinely takes ten-plus seconds while behaving exactly as designed, and the disk
+// route can shell out to `docker system df`, measured at 40-75s cold on WSL2. Those get the
+// timeout they're actually bounded by as their threshold, so the line still fires when they exceed
+// even that - it just stops firing for working normally.
+const SLOW_ROUTE_OVERRIDES = [
+  { re: /\/containers\/[^/]+\/(start|stop|restart)$/, ms: CONTAINER_ACTION_TIMEOUT_MS },
+  { re: /\/disk-usage(\/images)?$/, ms: DISK_USAGE_TIMEOUT_MS },
+];
+
+function slowThresholdFor(path) {
+  const override = SLOW_ROUTE_OVERRIDES.find((o) => o.re.test(path));
+  return override ? override.ms : SLOW_REQUEST_MS;
+}
+
+app.use((req, res, next) => {
+  // SSE routes are held open by design (see the connection-budget section of CLAUDE.md) - logging
+  // one every time a log/event stream finally closes after minutes or hours would be noise, not
+  // signal, and those already get their own open/close pair with heldSec.
+  if (STREAMING_PATH_RE.test(req.path)) return next();
+  const startedAt = Date.now();
+  const threshold = slowThresholdFor(req.path);
+  res.on('finish', () => {
+    const tookMs = Date.now() - startedAt;
+    if (tookMs >= threshold) {
+      logger.warn('request.slow', { method: req.method, path: req.originalUrl, status: res.statusCode, tookMs, thresholdMs: threshold });
+    }
+  });
+  next();
+});
+
 app.use(express.json());
 app.use(
   session({
@@ -191,10 +291,41 @@ app.use(
   })
 );
 
-app.use('/assets', express.static(path.join(__dirname, '../public'), { index: false }));
+const PUBLIC_DIR = path.join(__dirname, '../public');
+
+// There is no build step, so a page load is ~44 separate requests: 35 ES modules, 7 vendor
+// scripts, the stylesheet and the logo. express.static's defaults gave every one of them an ETag
+// and no max-age, which means 44 conditional round trips on every navigation - all answering 304,
+// all still costing a turn of the browser's ~6-connection budget, on the same origin whose SSE
+// streams are already holding some of it open.
+//
+// So assets are mounted twice. The version-pinned prefix can be cached forever because the URL
+// itself changes on every release - and crucially that works for the *whole module graph* without
+// touching a single import: a relative `import './format.js'` resolves against the importing
+// module's own URL, so pointing index.html at /assets/v<version>/js/app.js pulls all 35 in under
+// the same prefix. A query string (?v=) could not do that - the imports would not carry it.
+const ASSET_PREFIX = `/assets/v${appVersion}`;
+app.use(ASSET_PREFIX, express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' }));
+
+// The bare mount stays for two reasons: anything referencing /assets/… directly rather than
+// through the HTML (app.js's template has the logo), and a browser still holding a cached
+// index.html from the previous release, which must keep working rather than 404 its way to a
+// blank page. Its max-age is short - enough to stop re-validating on every navigation within a
+// session, short enough that a deploy is picked up without a hard refresh.
+app.use('/assets', express.static(PUBLIC_DIR, { index: false, maxAge: '5m' }));
+
+// The HTML is the pointer to everything above, so it is the one thing that must never be cached:
+// serve a stale copy and the browser keeps loading the previous release's assets from its own
+// cache, indefinitely and invisibly. Read per request rather than at boot so `npm run dev` still
+// picks up edits - it is two small files, once per navigation, against the 44 requests this saves.
+function sendPage(res, file) {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, file), 'utf8');
+  res.set('Cache-Control', 'no-cache');
+  res.type('html').send(html.replaceAll('/assets/', `${ASSET_PREFIX}/`));
+}
 
 app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/login.html'));
+  sendPage(res, 'login.html');
 });
 
 // Bcrypt login with no attempt limit is the main exposed surface - cap failed
@@ -206,6 +337,14 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'too many login attempts, try again later' },
+  // Without a handler this blocks silently, and the silence is the problem: once the limiter
+  // trips, requests stop reaching verifyLogin, so `auth.failure` stops being logged too. A
+  // sustained brute-force attempt therefore reads in the log as though it stopped, exactly when
+  // it's most active. This is the only line that says otherwise.
+  handler: (req, res, next, options) => {
+    logger.warn('auth.rate_limited', { ip: req.ip, user: (req.body && req.body.username) || null, limit: options.limit });
+    res.status(options.statusCode).json(options.message);
+  },
 });
 
 // Anything the pre-auth session held keeps its id through a login without this, so a session id
@@ -285,12 +424,50 @@ app.post('/logout', (req, res) => {
 });
 
 app.get('/', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+  sendPage(res, 'index.html');
 });
 
 const api = express.Router();
 api.use(requireAuth);
 api.use(requestTimeout(REQUEST_TIMEOUT_MS));
+
+// Never trust a length from the client, and never let one log line become a megabyte: a stack
+// trace is unbounded and this value is entirely attacker-influenced. Newlines need no special
+// handling - logger.js's formatFields JSON.stringifies any value containing whitespace, so they
+// come out escaped and can't forge a second log line.
+function clip(value, max) {
+  if (value === undefined || value === null) return null;
+  return String(value).slice(0, max) || null;
+}
+
+// Generous enough that a real burst of distinct errors still gets through, tight enough that a
+// client which somehow defeats its own per-page cap can't flood the log. The client's cap is the
+// real defence (see app.js) because the connection cost is paid browser-side; this is the backstop
+// for a client that isn't ours.
+const clientErrorLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: { error: 'too many client error reports' },
+});
+
+// The frontend compiles its Vue templates in the browser, so a broken render is a blank page with
+// a completely healthy server log - "the site is broken" and "the server is fine" both true, and
+// nothing reconciling them without someone opening devtools. This puts client failures in the same
+// log as everything else. 204 with no body: the client is fire-and-forget and must not care about
+// the answer, so there's nothing for it to parse and nothing for it to fail on.
+api.post('/client-error', clientErrorLimiter, (req, res) => {
+  const { kind, message, source, line } = req.body || {};
+  logger.warn('client.error', {
+    user: req.session.username,
+    kind: clip(kind, 40),
+    message: clip(message, 300),
+    source: clip(source, 200),
+    line: Number.isFinite(Number(line)) ? Number(line) : null,
+  });
+  res.status(204).end();
+});
 
 api.get('/session', (req, res) => {
   res.json({ username: req.session.username, role: req.session.role, version: appVersion, defaultView: getDefaultView() });
@@ -325,20 +502,77 @@ api.get('/hosts', async (req, res) => {
   res.json(results);
 });
 
-// Served from the collector's snapshot, same reason as /stats: at most POLL_MS stale (the
-// browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. ?fresh=1
-// forces a live call right after a start/stop/restart, where staleness reads as "didn't work".
-api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
+// The four builders below each back both their own route and one field of the /dashboard bundle.
+// They exist as functions for exactly that reason: the bundle is the same data the separate routes
+// return, and two copies of "what a container row carries" would be free to drift apart silently.
+
+// Served from the collector's snapshot, same reason as statsFor: at most POLL_MS stale (the
+// browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. fresh forces a
+// live call right after a start/stop/restart, where staleness reads as "didn't work".
+async function containersFor(host, { fresh = false } = {}) {
+  const snapshot = metricsCollector.getSnapshot(host.id);
+  const useSnapshot = !fresh && snapshot && snapshot.reachable && snapshot.statsTs;
+  const containers = useSnapshot ? snapshot.containers : await listContainers(host);
+  const restartCounts = db.getRestartCountsByContainer(host.id, Date.now() - 3_600_000);
+  // The snapshot's container objects are the collector's own and get read on every poll - copy
+  // rather than annotating them in place with a field only this response wants.
+  return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
+}
+
+// Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's at
+// most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on statsTs,
+// not just reachable, since a freshly-added host has empty stats until its first poll.
+async function statsFor(host) {
+  const snapshot = metricsCollector.getSnapshot(host.id);
+  if (snapshot && snapshot.reachable && snapshot.statsTs) return snapshot.stats;
+  return getStats(host);
+}
+
+function hostHistoryFor(hostId, rangeKey) {
+  const range = HISTORY_RANGES[rangeKey] || HISTORY_RANGES['1h'];
+  return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+}
+
+async function topologyFor(host) {
+  const topology = await getTopology(host, metricsCollector.getSnapshot(host.id));
+  const alertCounts = db.getOpenAlertCountsByContainer(host.id);
+  for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
+  return topology;
+}
+
+// The poll loop's cycle in one request. It used to be four serial ones - containers, stats,
+// history, alerts - each awaiting the one before it, so a cycle cost four round trips, four
+// session-store lookups and four turns of the browser's ~6-connection budget, per open tab, every
+// POLL_MS. None of it needs a docker call (it is all snapshot and sqlite), so there was never a
+// reason for them to be separate requests rather than separate fields.
+//
+// **Topology is deliberately not one of them**, even though the poll fetches it too in Flow view.
+// It is the one part that can still shell out - its label/mount metadata is cached against the
+// container-id set, which a container being recreated invalidates - so folding it in would put a
+// docker call behind every field here and make the whole response only as reliable as the
+// slowest one. It stays its own route, and the client simply stops awaiting the two in series.
+// The individual routes stay too: `?fresh=1` on /containers still has its own caller, and the
+// history/alerts routes serve ranges and limits this bundle deliberately does not.
+const DASHBOARD_ALERT_LIMIT = 100;
+
+api.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {
   const host = req.odwHost;
-  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  const useSnapshot = req.query.fresh !== '1' && snapshot && snapshot.reachable && snapshot.statsTs;
   try {
-    const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-    const sinceTs = Date.now() - 3_600_000;
-    const restartCounts = db.getRestartCountsByContainer(req.params.hostId, sinceTs);
-    // The snapshot's container objects are the collector's own and get read on every poll -
-    // copy rather than annotating them in place with a field only this response wants.
-    res.json(containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 })));
+    const [containers, stats] = await Promise.all([containersFor(host), statsFor(host)]);
+    res.json({
+      containers,
+      stats,
+      metricsHistory: hostHistoryFor(host.id, '1h'),
+      alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+    });
+  } catch (err) {
+    dockerError(res, err);
+  }
+});
+
+api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
+  try {
+    res.json(await containersFor(req.odwHost, { fresh: req.query.fresh === '1' }));
   } catch (err) {
     dockerError(res, err);
   }
@@ -358,8 +592,14 @@ api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId
   }
 });
 
+// Served from the collector's snapshot, same reason as /containers and /stats: it already has a
+// current `docker info` for every host, and this route is hit on every host switch by every
+// viewer. The snapshot's copy is also the better answer - its container counts are recomputed
+// from the poll's `docker ps` rather than left at whatever the cached info call last reported.
 api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
   const host = req.odwHost;
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  if (snapshot && snapshot.reachable && snapshot.hostInfo) return res.json(snapshot.hostInfo);
   try {
     res.json(await getHostInfo(host));
   } catch (err) {
@@ -368,27 +608,16 @@ api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
-  const host = req.odwHost;
-  // Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's
-  // at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on
-  // statsTs, not just reachable, since a freshly-added host has empty stats until its first poll.
-  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.reachable && snapshot.statsTs) return res.json(snapshot.stats);
   try {
-    res.json(await getStats(host));
+    res.json(await statsFor(req.odwHost));
   } catch (err) {
     dockerError(res, err);
   }
 });
 
 api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
-  const host = req.odwHost;
   try {
-    const snapshot = metricsCollector.getSnapshot(host.id);
-    const topology = await getTopology(host, snapshot);
-    const alertCounts = db.getOpenAlertCountsByContainer(host.id);
-    for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
-    res.json(topology);
+    res.json(await topologyFor(req.odwHost));
   } catch (err) {
     dockerError(res, err);
   }
@@ -423,13 +652,10 @@ api.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
-  const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
-  const sinceTs = Date.now() - range.sinceMs;
   const { containerId } = req.query;
-  const rows = containerId
-    ? db.getContainerMetricsHistory(req.params.hostId, containerId, sinceTs, range.bucketMs)
-    : db.getHostMetricsHistory(req.params.hostId, sinceTs, range.bucketMs);
-  res.json(rows);
+  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range));
+  const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
+  res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
 });
 
 api.get('/hosts/:hostId/events', requireHost, (req, res) => {
@@ -853,14 +1079,20 @@ api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (
   // the pair is the app's main way of running out of either. closedBy says which side ended it:
   // 'client' is a normal pane close or tab suspend, 'child' is docker exiting under us.
   const openedAt = Date.now();
-  logger.info('logs.stream.open', { host: host.id, container: req.params.id, tail, user: req.session.username });
-  const logClose = (closedBy) =>
+  openLogStreams += 1;
+  logger.info('logs.stream.open', { host: host.id, container: req.params.id, tail, user: req.session.username, open: openLogStreams });
+  // Decremented here rather than in cleanup() so it can't be missed by a future early return -
+  // cleanup is the single place that calls this, and it self-guards against running twice.
+  const logClose = (closedBy) => {
+    openLogStreams = Math.max(0, openLogStreams - 1);
     logger.info('logs.stream.close', {
       host: host.id,
       container: req.params.id,
       closedBy,
       heldSec: Math.round((Date.now() - openedAt) / 1000),
+      open: openLogStreams,
     });
+  };
 
   // Buffer partial lines per-stream (stdout/stderr arrive as independent byte
   // streams) so a line split across chunk boundaries isn't emitted as two SSE
@@ -959,6 +1191,7 @@ app.use((err, req, res, next) => {
 // not when require()'d, which is how test/index.test.js loads `app` for supertest. Without this
 // guard, importing the module for its routes would also open a port and start polling.
 if (require.main === module) {
+  let vitalsTimer = null;
   const server = app.listen(PORT, () => {
     // Through logger.js, not console: the Log Viewer filters on the [LEVEL] tag, so a banner on
     // plain console is invisible in the app's own log view - which is where someone checking
@@ -976,6 +1209,11 @@ if (require.main === module) {
     eventWatcher.start();
     metricsCollector.start();
     watchdog.start();
+    if (VITALS_INTERVAL_MS) {
+      // Never the reason the process stays alive - the HTTP server is. Same as watchdog's timer.
+      vitalsTimer = setInterval(logVitals, VITALS_INTERVAL_MS);
+      if (vitalsTimer.unref) vitalsTimer.unref();
+    }
   });
 
   // Node defaults to 300s here - five minutes of a held connection slot for a request that's
@@ -984,6 +1222,31 @@ if (require.main === module) {
   server.requestTimeout = REQUEST_TIMEOUT_MS + 10_000;
   server.headersTimeout = 30_000;
   server.keepAliveTimeout = 20_000;
+
+  // Nothing here reaches Express, so no middleware above (request.slow included) can ever see it -
+  // a malformed request, or a client that stalls mid-headers, is otherwise destroyed by Node with
+  // no application-level trace. ECONNRESET is the common, boring case (a client closing early) and
+  // stays quiet; anything else is the interesting one, e.g. a corrupt request line from a proxy.
+  //
+  // See clientErrorStatus for why the response isn't a flat 400.
+  server.on('clientError', (err, socket) => {
+    if (err.code !== 'ECONNRESET') {
+      logger.warn('http.client_error', { code: err.code, message: err.message });
+    }
+    // Node's default declines to write once the socket is gone or a response has already begun;
+    // not matching that turns socket.end() into a silent no-op that reads like a reply was sent,
+    // or corrupts a partly-written one.
+    if (!socket.writable || socket.bytesWritten > 0) return socket.destroy();
+    socket.end(`HTTP/1.1 ${clientErrorStatus(err.code)}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  });
+
+  // There is deliberately no server.on('timeout') listener and no server.timeout. It defaults to 0
+  // (disabled) in Node >= 13, so a listener alone can never fire - and merely attaching one
+  // suppresses Node's default socket destruction, so turning server.timeout on to "fix" that would
+  // leak every timed-out socket unless the handler destroyed them itself. It also can't be turned
+  // on safely here regardless: server.timeout is whole-socket inactivity, and this app's SSE log
+  // and event streams are idle by design between 30s heartbeats. requestTimeout/headersTimeout
+  // above are the bounded, per-request equivalents, and they don't touch a streaming response.
 
   // Most unhandled rejections here are one failed docker call or db write - losing a poll is
   // recoverable, losing the process isn't - so they're logged and swallowed. An uncaught
@@ -1003,26 +1266,33 @@ if (require.main === module) {
     // identical in `docker logs` unless the graceful path says so itself.
     logger.info('app.shutdown', { signal, uptimeSec: Math.round(process.uptime()) });
     watchdog.stop();
+    if (vitalsTimer) clearInterval(vitalsTimer);
     metricsCollector.stop();
     eventWatcher.stop();
     alerts.stop();
 
+    const startedAt = Date.now();
     let closed = false;
-    const finish = () => {
+    // Which of the two paths got here is worth knowing and was previously invisible: 'drained'
+    // means every connection ended on its own, 'timeout' means streams were still held after 5s
+    // and are being dropped. A shutdown that always reports 'timeout' is the connection-budget
+    // problem showing up at the one moment it's easy to observe.
+    const finish = (endedBy) => {
       if (closed) return;
       closed = true;
+      logger.info('app.shutdown.complete', { endedBy, tookMs: Date.now() - startedAt, logStreams: openLogStreams });
       db.close();
       process.exit(0);
     };
 
     // server.close() waits for open connections to end, but log/event SSE streams
     // are intentionally long-lived - don't let them block shutdown indefinitely.
-    server.close(finish);
-    setTimeout(finish, 5000);
+    server.close(() => finish('drained'));
+    setTimeout(() => finish('timeout'), 5000);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = { app, api, requestTimeout, requireHost };
+module.exports = { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor };
