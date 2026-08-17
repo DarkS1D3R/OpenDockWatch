@@ -63,8 +63,12 @@ export async function apiGetContainers(hostId, { fresh = false } = {}) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers${fresh ? '?fresh=1' : ''}`));
 }
 
-export async function apiGetStats(hostId) {
-  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/stats`));
+// Containers, stats, host history and alerts in one request - everything the poll loop needs that
+// the server already holds in memory. Four serial fetches per cycle spent four round trips and
+// four of the browser's ~6 connections on it; see CLAUDE.md. Topology stays separate (it can
+// shell out) and the caller runs it alongside this one rather than after it.
+export async function apiGetDashboard(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/dashboard`));
 }
 
 export async function apiGetTopology(hostId) {
@@ -124,11 +128,6 @@ export async function apiGetEvents(hostId, { since, limit } = {}) {
 
 export function eventsStreamUrl(hostId) {
   return `/api/hosts/${hostId}/events/stream`;
-}
-
-export async function apiGetAlerts(hostId, limit) {
-  const qs = new URLSearchParams({ ...(hostId ? { hostId } : {}), ...(limit ? { limit } : {}) });
-  return jsonOrThrow(await apiFetch(`/api/alerts?${qs}`));
 }
 
 export async function apiAckAlert(id) {

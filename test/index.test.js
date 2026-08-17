@@ -34,6 +34,7 @@ const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
+const metricsCollector = require('../server/metricsCollector');
 
 test.after(() => {
   db.close();
@@ -498,5 +499,158 @@ test('POST /api/client-error', async (t) => {
     } finally {
       logger.warn = realWarn;
     }
+  });
+});
+
+// The four fields of /dashboard are the four routes the poll loop used to call one after another.
+// They share builder functions precisely so the bundle can't drift from them - these assert that
+// it hasn't, field by field, which is the failure this consolidation could actually cause: a
+// change to /containers that never reaches the response the app is now reading instead.
+//
+// The snapshot is stubbed so nothing here shells out to docker, keeping this file's existing
+// property that `npm test` never spawns a CLI. Note the bundle deliberately excludes topology -
+// that one can shell out, so it stays its own route and the client runs it in parallel instead.
+test('GET /hosts/:hostId/dashboard', async (t) => {
+  // Whichever host this checkout's config actually has - the example config in CI and a real
+  // hosts.json locally both work, and hardcoding an id would pass in one and 404 in the other.
+  const hostId = loadHosts()[0].id;
+  const SNAPSHOT = {
+    reachable: true,
+    statsTs: Date.now(),
+    containers: [
+      { id: 'aaaaaaaaaaaa', name: 'web', state: 'running', image: 'nginx', composeProject: 'shop' },
+      { id: 'bbbbbbbbbbbb', name: 'db', state: 'exited', image: 'postgres', composeProject: 'shop' },
+    ],
+    stats: { aaaaaaaaaaaa: { cpuPerc: '1.5%', memUsage: '10MiB / 1GiB', memPerc: '1.0%', netRxBytes: 12 } },
+    hostInfo: { ncpu: 4, memTotalBytes: 1e9 },
+  };
+
+  const withSnapshot = (t2) => t2.mock.method(metricsCollector, 'getSnapshot', () => SNAPSHOT);
+
+  // Seeded, and this is load-bearing rather than incidental: against an empty database every
+  // parity assertion below compares two empty arrays and passes no matter what the bundle asked
+  // for. Verified by mutation - pointing metricsHistory at the 24h range, and dropping the host
+  // scope from the alerts read, both survived the whole suite until these rows existed. So the
+  // history spans the 1h boundary and the alerts span two hosts, giving each one something to be
+  // wrong about.
+  const now = Date.now();
+  const OTHER_HOST = '__index_test_other_host__';
+  for (const agoMs of [60_000, 120_000, 5 * 3_600_000]) {
+    db.insertHostMetric({
+      hostId,
+      ts: now - agoMs,
+      cpuPercent: 12.5,
+      memUsedBytes: 1024,
+      systemCpuPercent: null,
+      systemMemUsedBytes: null,
+      systemMemTotalBytes: null,
+    });
+  }
+  for (const [h, rule] of [
+    [hostId, 'container_cpu'],
+    [hostId, 'container_mem'],
+    [OTHER_HOST, 'container_cpu'],
+  ]) {
+    db.insertAlert({
+      ts: now - 60_000,
+      hostId: h,
+      containerId: 'aaaaaaaaaaaa',
+      containerName: 'web',
+      rule,
+      severity: 'warning',
+      message: `${rule} on ${h}`,
+    });
+  }
+
+  await t.test('carries exactly the four fields, and not topology', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(res.body).sort(), ['alerts', 'containers', 'metricsHistory', 'stats']);
+  });
+
+  await t.test('its containers match GET /containers exactly', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/containers`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.containers, single.body);
+    // Not just equal to each other but actually built: the restart count is the field /containers
+    // adds on top of the snapshot, and two empty arrays would satisfy a bare deepEqual.
+    assert.equal(bundle.body.containers.length, 2);
+    assert.ok('restartCount1h' in bundle.body.containers[0]);
+  });
+
+  await t.test('its stats match GET /stats exactly', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/stats`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.stats, single.body);
+    assert.equal(bundle.body.stats.aaaaaaaaaaaa.cpuPerc, '1.5%');
+  });
+
+  // The bundle hardcodes the 1h range because that is the window the host card's live tiles draw;
+  // if the route's default ever moved, the two would quietly start returning different buckets.
+  await t.test('its history matches GET /metrics/history at the 1h range', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.metricsHistory, single.body);
+    // Two of the three seeded rows are inside the hour and one is five hours out. Compared by
+    // window rather than by row count: both ranges happen to bucket those three into two rows
+    // each (15s vs 5min buckets), so a length comparison discriminates nothing.
+    const wider = await agent.get(`/api/hosts/${hostId}/metrics/history?range=24h`);
+    const anHourAgo = Date.now() - 3_600_000;
+    assert.ok(bundle.body.metricsHistory.length > 0, 'nothing to compare - the seed did not land');
+    assert.ok(
+      bundle.body.metricsHistory.every((r) => r.bucket >= anHourAgo - 60_000),
+      'the bundle returned buckets older than an hour, so it is not pinned to the 1h range'
+    );
+    assert.ok(
+      wider.body.some((r) => r.bucket < anHourAgo),
+      'the 24h range returned nothing older than an hour, so the check above proves nothing'
+    );
+  });
+
+  await t.test('its alerts match GET /alerts for the same host and limit', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const single = await agent.get(`/api/alerts?hostId=${encodeURIComponent(hostId)}&limit=100`);
+    assert.equal(single.status, 200);
+    assert.deepEqual(bundle.body.alerts, single.body);
+    assert.ok(bundle.body.alerts.length > 0, 'nothing to compare - the seed did not land');
+  });
+
+  // It is scoped to one host, unlike /alerts which serves every host when given no hostId - and
+  // the seed puts an alert on a second host specifically so an unscoped read would show up here.
+  await t.test('its alerts are scoped to the host in the path', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const bundle = await agent.get(`/api/hosts/${hostId}/dashboard`);
+    const allHosts = await agent.get('/api/alerts?limit=100');
+    for (const a of bundle.body.alerts) assert.equal(a.host_id, hostId);
+    assert.ok(allHosts.body.length > bundle.body.alerts.length, 'the unscoped read returned no more, so scoping proves nothing here');
+  });
+
+  await t.test('a viewer can read it - it replaced four routes a viewer could already read', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${hostId}/dashboard`)).status, 200);
+  });
+
+  await t.test('an unknown host 404s rather than building an empty bundle', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/dashboard`)).status, 404);
+  });
+
+  await t.test('it needs a session', async () => {
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/dashboard`)).status, 401);
   });
 });

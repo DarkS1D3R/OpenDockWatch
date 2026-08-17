@@ -470,20 +470,77 @@ api.get('/hosts', async (req, res) => {
   res.json(results);
 });
 
-// Served from the collector's snapshot, same reason as /stats: at most POLL_MS stale (the
-// browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. ?fresh=1
-// forces a live call right after a start/stop/restart, where staleness reads as "didn't work".
-api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
+// The four builders below each back both their own route and one field of the /dashboard bundle.
+// They exist as functions for exactly that reason: the bundle is the same data the separate routes
+// return, and two copies of "what a container row carries" would be free to drift apart silently.
+
+// Served from the collector's snapshot, same reason as statsFor: at most POLL_MS stale (the
+// browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. fresh forces a
+// live call right after a start/stop/restart, where staleness reads as "didn't work".
+async function containersFor(host, { fresh = false } = {}) {
+  const snapshot = metricsCollector.getSnapshot(host.id);
+  const useSnapshot = !fresh && snapshot && snapshot.reachable && snapshot.statsTs;
+  const containers = useSnapshot ? snapshot.containers : await listContainers(host);
+  const restartCounts = db.getRestartCountsByContainer(host.id, Date.now() - 3_600_000);
+  // The snapshot's container objects are the collector's own and get read on every poll - copy
+  // rather than annotating them in place with a field only this response wants.
+  return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
+}
+
+// Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's at
+// most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on statsTs,
+// not just reachable, since a freshly-added host has empty stats until its first poll.
+async function statsFor(host) {
+  const snapshot = metricsCollector.getSnapshot(host.id);
+  if (snapshot && snapshot.reachable && snapshot.statsTs) return snapshot.stats;
+  return getStats(host);
+}
+
+function hostHistoryFor(hostId, rangeKey) {
+  const range = HISTORY_RANGES[rangeKey] || HISTORY_RANGES['1h'];
+  return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+}
+
+async function topologyFor(host) {
+  const topology = await getTopology(host, metricsCollector.getSnapshot(host.id));
+  const alertCounts = db.getOpenAlertCountsByContainer(host.id);
+  for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
+  return topology;
+}
+
+// The poll loop's cycle in one request. It used to be four serial ones - containers, stats,
+// history, alerts - each awaiting the one before it, so a cycle cost four round trips, four
+// session-store lookups and four turns of the browser's ~6-connection budget, per open tab, every
+// POLL_MS. None of it needs a docker call (it is all snapshot and sqlite), so there was never a
+// reason for them to be separate requests rather than separate fields.
+//
+// **Topology is deliberately not one of them**, even though the poll fetches it too in Flow view.
+// It is the one part that can still shell out - its label/mount metadata is cached against the
+// container-id set, which a container being recreated invalidates - so folding it in would put a
+// docker call behind every field here and make the whole response only as reliable as the
+// slowest one. It stays its own route, and the client simply stops awaiting the two in series.
+// The individual routes stay too: `?fresh=1` on /containers still has its own caller, and the
+// history/alerts routes serve ranges and limits this bundle deliberately does not.
+const DASHBOARD_ALERT_LIMIT = 100;
+
+api.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {
   const host = req.odwHost;
-  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  const useSnapshot = req.query.fresh !== '1' && snapshot && snapshot.reachable && snapshot.statsTs;
   try {
-    const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-    const sinceTs = Date.now() - 3_600_000;
-    const restartCounts = db.getRestartCountsByContainer(req.params.hostId, sinceTs);
-    // The snapshot's container objects are the collector's own and get read on every poll -
-    // copy rather than annotating them in place with a field only this response wants.
-    res.json(containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 })));
+    const [containers, stats] = await Promise.all([containersFor(host), statsFor(host)]);
+    res.json({
+      containers,
+      stats,
+      metricsHistory: hostHistoryFor(host.id, '1h'),
+      alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+    });
+  } catch (err) {
+    dockerError(res, err);
+  }
+});
+
+api.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
+  try {
+    res.json(await containersFor(req.odwHost, { fresh: req.query.fresh === '1' }));
   } catch (err) {
     dockerError(res, err);
   }
@@ -519,27 +576,16 @@ api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/stats', requireHost, async (req, res) => {
-  const host = req.odwHost;
-  // Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's
-  // at most POLL_MS stale. Falls back to a live call when there's no snapshot yet - gated on
-  // statsTs, not just reachable, since a freshly-added host has empty stats until its first poll.
-  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  if (snapshot && snapshot.reachable && snapshot.statsTs) return res.json(snapshot.stats);
   try {
-    res.json(await getStats(host));
+    res.json(await statsFor(req.odwHost));
   } catch (err) {
     dockerError(res, err);
   }
 });
 
 api.get('/hosts/:hostId/topology', requireHost, async (req, res) => {
-  const host = req.odwHost;
   try {
-    const snapshot = metricsCollector.getSnapshot(host.id);
-    const topology = await getTopology(host, snapshot);
-    const alertCounts = db.getOpenAlertCountsByContainer(host.id);
-    for (const node of topology.nodes) node.openAlerts = alertCounts.get(node.id) || 0;
-    res.json(topology);
+    res.json(await topologyFor(req.odwHost));
   } catch (err) {
     dockerError(res, err);
   }
@@ -574,13 +620,10 @@ api.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => {
 });
 
 api.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
-  const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
-  const sinceTs = Date.now() - range.sinceMs;
   const { containerId } = req.query;
-  const rows = containerId
-    ? db.getContainerMetricsHistory(req.params.hostId, containerId, sinceTs, range.bucketMs)
-    : db.getHostMetricsHistory(req.params.hostId, sinceTs, range.bucketMs);
-  res.json(rows);
+  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range));
+  const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
+  res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
 });
 
 api.get('/hosts/:hostId/events', requireHost, (req, res) => {

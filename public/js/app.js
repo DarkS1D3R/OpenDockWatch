@@ -13,15 +13,13 @@ import { parseMemUsedBytes } from './format.js';
 import {
   apiGetHosts,
   apiGetContainers,
-  apiGetStats,
+  apiGetDashboard,
   apiGetTopology,
   apiGetHostInfo,
   apiContainerAction,
   apiLogout,
   apiGetSession,
   apiGetDiskUsage,
-  apiGetMetricsHistory,
-  apiGetAlerts,
   apiAckAlert,
   apiAckAllAlerts,
   reportClientError,
@@ -275,8 +273,8 @@ const app = createApp({
       this.pollInFlight = true;
       try {
         await this.refresh();
-        // refresh()'s sub-fetches each swallow their own errors (they're best-effort), but
-        // fetchContainers records its failure - the one that means the host itself is answering.
+        // fetchDashboard swallows its own failure into containersError rather than throwing, so
+        // the backoff reads that instead of relying on the catch below.
         this.pollFailures = this.containersError ? this.pollFailures + 1 : 0;
       } catch {
         this.pollFailures++;
@@ -302,13 +300,38 @@ const app = createApp({
       this.pollFailures = 0;
       this.schedulePoll(0);
     },
+    // A cycle was five requests awaited one after another - containers, stats, history, alerts,
+    // and topology in Flow view - so it cost five round trips and five turns of the browser's ~6
+    // connections per open tab, every POLL_MS, for data the server already holds in memory. Four
+    // of them are now fields of one /dashboard response; topology stays its own request (it can
+    // shell out to docker) but runs alongside rather than after it, so Flow view is two requests
+    // and one round trip. fetchTopology swallows its own errors, so Promise.all can't reject on it.
     async refresh() {
-      await this.fetchContainers();
-      await this.fetchStats();
-      this.recordMetricsSample();
-      await this.fetchHostMetricsHistory();
-      await this.fetchAlerts();
-      if (this.view === 'flow') await this.fetchTopology();
+      await Promise.all([this.fetchDashboard(), this.view === 'flow' ? this.fetchTopology() : null]);
+    },
+    // Same host-switch guard as every other fetch here: a slow response for the host you just
+    // navigated away from must not land on the host you are now looking at.
+    async fetchDashboard() {
+      if (!this.selectedHostId) return;
+      const hostId = this.selectedHostId;
+      this.loadingContainers = true;
+      try {
+        const data = await apiGetDashboard(hostId);
+        if (this.selectedHostId !== hostId) return;
+        this.containers = data.containers;
+        this.containersError = null;
+        this.stats = data.stats;
+        this.recordMetricsSample();
+        this.hostMetricsHistory = data.metricsHistory.slice(-HOST_METRICS_HISTORY_LEN);
+        this.alerts = data.alerts;
+      } catch (err) {
+        if (this.selectedHostId !== hostId) return;
+        this.containersError = err.message;
+      } finally {
+        // Only this call's own loading flag - don't clear it out from under a newer, still
+        // in-flight fetch for the host the user has since switched to.
+        if (this.selectedHostId === hostId) this.loadingContainers = false;
+      }
     },
     async fetchHostInfo() {
       if (!this.selectedHostId) return;
@@ -333,26 +356,6 @@ const app = createApp({
         this.diskUsageError = usage.error || null;
       } catch {
         /* disk usage is best-effort */
-      }
-    },
-    async fetchHostMetricsHistory() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const rows = await apiGetMetricsHistory(hostId, { range: '1h' });
-        if (this.selectedHostId === hostId) this.hostMetricsHistory = rows.slice(-HOST_METRICS_HISTORY_LEN);
-      } catch {
-        /* history is best-effort */
-      }
-    },
-    async fetchAlerts() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const alerts = await apiGetAlerts(hostId, 100);
-        if (this.selectedHostId === hostId) this.alerts = alerts;
-      } catch {
-        /* alerts are best-effort */
       }
     },
     async ackAlertAction(alert) {
@@ -420,16 +423,6 @@ const app = createApp({
         // Only this call's own loading flag - don't clear it out from under a newer, still
         // in-flight fetchContainers for the host the user has since switched to.
         if (this.selectedHostId === hostId) this.loadingContainers = false;
-      }
-    },
-    async fetchStats() {
-      if (!this.selectedHostId) return;
-      const hostId = this.selectedHostId;
-      try {
-        const stats = await apiGetStats(hostId);
-        if (this.selectedHostId === hostId) this.stats = stats;
-      } catch {
-        /* stats are best-effort */
       }
     },
     async fetchTopology() {
