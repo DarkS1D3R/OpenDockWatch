@@ -50,14 +50,17 @@ db.exec(`
     container_name TEXT,
     action TEXT NOT NULL,
     ts INTEGER NOT NULL,
-    raw_json TEXT
+    raw_json TEXT,
+    cleared_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_events_lookup ON events (host_id, container_id, ts);
   -- getEvents filters on host_id and ts but not container_id, so the index above can only use its
   -- leading column and SQLite sorts the host's whole retained history to answer a LIMIT 200.
   -- This one makes it an index walk that stops at the limit. Both are kept - countRestartsSince
-  -- is per-container and still wants the first.
+  -- is per-container and still wants the first, and counts cleared rows so it needs the full index.
   CREATE INDEX IF NOT EXISTS idx_events_host_ts ON events (host_id, ts);
+  -- A third events index (idx_events_host_ts_active) is created after the ALTER TABLE block below,
+  -- not here: it is partial on cleared_at, which an upgrading database doesn't have yet.
 
   CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +86,8 @@ db.exec(`
     message TEXT NOT NULL,
     acknowledged INTEGER NOT NULL DEFAULT 0,
     webhook_delivered_at INTEGER,
-    webhook_attempts INTEGER NOT NULL DEFAULT 0
+    webhook_attempts INTEGER NOT NULL DEFAULT 0,
+    cleared_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
 
@@ -130,14 +134,25 @@ for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER'
   }
 }
 
-// Same upgrading-install backfill as above, for the webhook delivery tracking columns.
-for (const column of ['webhook_delivered_at INTEGER', 'webhook_attempts INTEGER NOT NULL DEFAULT 0']) {
+// Same upgrading-install backfill as above, for the webhook delivery tracking columns and the
+// Activity tab's Clear marker. NULL means visible, so an existing row needs no backfill value.
+for (const column of ['webhook_delivered_at INTEGER', 'webhook_attempts INTEGER NOT NULL DEFAULT 0', 'cleared_at INTEGER']) {
   try {
     db.exec(`ALTER TABLE alerts ADD COLUMN ${column}`);
   } catch {
     /* column already exists */
   }
 }
+
+// And events' own Clear marker. Its partial index has to be created down here rather than in the
+// schema block: a CREATE INDEX naming a column the ALTER above has just added would throw on an
+// upgrading database, where the block runs against the old table. See CLAUDE.md.
+try {
+  db.exec(`ALTER TABLE events ADD COLUMN cleared_at INTEGER`);
+} catch {
+  /* column already exists */
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_events_host_ts_active ON events (host_id, ts) WHERE cleared_at IS NULL`);
 
 const stmts = {
   insertContainerMetric: db.prepare(`
@@ -162,8 +177,8 @@ const stmts = {
     INSERT INTO alerts (ts, host_id, container_id, container_name, rule, severity, message, acknowledged)
     VALUES (@ts, @hostId, @containerId, @containerName, @rule, @severity, @message, 0)
   `),
-  ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ?`),
-  ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0`),
+  ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ? AND cleared_at IS NULL`),
+  ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
   markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
   // Picked up by alerts.js's retry sweep: never-attempted rows (webhook_attempts = 0) are
@@ -171,7 +186,8 @@ const stmts = {
   // lookback so a webhook down for hours doesn't get its whole backlog replayed at once.
   getPendingWebhookRetries: db.prepare(`
     SELECT * FROM alerts
-    WHERE webhook_delivered_at IS NULL AND webhook_attempts > 0 AND webhook_attempts < @maxAttempts AND ts >= @sinceTs
+    WHERE webhook_delivered_at IS NULL AND webhook_attempts > 0 AND webhook_attempts < @maxAttempts
+      AND ts >= @sinceTs AND cleared_at IS NULL
     ORDER BY ts ASC
     LIMIT @limit
   `),
@@ -181,11 +197,16 @@ const stmts = {
   `),
   deleteBreachStart: db.prepare(`DELETE FROM alert_breaches WHERE key = ?`),
   getAllBreaches: db.prepare(`SELECT key, start_ts AS startTs FROM alert_breaches`),
+  // The one alerts query that deliberately ignores cleared_at: this is alerts.js's cooldown, and
+  // clearing the Activity tab must not re-arm a rule that is still inside it. See CLAUDE.md.
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
     WHERE host_id = ? AND container_id IS ? AND rule = ?
     ORDER BY ts DESC LIMIT 1
   `),
+  // These two deliberately ignore cleared_at, the same exception lastAlertFire makes above: they
+  // are what a container actually did, not what the Activity tab is showing, and emptying that
+  // list must not reset crash-loop detection or walk the restart column back to zero.
   countRestartsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM events
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
@@ -197,7 +218,7 @@ const stmts = {
   `),
   countOpenAlertsByContainer: db.prepare(`
     SELECT container_id AS containerId, COUNT(*) AS n FROM alerts
-    WHERE host_id = ? AND acknowledged = 0
+    WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL
     GROUP BY container_id
   `),
   // No `result = 'ok'` filter: index.js writes this row's ts when the action is requested, before
@@ -216,14 +237,14 @@ const stmts = {
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
-  deleteEventsByHost: db.prepare(`DELETE FROM events WHERE host_id = ?`),
-  deleteAlertsByHost: db.prepare(`DELETE FROM alerts WHERE host_id = ?`),
-  getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`),
+  clearEventsByHost: db.prepare(`UPDATE events SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
+  clearAlertsByHost: db.prepare(`UPDATE alerts SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
+  getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
   getAuditLogByHost: db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
   getAuditLogAll: db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`),
-  getAlertsByHost: db.prepare(`SELECT * FROM alerts WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
-  getAlertsAll: db.prepare(`SELECT * FROM alerts ORDER BY ts DESC LIMIT ?`),
-  countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0`),
+  getAlertsByHost: db.prepare(`SELECT * FROM alerts WHERE host_id = ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
+  getAlertsAll: db.prepare(`SELECT * FROM alerts WHERE cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
+  countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   // Buckets into `bucketMs`-wide windows and averages numeric columns; the four I/O columns use
   // MAX not AVG since they're cumulative counters - metricsHistory.js's withIoRates turns
   // consecutive bucket totals into displayed rates. See CLAUDE.md for the restart-edge-case note.
@@ -419,10 +440,11 @@ function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
   return stmts.getEvents.all(hostId, sinceTs, limit);
 }
 
-// Full delete, not a filtered prune - the Activity tab's "Clear" button, distinct from the
-// hourly retention-window prune above which only ever removes rows older than the retention cutoff.
-function deleteEvents(hostId) {
-  return stmts.deleteEventsByHost.run(hostId).changes;
+// Soft, like clearAlerts below: the row stays for countRestartsSince/getRestartCountsByContainer,
+// which are the crash_loop rule and the List view's restartCount1h, and only getEvents filters it
+// out. Distinct from pruneEvents above, which is the age-based retention sweep. See CLAUDE.md.
+function clearEvents(hostId) {
+  return stmts.clearEventsByHost.run(Date.now(), hostId).changes;
 }
 
 function getAuditLog(hostId, { limit = 200 } = {}) {
@@ -433,11 +455,11 @@ function getAlerts(hostId, { limit = 200 } = {}) {
   return hostId ? stmts.getAlertsByHost.all(hostId, limit) : stmts.getAlertsAll.all(limit);
 }
 
-// Full delete, not a filtered prune - same "Clear" contract as deleteEvents, and same distinction
-// from pruneAlerts' age-based retention sweep. hostId is required (like ackAllAlerts) - a Clear
-// button acts on the host currently open, never every host at once.
-function deleteAlerts(hostId) {
-  return stmts.deleteAlertsByHost.run(hostId).changes;
+// Soft, unlike deleteEvents: the row stays so lastAlertFire can still see it, and every other
+// alerts query filters it out - clearing the tab must not re-arm alerts.js's cooldown and re-fire
+// a still-breaching rule (with its webhook) on the next poll. See CLAUDE.md. hostId is required.
+function clearAlerts(hostId) {
+  return stmts.clearAlertsByHost.run(Date.now(), hostId).changes;
 }
 
 function countOpenAlerts(hostId) {
@@ -584,10 +606,10 @@ module.exports = {
   countManualStopsSince,
   countManualStartsSince,
   getEvents,
-  deleteEvents,
+  clearEvents,
   getAuditLog,
   getAlerts,
-  deleteAlerts,
+  clearAlerts,
   countOpenAlerts,
   getOpenAlertCountsByContainer,
   getContainerMetricsHistory,

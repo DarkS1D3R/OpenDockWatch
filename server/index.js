@@ -674,7 +674,7 @@ api.get('/hosts/:hostId/events', requireHost, (req, res) => {
 });
 
 api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
-  const count = db.deleteEvents(req.params.hostId);
+  const count = db.clearEvents(req.params.hostId);
   logger.info('events.clear', { host: req.params.hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });
@@ -723,7 +723,7 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
 api.delete('/alerts', requireAdmin, (req, res) => {
   const hostId = req.query.hostId;
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
-  const count = db.deleteAlerts(hostId);
+  const count = db.clearAlerts(hostId);
   logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });
