@@ -151,7 +151,9 @@ test('security headers are set on every response', async (t) => {
   await t.test('login.html has no inline script for the CSP to block', async () => {
     const res = await request(app).get('/login');
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(res.text), false, 'login.html still contains an inline <script>');
-    assert.match(res.text, /<script src="\/assets\/js\/login\.js">/);
+    // Matched loosely on the prefix because the asset paths are version-pinned on the way out -
+    // what this test is about is that the handler is an external file at all, not where it lives.
+    assert.match(res.text, /<script src="\/assets\/[^"]*\/js\/login\.js">/);
   });
 });
 
@@ -652,5 +654,86 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
 
   await t.test('it needs a session', async () => {
     assert.equal((await request(app).get(`/api/hosts/${hostId}/dashboard`)).status, 401);
+  });
+});
+
+// A page load is ~44 separate requests because there is no build step, and every one of them used
+// to be a conditional round trip. These cover the two halves of the fix: assets are cacheable
+// forever under a version-pinned URL, and the HTML that points at them never is.
+test('asset caching', async (t) => {
+  const { version } = require('../package.json');
+  const PREFIX = `/assets/v${version}`;
+
+  await t.test('a version-pinned asset is immutable and cacheable for a year', async () => {
+    const res = await request(app).get(`${PREFIX}/js/app.js`);
+    assert.equal(res.status, 200);
+    const cc = res.headers['cache-control'];
+    assert.match(cc, /max-age=31536000/, `expected a year of max-age, got "${cc}"`);
+    assert.match(cc, /immutable/, `expected immutable, got "${cc}"`);
+  });
+
+  await t.test('vendor scripts get it too - they are the bulk of the bytes', async () => {
+    const res = await request(app).get(`${PREFIX}/vendor/vue.global.prod.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers['cache-control'], /immutable/);
+  });
+
+  // The whole approach rests on this: relative imports resolve against the importing module's own
+  // URL, so pointing the HTML at the pinned prefix pulls the entire module graph under it. If the
+  // nested path did not resolve, 34 of the 35 modules would quietly fall back to the bare mount.
+  await t.test('nested modules resolve under the prefix, which is what pins the whole graph', async () => {
+    for (const p of ['/js/format.js', '/js/components/LogViewer.js', '/js/lib/logStream.js', '/style.css']) {
+      const res = await request(app).get(PREFIX + p);
+      assert.equal(res.status, 200, `${p} is not served under the version prefix`);
+      assert.match(res.headers['cache-control'], /immutable/);
+    }
+  });
+
+  // A browser still holding the previous release's index.html must keep working rather than 404
+  // its way to a blank page, so the bare paths stay served - just not cached anywhere near as long.
+  await t.test('the bare path still serves, and is not immutable', async () => {
+    const res = await request(app).get('/assets/js/app.js');
+    assert.equal(res.status, 200);
+    assert.equal(/immutable/.test(res.headers['cache-control'] || ''), false, 'the unversioned path must stay revalidatable');
+  });
+
+  await t.test('a stale version prefix 404s rather than serving something', async () => {
+    assert.equal((await request(app).get('/assets/v0.0.0-not-a-release/js/app.js')).status, 404);
+  });
+
+  // The HTML is the pointer to everything above. Serve a stale copy and the browser keeps loading
+  // the previous release's assets out of its own cache, indefinitely and with no way to notice.
+  await t.test('the HTML pages are never cached', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const [label, res] of [
+      ['login', await request(app).get('/login')],
+      ['index', await agent.get('/')],
+    ]) {
+      assert.equal(res.status, 200);
+      assert.match(res.headers['cache-control'] || '', /no-cache/, `${label} is cacheable`);
+      assert.doesNotMatch(res.headers['cache-control'] || '', /max-age=[1-9]/, `${label} carries a real max-age`);
+    }
+  });
+
+  await t.test('both pages point at the version-pinned prefix, not the bare one', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const [label, res] of [
+      ['login', await request(app).get('/login')],
+      ['index', await agent.get('/')],
+    ]) {
+      assert.match(res.text, new RegExp(PREFIX.replace(/\./g, '\\.')), `${label} references no pinned asset`);
+      // No bare /assets/ reference may survive the rewrite, or that asset alone would be served
+      // from the short-lived mount while everything around it is pinned.
+      assert.doesNotMatch(res.text, /"\/assets\/(?!v)/, `${label} still references an unpinned /assets/ path`);
+    }
+  });
+
+  await t.test('the index page still carries the module entry point and every vendor script', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get('/');
+    assert.match(res.text, new RegExp(`<script type="module" src="${PREFIX.replace(/\./g, '\\.')}/js/app\\.js"`));
+    for (const v of ['vue.global.prod.js', 'cytoscape.min.js', 'dagre.min.js', 'html2canvas-pro.min.js']) {
+      assert.ok(res.text.includes(`${PREFIX}/vendor/${v}`), `${v} is not loaded from the pinned prefix`);
+    }
   });
 });

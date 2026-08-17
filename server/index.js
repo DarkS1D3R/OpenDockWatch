@@ -2,6 +2,7 @@
 // a promotional third-party URL) so it doesn't pollute the container's log output alongside the
 // structured [opendockwatch] lines below.
 require('dotenv').config({ quiet: true });
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -290,10 +291,41 @@ app.use(
   })
 );
 
-app.use('/assets', express.static(path.join(__dirname, '../public'), { index: false }));
+const PUBLIC_DIR = path.join(__dirname, '../public');
+
+// There is no build step, so a page load is ~44 separate requests: 35 ES modules, 7 vendor
+// scripts, the stylesheet and the logo. express.static's defaults gave every one of them an ETag
+// and no max-age, which means 44 conditional round trips on every navigation - all answering 304,
+// all still costing a turn of the browser's ~6-connection budget, on the same origin whose SSE
+// streams are already holding some of it open.
+//
+// So assets are mounted twice. The version-pinned prefix can be cached forever because the URL
+// itself changes on every release - and crucially that works for the *whole module graph* without
+// touching a single import: a relative `import './format.js'` resolves against the importing
+// module's own URL, so pointing index.html at /assets/v<version>/js/app.js pulls all 35 in under
+// the same prefix. A query string (?v=) could not do that - the imports would not carry it.
+const ASSET_PREFIX = `/assets/v${appVersion}`;
+app.use(ASSET_PREFIX, express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' }));
+
+// The bare mount stays for two reasons: anything referencing /assets/… directly rather than
+// through the HTML (app.js's template has the logo), and a browser still holding a cached
+// index.html from the previous release, which must keep working rather than 404 its way to a
+// blank page. Its max-age is short - enough to stop re-validating on every navigation within a
+// session, short enough that a deploy is picked up without a hard refresh.
+app.use('/assets', express.static(PUBLIC_DIR, { index: false, maxAge: '5m' }));
+
+// The HTML is the pointer to everything above, so it is the one thing that must never be cached:
+// serve a stale copy and the browser keeps loading the previous release's assets from its own
+// cache, indefinitely and invisibly. Read per request rather than at boot so `npm run dev` still
+// picks up edits - it is two small files, once per navigation, against the 44 requests this saves.
+function sendPage(res, file) {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, file), 'utf8');
+  res.set('Cache-Control', 'no-cache');
+  res.type('html').send(html.replaceAll('/assets/', `${ASSET_PREFIX}/`));
+}
 
 app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/login.html'));
+  sendPage(res, 'login.html');
 });
 
 // Bcrypt login with no attempt limit is the main exposed surface - cap failed
@@ -392,7 +424,7 @@ app.post('/logout', (req, res) => {
 });
 
 app.get('/', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+  sendPage(res, 'index.html');
 });
 
 const api = express.Router();
