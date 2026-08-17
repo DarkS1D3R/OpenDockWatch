@@ -1,11 +1,13 @@
 import { MAX_ACTIVITY_EVENTS } from '../constants.js';
-import { apiGetEvents, eventsStreamUrl } from '../api.js';
+import { apiGetEvents, apiClearEvents, eventsStreamUrl } from '../api.js';
 import { eventSeverity } from '../format.js';
 import { groupCounts } from '../lib/activityCounts.js';
 
 // The Activity tab: an alerts column (search + acknowledge) and an events column (SSE-backed
 // search). Mounted fresh (v-if) each time opened, so its own mounted()/beforeUnmount() own the
-// events stream. `alerts` stay fetched by the root every poll (the topbar badge needs them too).
+// events stream. `alerts` stay fetched by the root every poll (the topbar badge needs them too),
+// so clearing them is emitted up rather than handled locally; events are this component's own
+// fetched/streamed state, so clearing them is handled entirely in-place.
 export default {
   name: 'ActivityView',
   props: {
@@ -13,7 +15,7 @@ export default {
     alerts: { type: Array, default: () => [] },
     isAdmin: { type: Boolean, default: false },
   },
-  emits: ['ack', 'ack-all'],
+  emits: ['ack', 'ack-all', 'clear-alerts'],
   data() {
     return {
       alertSearch: '',
@@ -119,6 +121,15 @@ export default {
         this._stream = null;
       }
     },
+    async clearEvents() {
+      if (!this.hostId) return;
+      try {
+        await apiClearEvents(this.hostId);
+        this.events = [];
+      } catch {
+        /* best-effort */
+      }
+    },
     formatEventTime(ts) {
       return new Date(ts).toLocaleTimeString();
     },
@@ -161,6 +172,7 @@ export default {
             >+{{ alertCounts.hidden.length }} more <b>{{ alertCounts.hiddenTotal }}</b></span>
           </div>
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
+          <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear</button>
         </div>
         <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
@@ -196,6 +208,7 @@ export default {
               :title="eventCounts.hidden.map(h => h.count + ' × ' + h.key).join(', ')"
             >+{{ eventCounts.hidden.length }} more <b>{{ eventCounts.hiddenTotal }}</b></span>
           </div>
+          <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear</button>
         </div>
         <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
         <p v-if="!searchedEvents.length" class="muted">{{ events.length ? 'No matching events.' : 'No events yet.' }}</p>

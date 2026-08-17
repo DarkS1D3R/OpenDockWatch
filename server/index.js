@@ -673,6 +673,12 @@ api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   );
 });
 
+api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
+  const count = db.deleteEvents(req.params.hostId);
+  logger.info('events.clear', { host: req.params.hostId, user: req.session.username, count });
+  res.json({ ok: true, count });
+});
+
 // Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
 // the Activity tab is open, so "which streams are actually open right now" is worth being able to
 // reconstruct from the log when the UI goes unresponsive. See CLAUDE.md's connection budget.
@@ -711,6 +717,14 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   const hostId = req.query.hostId;
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.ackAllAlerts(hostId);
+  res.json({ ok: true, count });
+});
+
+api.delete('/alerts', requireAdmin, (req, res) => {
+  const hostId = req.query.hostId;
+  if (!hostId) return res.status(400).json({ error: 'hostId required' });
+  const count = db.deleteAlerts(hostId);
+  logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });
 

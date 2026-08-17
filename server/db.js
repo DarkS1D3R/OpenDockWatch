@@ -216,6 +216,8 @@ const stmts = {
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
+  deleteEventsByHost: db.prepare(`DELETE FROM events WHERE host_id = ?`),
+  deleteAlertsByHost: db.prepare(`DELETE FROM alerts WHERE host_id = ?`),
   getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`),
   getAuditLogByHost: db.prepare(`SELECT * FROM audit_log WHERE host_id = ? ORDER BY ts DESC LIMIT ?`),
   getAuditLogAll: db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`),
@@ -417,12 +419,25 @@ function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
   return stmts.getEvents.all(hostId, sinceTs, limit);
 }
 
+// Full delete, not a filtered prune - the Activity tab's "Clear" button, distinct from the
+// hourly retention-window prune above which only ever removes rows older than the retention cutoff.
+function deleteEvents(hostId) {
+  return stmts.deleteEventsByHost.run(hostId).changes;
+}
+
 function getAuditLog(hostId, { limit = 200 } = {}) {
   return hostId ? stmts.getAuditLogByHost.all(hostId, limit) : stmts.getAuditLogAll.all(limit);
 }
 
 function getAlerts(hostId, { limit = 200 } = {}) {
   return hostId ? stmts.getAlertsByHost.all(hostId, limit) : stmts.getAlertsAll.all(limit);
+}
+
+// Full delete, not a filtered prune - same "Clear" contract as deleteEvents, and same distinction
+// from pruneAlerts' age-based retention sweep. hostId is required (like ackAllAlerts) - a Clear
+// button acts on the host currently open, never every host at once.
+function deleteAlerts(hostId) {
+  return stmts.deleteAlertsByHost.run(hostId).changes;
 }
 
 function countOpenAlerts(hostId) {
@@ -569,8 +584,10 @@ module.exports = {
   countManualStopsSince,
   countManualStartsSince,
   getEvents,
+  deleteEvents,
   getAuditLog,
   getAlerts,
+  deleteAlerts,
   countOpenAlerts,
   getOpenAlertCountsByContainer,
   getContainerMetricsHistory,

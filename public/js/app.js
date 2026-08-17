@@ -22,6 +22,7 @@ import {
   apiGetDiskUsage,
   apiAckAlert,
   apiAckAllAlerts,
+  apiClearAlerts,
   reportClientError,
 } from './api.js';
 
@@ -375,6 +376,15 @@ const app = createApp({
         /* best-effort */
       }
     },
+    async clearAlertsAction() {
+      if (!this.selectedHostId) return;
+      try {
+        await apiClearAlerts(this.selectedHostId);
+        this.alerts = [];
+      } catch {
+        /* best-effort */
+      }
+    },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
       for (const id of Object.keys(this.containerMetricsHistory)) {
@@ -590,6 +600,7 @@ const app = createApp({
             :is-admin="isAdmin"
             @ack="ackAlertAction"
             @ack-all="ackAllAlertsAction"
+            @clear-alerts="clearAlertsAction"
           ></activity-view>
         </div>
 
