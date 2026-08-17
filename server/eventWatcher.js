@@ -1,5 +1,8 @@
 const { loadHosts } = require('./hosts');
-const { streamEvents } = require('./docker');
+// The module object rather than a destructured streamEvents: this spawns a long-lived child, so
+// test/eventWatcher.test.js swaps it for a fake to drive the restart paths without a daemon. Same
+// reason statsWatcher and metricsCollector reach docker.js that way.
+const docker = require('./docker');
 const db = require('./db');
 const alerts = require('./alerts');
 const logger = require('./logger');
@@ -76,7 +79,7 @@ function ingestEvent(event) {
 }
 
 function startWatcher(host) {
-  const child = streamEvents(host);
+  const child = docker.streamEvents(host);
   let buffer = '';
 
   child.stdout.on('data', (chunk) => {
@@ -113,7 +116,10 @@ function startWatcher(host) {
     }, HEALTHY_AFTER_MS);
   });
 
-  child.on('exit', () => {
+  // 'close', not 'exit': a child that never spawned at all (docker off PATH, EAGAIN under process
+  // pressure) emits 'error' then 'close' and *never* 'exit', so hanging the restart off 'exit' left
+  // that host with no event stream for the life of the process. 'close' covers both. See CLAUDE.md.
+  child.on('close', () => {
     // Identity check, not a lookup by id: an edit through Settings is a removeHost + addHost
     // pair, so a dead stream's backoff could revive against a *new* state object under the same
     // id, leaving two `docker events` streams running for one host. See CLAUDE.md.

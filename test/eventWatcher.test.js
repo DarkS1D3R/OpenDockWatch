@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
 
 // server/eventWatcher requires server/db, which opens a database the moment it's required - so
 // this has to be set before the require below, or the tests here run against the real
@@ -10,8 +11,10 @@ const path = require('path');
 const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-eventwatcher-test-${process.pid}.db`);
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
-const { parseEventLine, ingestEvent, broadcaster } = require('../server/eventWatcher');
+const eventWatcher = require('../server/eventWatcher');
+const { parseEventLine, ingestEvent, broadcaster } = eventWatcher;
 const db = require('../server/db');
+const docker = require('../server/docker');
 const alerts = require('../server/alerts');
 
 test.after(() => {
@@ -145,5 +148,102 @@ test('ingestEvent', async (t) => {
     insert.mock.restore();
     assert.equal(countFor('first-fails'), 0);
     assert.equal(countFor('second-ok'), 1);
+  });
+});
+
+// A stand-in for the `docker events` child: the watcher only reads stdout/stderr, listens for
+// spawn/close/error and calls kill(), so this covers its whole contract without a daemon. Same
+// shape as test/statsWatcher.test.js's, since both watchers share the restart machinery.
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+  };
+  return child;
+}
+
+function withFakeStream(t, hostId) {
+  const children = [];
+  t.mock.method(docker, 'streamEvents', () => {
+    const child = fakeChild();
+    children.push(child);
+    return child;
+  });
+  eventWatcher.addHost({ id: hostId });
+  t.after(() => eventWatcher.removeHost(hostId));
+  return { children, child: () => children[children.length - 1] };
+}
+
+// Children are always ended the way Node actually ends them, because the difference is the whole
+// point of the restart handler listening on 'close': a child that ran emits 'exit' then 'close',
+// one that never spawned emits 'error' then 'close' and *no* 'exit' at all. Verified on Node 22.
+function endChild(child, { spawned = true } = {}) {
+  if (spawned) child.emit('exit', 0, null);
+  else child.emit('error', new Error('spawn docker EAGAIN'));
+  child.emit('close', spawned ? 0 : null, null);
+}
+
+// Losing this stream loses every event-driven alert for that host - container_crashed, crash_loop
+// and unhealthy all ingest through it - and the watchdog cannot notice, since it measures the poll
+// loop and an eventless host still polls normally. So the restart path is worth asserting directly.
+test('stream lifecycle', async (t) => {
+  await t.test('restarts after a backoff and reads the replacement stream', async (t2) => {
+    const s = withFakeStream(t2, 'ew-restart');
+    endChild(s.child());
+    await new Promise((r) => setTimeout(r, 2200));
+    assert.equal(s.children.length, 2, 'no replacement stream was spawned');
+    const raw = { Type: 'container', Action: 'start', Actor: { ID: 'ew-restart01', Attributes: { name: 'web' } }, time: 1700000000 };
+    s.child().stdout.emit('data', Buffer.from(JSON.stringify(raw) + '\n'));
+    const n = db.client.prepare('SELECT COUNT(*) AS n FROM events WHERE container_id = ?').get('ew-restart01').n;
+    assert.equal(n, 1, 'the replacement stream is not being ingested');
+  });
+
+  // The regression this exists for: the restart used to hang off 'exit', which Node does not emit
+  // when the child never spawned - so a docker binary briefly unspawnable (EAGAIN under process
+  // pressure) left that host with no event stream, and no alerts, for the life of the process.
+  await t.test('a stream that never spawned is still restarted', async (t2) => {
+    const s = withFakeStream(t2, 'ew-nospawn');
+    endChild(s.child(), { spawned: false });
+    await new Promise((r) => setTimeout(r, 2200));
+    assert.equal(s.children.length, 2, 'a failed spawn got no replacement stream');
+  });
+
+  await t.test('a failed spawn backs off rather than respawning in a tight loop', async (t2) => {
+    const s = withFakeStream(t2, 'ew-backoff');
+    endChild(s.child(), { spawned: false });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(s.children.length, 1, 'respawned before the backoff elapsed');
+  });
+
+  // An edit through Settings is a removeHost + addHost pair, so a backoff elapsing after the remove
+  // must not revive the old stream - that leaves two `docker events` children for one host, every
+  // event inserted, published and alerted on twice, with the orphan out of removeHost's reach.
+  await t.test('a pending restart does not revive after the host is removed', async (t2) => {
+    const s = withFakeStream(t2, 'ew-removed');
+    endChild(s.child());
+    eventWatcher.removeHost('ew-removed');
+    await new Promise((r) => setTimeout(r, 2200));
+    assert.equal(s.children.length, 1, 'a removed host got a replacement stream anyway');
+  });
+
+  await t.test('removeHost kills the child', (t2) => {
+    const s = withFakeStream(t2, 'ew-kill');
+    eventWatcher.removeHost('ew-kill');
+    assert.equal(s.child().killed, true);
+  });
+
+  await t.test('adding a host twice does not spawn a second stream', (t2) => {
+    const s = withFakeStream(t2, 'ew-dup');
+    eventWatcher.addHost({ id: 'ew-dup' });
+    assert.equal(s.children.length, 1);
+  });
+
+  // A spawn failure emits 'error'; with no listener that is an unhandled event and the process dies.
+  await t.test('a spawn error does not take the process down', (t2) => {
+    const s = withFakeStream(t2, 'ew-error');
+    assert.doesNotThrow(() => s.child().emit('error', new Error('docker: not found')));
   });
 });

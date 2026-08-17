@@ -89,7 +89,7 @@ test('parseStatsLine', async (t) => {
 });
 
 // A stand-in for the `docker stats` child: the watcher only ever reads stdout/stderr, listens for
-// spawn/exit/error, and calls kill(), so this covers its whole contract without a daemon.
+// spawn/close/error, and calls kill(), so this covers its whole contract without a daemon.
 function fakeChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -111,6 +111,15 @@ function withFakeStream(t, hostId = 'h1') {
   statsWatcher.addHost({ id: hostId });
   t.after(() => statsWatcher.removeHost(hostId));
   return { children, child: () => children[children.length - 1] };
+}
+
+// Children are always ended the way Node actually ends them, because the difference is the whole
+// point of the restart handler listening on 'close': a child that ran emits 'exit' then 'close',
+// one that never spawned emits 'error' then 'close' and *no* 'exit' at all. Verified on Node 22.
+function endChild(child, { spawned = true } = {}) {
+  if (spawned) child.emit('exit', 0, null);
+  else child.emit('error', new Error('spawn docker EAGAIN'));
+  child.emit('close', spawned ? 0 : null, null);
 }
 
 const rowLine = (overrides = {}) => JSON.stringify({ ...ROW, ...overrides }) + '\n';
@@ -225,13 +234,13 @@ test('stream lifecycle', async (t) => {
     const s = withFakeStream(t2);
     s.child().stdout.emit('data', Buffer.from(rowLine()));
     assert.ok(statsWatcher.getSamples('h1'));
-    s.child().emit('exit');
+    endChild(s.child());
     assert.equal(statsWatcher.getSamples('h1'), null);
   });
 
   await t.test('restarts after a backoff and serves rows from the new stream', async (t2) => {
     const s = withFakeStream(t2);
-    s.child().emit('exit');
+    endChild(s.child());
     await new Promise((r) => setTimeout(r, 2200));
     assert.equal(s.children.length, 2, 'no replacement stream was spawned');
     s.child().stdout.emit('data', Buffer.from(rowLine()));
@@ -243,7 +252,7 @@ test('stream lifecycle', async (t) => {
   // children for one host, one of them orphaned where no removeHost can reach it.
   await t.test('a pending restart does not revive after the host is removed', async (t2) => {
     const s = withFakeStream(t2, 'h2');
-    s.child().emit('exit');
+    endChild(s.child());
     statsWatcher.removeHost('h2');
     await new Promise((r) => setTimeout(r, 2200));
     assert.equal(s.children.length, 1, 'a removed host got a replacement stream anyway');
@@ -275,5 +284,24 @@ test('stream lifecycle', async (t) => {
   await t.test('a spawn error does not take the process down', (t2) => {
     const s = withFakeStream(t2, 'h5');
     assert.doesNotThrow(() => s.child().emit('error', new Error('docker: not found')));
+  });
+
+  // The regression this pair exists for: the restart used to hang off 'exit', which Node does not
+  // emit when the child never spawned - so an EAGAIN under process pressure left the host with no
+  // stats stream for the life of the process, silently paying for the one-shot call on every poll.
+  await t.test('a stream that never spawned is still restarted', async (t2) => {
+    const s = withFakeStream(t2, 'h6');
+    endChild(s.child(), { spawned: false });
+    await new Promise((r) => setTimeout(r, 2200));
+    assert.equal(s.children.length, 2, 'a failed spawn got no replacement stream');
+    s.child().stdout.emit('data', Buffer.from(rowLine()));
+    assert.ok(statsWatcher.getSamples('h6'), 'the replacement stream is not being read');
+  });
+
+  await t.test('a failed spawn backs off rather than respawning in a tight loop', async (t2) => {
+    const s = withFakeStream(t2, 'h7');
+    endChild(s.child(), { spawned: false });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(s.children.length, 1, 'respawned before the backoff elapsed');
   });
 });
