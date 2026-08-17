@@ -579,16 +579,19 @@ body {
   color: #fff;
 }
 
+.container-list-search-wrap {
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 12px;
+}
 .container-list-search {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 6px 10px;
+  padding: 6px 26px 6px 10px;
   font-size: 13px;
   width: 100%;
-  max-width: 320px;
-  margin-bottom: 12px;
 }
 .group-block {
   margin-bottom: 16px;
@@ -794,7 +797,7 @@ table.containers td:nth-child(7) {
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 160px;
 }
@@ -1504,7 +1507,9 @@ table.containers td:nth-child(7) {
 }
 .filter-clear-btn {
   position: absolute;
+  top: 50%;
   right: 4px;
+  transform: translateY(-50%);
   background: none;
   border: none;
   color: var(--muted);
@@ -1515,6 +1520,12 @@ table.containers td:nth-child(7) {
 }
 .filter-clear-btn:hover {
   color: var(--text);
+}
+/* Shared by every other search/filter box (List, Flow, Logs side menu, Activity's alert/event
+   search) that wants the same ✕-to-clear .filter-clear-btn the Log Viewer's filter has, minus its
+   left 🔍 icon - just a positioning context for the button to sit inside the input's right edge. */
+.search-clear-wrap {
+  position: relative;
 }
 /* The plain Unicode arrow renders as a thin, hard-to-read stroke at .small-btn's 11px - unlike the
    emoji icons on the other buttons here (🕐, 🔍, ☰), which already carry enough visual weight at
@@ -1922,15 +1933,18 @@ table.containers td:nth-child(7) {
 .logs-tab-viewmode .small-btn {
   flex: 1;
 }
+.logs-tab-search-wrap {
+  width: 100%;
+  margin-bottom: 8px;
+}
 .logs-tab-search {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 100%;
-  margin-bottom: 8px;
 }
 .logs-tab-wrap-toggle {
   width: 100%;
@@ -2042,15 +2056,18 @@ button.log-pane-main-btn.active:hover {
 .activity-column .log-section-header {
   margin: 0;
 }
+.activity-search-wrap {
+  width: 100%;
+  margin-bottom: 10px;
+}
 .activity-search {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   font-size: 12px;
   width: 100%;
-  margin-bottom: 10px;
 }
 .activity-list-wrap {
   position: relative;

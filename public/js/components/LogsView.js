@@ -215,7 +215,10 @@ export default {
         >
           {{ wrapLines ? '↵ Wrap lines' : '↔ No wrap' }}
         </button>
-        <input type="text" v-model="search" placeholder="Filter containers…" class="logs-tab-search" />
+        <div class="search-clear-wrap logs-tab-search-wrap">
+          <input type="text" v-model="search" placeholder="Filter containers…" class="logs-tab-search" />
+          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+        </div>
         <p v-if="!filteredGroups.length" class="muted">No containers found.</p>
         <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="logs-tab-group">
           <div class="logs-tab-group-label">{{ groupName }}</div>

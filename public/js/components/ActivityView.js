@@ -174,7 +174,10 @@ export default {
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
           <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear</button>
         </div>
-        <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
+        <div class="search-clear-wrap activity-search-wrap">
+          <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
+          <button v-if="alertSearch" class="filter-clear-btn" @click="alertSearch = ''" title="Clear search">✕</button>
+        </div>
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
         <div v-else class="activity-list-wrap">
           <div class="activity-list" ref="alertsListView" @scroll="onAlertsScroll">
@@ -210,7 +213,10 @@ export default {
           </div>
           <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear</button>
         </div>
-        <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
+        <div class="search-clear-wrap activity-search-wrap">
+          <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
+          <button v-if="eventSearch" class="filter-clear-btn" @click="eventSearch = ''" title="Clear search">✕</button>
+        </div>
         <p v-if="!searchedEvents.length" class="muted">{{ events.length ? 'No matching events.' : 'No events yet.' }}</p>
         <div v-else class="activity-list-wrap">
           <div class="activity-list" ref="eventsListView" @scroll="onEventsScroll">
