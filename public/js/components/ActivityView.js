@@ -151,6 +151,15 @@ export default {
       if (el) el.scrollTop = 0;
       this.eventsAtTop = true;
     },
+    // Badges double as filter toggles: clicking one sets the search box to its exact key, reusing
+    // the existing substring search rather than a second filter mechanism - clicking the already-
+    // active badge (or its own ✕) clears it back to the unfiltered list.
+    toggleAlertFilter(key) {
+      this.alertSearch = this.alertSearch.trim().toLowerCase() === key.toLowerCase() ? '' : key;
+    },
+    toggleEventFilter(key) {
+      this.eventSearch = this.eventSearch.trim().toLowerCase() === key.toLowerCase() ? '' : key;
+    },
   },
   template: `
     <div class="activity-wrap" ref="wrap" :style="{ height: wrapHeightPx + 'px' }">
@@ -162,8 +171,9 @@ export default {
               v-for="c in alertCounts.shown"
               :key="c.key"
               class="activity-badge"
-              :class="'severity-' + (c.meta || 'warning')"
-              :title="c.count + ' × ' + c.key"
+              :class="['severity-' + (c.meta || 'warning'), { active: alertSearch.trim().toLowerCase() === c.key.toLowerCase() }]"
+              :title="'Filter by ' + c.key + ' (' + c.count + ')'"
+              @click="toggleAlertFilter(c.key)"
             >{{ c.key }} <b>{{ c.count }}</b></span>
             <span
               v-if="alertCounts.hidden.length"
@@ -172,7 +182,8 @@ export default {
             >+{{ alertCounts.hidden.length }} more <b>{{ alertCounts.hiddenTotal }}</b></span>
           </div>
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
-          <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear</button>
+          <button v-if="alertSearch" class="small-btn" @click="alertSearch = ''">Clear filters</button>
+          <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear activity</button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
           <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
@@ -202,8 +213,9 @@ export default {
               v-for="c in eventCounts.shown"
               :key="c.key"
               class="activity-badge"
-              :class="c.meta ? 'severity-' + c.meta : null"
-              :title="c.count + ' × ' + c.key"
+              :class="[c.meta ? 'severity-' + c.meta : null, { active: eventSearch.trim().toLowerCase() === c.key.toLowerCase() }]"
+              :title="'Filter by ' + c.key + ' (' + c.count + ')'"
+              @click="toggleEventFilter(c.key)"
             >{{ c.key }} <b>{{ c.count }}</b></span>
             <span
               v-if="eventCounts.hidden.length"
@@ -211,7 +223,8 @@ export default {
               :title="eventCounts.hidden.map(h => h.count + ' × ' + h.key).join(', ')"
             >+{{ eventCounts.hidden.length }} more <b>{{ eventCounts.hiddenTotal }}</b></span>
           </div>
-          <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear</button>
+          <button v-if="eventSearch" class="small-btn" @click="eventSearch = ''">Clear filters</button>
+          <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear events</button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
           <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />

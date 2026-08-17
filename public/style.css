@@ -2153,6 +2153,9 @@ button.log-pane-main-btn.active:hover {
 .activity-column .log-section-header {
   gap: 10px;
   margin-bottom: 18px;
+  /* Up to three buttons (Acknowledge all / Clear filters / Clear activity or events) plus the
+     badge row can outgrow a narrow column - wrap instead of overflowing it. */
+  flex-wrap: wrap;
 }
 .activity-column .log-section-header h3 {
   margin-bottom: 0;
@@ -2168,6 +2171,20 @@ button.log-pane-main-btn.active:hover {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+  cursor: pointer;
+}
+.activity-badge:hover {
+  border-color: var(--accent);
+}
+/* Doubles as a filter toggle - clicking a badge sets the search box to its key, so the active one
+   is whichever badge's key is the current search text (see ActivityView's toggle*Filter methods). */
+.activity-badge.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+.activity-badge-more:hover {
+  border-color: var(--border);
 }
 /* The count itself is the part being scanned for, so it gets the readable colour and the weight. */
 .activity-badge b {
@@ -2185,9 +2202,11 @@ button.log-pane-main-btn.active:hover {
 .activity-badge.severity-ok {
   border-left-color: var(--ok);
 }
+/* The +N "more" badge aggregates several keys at once - there's no single filter it can toggle. */
 .activity-badge-more {
   border-left-width: 1px;
   font-style: italic;
+  cursor: default;
 }
 /* Event rows get the same left accent the alert rows carry, via an inset shadow on the first cell
    rather than a border - the events table is border-collapse, where a per-cell border-left fights
