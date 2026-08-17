@@ -1,25 +1,25 @@
 import { MAX_LOG_LINES } from '../constants.js';
 import { logsUrl, downloadLogsUrl } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
-import { closestIndexByTs } from '../lib/logSync.js';
+import { closestIndexByTs, topIndexByOffset } from '../lib/logSync.js';
+import { maxPaneHeight, shouldTogglePause, statusBadge } from '../lib/logPane.js';
 import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
 import { pushCapped } from '../lib/logBuffer.js';
+import LogMatchPane from './LogMatchPane.js';
 
-// The match strip drags by its own top edge (the boundary with the log body), not by the
-// browser's native `resize` corner: the strip is anchored to the bottom of the panel, so the
-// corner handle sits diagonally opposite the edge that actually moves, is invisible until found
-// by accident, and grows the strip downward off the end of a fixed-height panel. Bounds are
-// resolved live against the log body rather than fixed here - the strip can only take what the
-// body can spare, since the panel is a fixed-height flex column.
-const MATCH_MIN_PX = 60;
+// How little of the log body the match strip may leave behind. The body's floor, so it stays here
+// rather than moving into LogMatchPane with the strip's own bounds: this component is the only one
+// that can measure the body, and it tells the strip what it may take via maxHeightFor below.
 const MIN_LOG_BODY_PX = 120;
-const MATCH_KEY_STEP_PX = 24;
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
 // controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
+  // Registered locally, the same way SettingsPanel registers its five tabs: root registration in
+  // app.js is local to the root, so a nested component has to be declared by its own parent.
+  components: { LogMatchPane },
   props: {
     hostId: { type: String, required: true },
     containerId: { type: String, required: true },
@@ -75,11 +75,10 @@ export default {
       // The filtered-results strip: the match list rendered under the log body as its own
       // scrollable pane, single-pane only (multiPane has no room). Off by default - see matchPaneVisible.
       showMatchPane: false,
-      // The strip's dragged height, held here rather than as an inline style the drag writes
-      // directly, because the list is v-if'd twice over (the pane toggle, then searchActive) and
-      // would otherwise lose the height the moment the strip is hidden or the filter is cleared.
+      // The strip's dragged height. Owned here rather than by LogMatchPane (which does all the
+      // dragging) because the list is v-if'd twice over - this pane's toggle, then searchActive -
+      // and a height held inside the child would be lost the moment either one closes.
       matchListHeight: null,
-      matchResizing: false,
     };
   },
   computed: {
@@ -147,28 +146,8 @@ export default {
     matchPaneVisible() {
       return this.showMatchPane && !this.multiPane;
     },
-    matchListStyle() {
-      return this.matchListHeight ? { height: this.matchListHeight + 'px' } : null;
-    },
-    // One badge rather than a span per state: the three are mutually exclusive, and "active" only
-    // reads as meaningful because it sits in the same spot the paused states do. Manual pause wins
-    // over suspension - if the user paused it, that's the answer to "why isn't this moving".
     statusBadge() {
-      if (this.paused) {
-        return {
-          cls: 'log-status-paused',
-          text: `⏸ paused${this.pendingCount ? ' · ' + this.pendingCount + ' held' : ''}`,
-          title: 'Paused - new lines are being held. Press space (or click Resume) to catch up.',
-        };
-      }
-      if (this.suspended) {
-        return {
-          cls: 'log-status-suspended',
-          text: '⏸ suspended',
-          title: 'Paused while this tab was in the background - it resumes from the latest lines when you come back',
-        };
-      }
-      return { cls: 'log-status-active', text: '▶ active', title: 'Streaming live - press space to pause' };
+      return statusBadge({ paused: this.paused, suspended: this.suspended, pendingCount: this.pendingCount });
     },
   },
   created() {
@@ -197,11 +176,6 @@ export default {
       this.revealAll = false;
       this.resetMatchCursor();
     },
-    // Keeps the match pane's own highlight on screen while ▲/▼ (or Enter) walk the hit list - the
-    // main body already scrolls itself via scrollToActiveMatch, and the two move together.
-    activeHitId() {
-      if (this.matchPaneVisible) this.$nextTick(() => this.scrollMatchRowIntoView());
-    },
   },
   mounted() {
     this.startStream();
@@ -222,68 +196,18 @@ export default {
       this._stream = null;
     }
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
-    this.endMatchResize();
     document.removeEventListener('click', this.onDocumentClick);
     document.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
-    // How tall the strip may currently be: whatever it is now, plus whatever the log body can give
-    // up without dropping under MIN_LOG_BODY_PX. Computed per drag rather than baked into CSS
-    // because the panel's own height varies (fullscreen is a viewport calc, embedded is measured
-    // by LogsView) - a fixed px cap eats the whole log on a short window, and a vh cap is only
-    // right for the fullscreen one.
-    matchMaxHeight() {
-      const list = this.$refs.matchList;
+    // The measuring half of the strip's resize, and the only half that has to live here: the strip
+    // may take whatever the log body can spare above MIN_LOG_BODY_PX, and this is the only
+    // component that can see the body. Passed to LogMatchPane as a function rather than a number
+    // because offsetHeight is not reactive - the cap has to be read at the moment of the drag.
+    matchMaxHeightFor(paneHeight) {
       const body = this.$refs.logView;
-      const current = list ? list.offsetHeight : MATCH_MIN_PX;
-      if (!body) return current;
-      return current + Math.max(0, body.offsetHeight - MIN_LOG_BODY_PX);
-    },
-    setMatchListHeight(px) {
-      this.matchListHeight = Math.round(Math.min(this.matchMaxHeight(), Math.max(MATCH_MIN_PX, px)));
-    },
-    // Listeners go on window, not the handle: a fast drag outruns the element under the cursor,
-    // and the pointer regularly ends up over the log body or outside the panel entirely.
-    startMatchResize(ev) {
-      if (ev.button !== undefined && ev.button !== 0) return;
-      // The header doubles as the drag handle, so the ✕ inside it has to keep working as a button -
-      // without this, pressing it starts a zero-distance drag and preventDefault eats the click.
-      if (ev.target.closest('button')) return;
-      const list = this.$refs.matchList;
-      if (!list) return;
-      ev.preventDefault();
-      const startY = ev.clientY;
-      const startH = list.offsetHeight;
-      const maxH = this.matchMaxHeight();
-      this.matchResizing = true;
-      this._matchDrag = {
-        move: (e) => {
-          // The handle is the strip's *top* edge, so dragging up has to make it taller - the
-          // delta is subtracted, not added. Getting this backwards is the whole reason the
-          // native corner handle was wrong for a bottom-anchored pane.
-          this.matchListHeight = Math.round(Math.min(maxH, Math.max(MATCH_MIN_PX, startH - (e.clientY - startY))));
-        },
-        up: () => this.endMatchResize(),
-      };
-      window.addEventListener('pointermove', this._matchDrag.move);
-      window.addEventListener('pointerup', this._matchDrag.up);
-      window.addEventListener('pointercancel', this._matchDrag.up);
-    },
-    endMatchResize() {
-      if (!this._matchDrag) return;
-      window.removeEventListener('pointermove', this._matchDrag.move);
-      window.removeEventListener('pointerup', this._matchDrag.up);
-      window.removeEventListener('pointercancel', this._matchDrag.up);
-      this._matchDrag = null;
-      this.matchResizing = false;
-    },
-    // The handle is a focusable separator, so the strip is resizable without a pointer at all.
-    onMatchResizeKey(ev) {
-      const dir = ev.key === 'ArrowUp' ? 1 : ev.key === 'ArrowDown' ? -1 : 0;
-      if (!dir) return;
-      ev.preventDefault();
-      const list = this.$refs.matchList;
-      this.setMatchListHeight((list ? list.offsetHeight : MATCH_MIN_PX) + dir * MATCH_KEY_STEP_PX);
+      if (!body) return paneHeight;
+      return maxPaneHeight({ paneHeight, bodyHeight: body.offsetHeight, minBodyHeight: MIN_LOG_BODY_PX });
     },
     startStream() {
       if (this._stream) this._stream.stop();
@@ -341,20 +265,10 @@ export default {
         this.$nextTick(() => this.scrollToTimestamp(tsMs));
         return;
       }
-      if (this.atBottom) {
-        this.$nextTick(() => {
-          const el = this.$refs.logView;
-          if (!el) return;
-          // Not a user scroll - tailing live shouldn't broadcast a sync that drags a sibling pane
-          // along too, or a pane the user deliberately scrolled back to read history on would keep
-          // getting yanked back to "now" every time a *different*, still-tailing pane got a new line.
-          this._programmatic = true;
-          el.scrollTop = el.scrollHeight;
-          requestAnimationFrame(() => {
-            this._programmatic = false;
-          });
-        });
-      }
+      // Not a user scroll - tailing live shouldn't broadcast a sync that drags a sibling pane
+      // along too, or a pane the user deliberately scrolled back to read history on would keep
+      // getting yanked back to "now" every time a *different*, still-tailing pane got a new line.
+      if (this.atBottom) this.$nextTick(() => this.scrollToBottom({ broadcast: false }));
     },
     changeTail(newTail) {
       this.tail = newTail;
@@ -373,27 +287,35 @@ export default {
       // Straight onto the visible buffer rather than back through appendLines - these are already
       // decorated, and re-running that would decorate them a second time.
       pushCapped(this.lines, pending, MAX_LOG_LINES);
-      if (this.atBottom) this.$nextTick(() => this.scrollToBottom());
+      // Silent, unlike the ▼ button: catching up after a pause is this pane's own bookkeeping,
+      // not the user navigating, so it must not drag a sibling out of the history someone is reading.
+      if (this.atBottom) this.$nextTick(() => this.scrollToBottom({ broadcast: false }));
     },
     clearPending() {
       this._pendingLines = [];
       this.pendingCount = 0;
     },
-    // Space toggles pause. Ignored while typing (the filter box needs its spaces) and with any
-    // modifier held, and preventDefault stops the page-scroll space would otherwise do.
+    // The predicate is in lib/logPane.js and unit-tested; preventDefault stays here, because it is
+    // the one part that must not run unless this pane is actually taking the press - space still
+    // has to scroll the page for anyone who isn't over a log pane.
     onKeydown(e) {
-      if (e.key !== ' ' && e.code !== 'Space') return;
-      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      const t = e.target;
-      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName))) return;
-      // Every open pane has this listener, so in multi-pane the hovered one takes it - otherwise
-      // one space would pause all four at once. A lone pane doesn't need to be hovered first.
-      if (this.multiPane && !this._hovered) return;
+      if (!shouldTogglePause(e, { multiPane: this.multiPane, hovered: this._hovered })) return;
       e.preventDefault();
       this.togglePause();
     },
     downloadLogs() {
       window.location.href = downloadLogsUrl(this.hostId, this.containerId, this.tail);
+    },
+    // Every scroll this pane makes itself goes through here. onScroll broadcasts to sibling panes,
+    // so a self-made move must not - a sync-driven one would ping-pong straight back, and a live
+    // tail would drag panes the user deliberately scrolled into history. Cleared a frame later,
+    // once the native scroll event it caused has already fired and been ignored.
+    scrollWithoutBroadcast(fn) {
+      this._programmatic = true;
+      fn();
+      requestAnimationFrame(() => {
+        this._programmatic = false;
+      });
     },
     onScroll() {
       const el = this.$refs.logView;
@@ -408,21 +330,15 @@ export default {
         if (tsMs != null) this.$emit('scroll-sync', { containerId: this.containerId, tsMs });
       });
     },
-    // The line currently at the top of the scrolled viewport, found by binary-searching the
-    // rendered line-divs' offsetTop against scrollTop - monotonic per line even with wrapped text,
-    // since <pre>'s children are exactly filteredLines in order with no wrapper in between.
+    // The line currently at the top of the scrolled viewport. The search is topIndexByOffset in
+    // lib/logSync.js, beside the closestIndexByTs that answers the opposite question; offsetTop is
+    // monotonic per line even with wrapped text, since <pre>'s children are exactly filteredLines
+    // in order with no wrapper in between, which is what makes a binary search valid at all.
     visibleTopTsMs() {
       const el = this.$refs.logView;
-      if (!el || !el.children.length) return null;
-      const children = el.children;
-      let lo = 0;
-      let hi = children.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (children[mid].offsetTop <= el.scrollTop) lo = mid;
-        else hi = mid - 1;
-      }
-      const line = this.filteredLines[lo];
+      if (!el) return null;
+      const idx = topIndexByOffset(el.children.length, (i) => el.children[i].offsetTop, el.scrollTop);
+      const line = idx === -1 ? null : this.filteredLines[idx];
       return line ? line.tsMs : null;
     },
     // Scrolls this pane so the line closest to tsMs sits at the top - the follower half of
@@ -440,10 +356,8 @@ export default {
       );
       const child = index === -1 ? null : el.children[index];
       if (!child) return;
-      this._programmatic = true;
-      el.scrollTop = child.offsetTop;
-      requestAnimationFrame(() => {
-        this._programmatic = false;
+      this.scrollWithoutBroadcast(() => {
+        el.scrollTop = child.offsetTop;
       });
     },
     resetMatchCursor() {
@@ -482,20 +396,7 @@ export default {
       const idx = this.filteredLines.findIndex((l) => l.id === id);
       const child = idx === -1 ? null : el.children[idx];
       if (!child) return;
-      this._programmatic = true;
-      child.scrollIntoView({ block: 'center' });
-      requestAnimationFrame(() => {
-        this._programmatic = false;
-      });
-    },
-    // Scrolls within the match strip only (nearest, not center) so it never yanks the page.
-    scrollMatchRowIntoView() {
-      const list = this.$refs.matchList;
-      const id = this.activeHitId;
-      if (!list || id == null) return;
-      const idx = this.matchLines.findIndex((l) => l.id === id);
-      const row = idx === -1 ? null : list.children[idx];
-      if (row) row.scrollIntoView({ block: 'nearest' });
+      this.scrollWithoutBroadcast(() => child.scrollIntoView({ block: 'center' }));
     },
     onFilterKeydown(e) {
       if (e.key === 'Enter') {
@@ -510,10 +411,19 @@ export default {
         this.prevMatch();
       }
     },
-    scrollToBottom() {
+    // Two callers that are not the same event, hence the flag. Pressing ▼ is the user navigating,
+    // and in a peer-to-peer synced group that should carry the siblings along exactly as dragging
+    // the scrollbar down would; the live tail and the post-pause catch-up are this pane's own
+    // bookkeeping and must stay silent. Default broadcasts, so the template's @click needs no argument.
+    scrollToBottom({ broadcast = true } = {}) {
       this.atBottom = true;
       const el = this.$refs.logView;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (!el) return;
+      const toBottom = () => {
+        el.scrollTop = el.scrollHeight;
+      };
+      if (broadcast) toBottom();
+      else this.scrollWithoutBroadcast(toBottom);
     },
     toggleLevel(level) {
       this.levels = { ...this.levels, [level]: !this.levels[level] };
@@ -672,33 +582,18 @@ export default {
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
         <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
-        <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
+        <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom()" title="Scroll to bottom">&#8595; Bottom</button>
       </div>
-      <div v-if="matchPaneVisible" class="log-match-pane" :class="{ resizing: matchResizing }">
-        <div
-          class="log-match-pane-header"
-          tabindex="0"
-          aria-label="Match list header - drag, or use the arrow keys, to resize"
-          title="Drag to resize"
-          @pointerdown="startMatchResize"
-          @keydown="onMatchResizeKey"
-        >
-          <span class="muted small" v-if="searchActive">{{ matchLines.length }} matching {{ matchLines.length === 1 ? 'line' : 'lines' }}</span>
-          <span class="muted small" v-else>Type a filter above to list matching lines here.</span>
-          <button class="small-btn log-match-close" @click="showMatchPane = false" title="Hide the match list">✕</button>
-        </div>
-        <div v-if="searchActive" class="log-match-list" ref="matchList" :style="matchListStyle">
-          <div
-            v-for="line in matchLines"
-            :key="line.id"
-            class="log-match-row"
-            :class="{ active: line.id === activeHitId }"
-            @click="selectMatch(line.id)"
-            v-html="line.html"
-          ></div>
-          <div v-if="!matchLines.length" class="log-match-empty muted small">No matches.</div>
-        </div>
-      </div>
+      <log-match-pane
+        v-if="matchPaneVisible"
+        :lines="matchLines"
+        :active-id="activeHitId"
+        :search-active="searchActive"
+        :max-height-for="matchMaxHeightFor"
+        v-model:height="matchListHeight"
+        @select="selectMatch"
+        @close="showMatchPane = false"
+      ></log-match-pane>
     </div>
   `,
 };

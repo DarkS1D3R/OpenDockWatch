@@ -1430,13 +1430,15 @@ table.containers td:nth-child(7) {
 .log-match-close {
   padding: 0 6px;
 }
-/* A plain height, set from LogViewer.js. Resizing is a drag on .log-match-pane-header above rather
-   than `resize: vertical`, whose handle sits on the bottom-right corner - diagonally opposite the
-   edge that actually moves on a pane anchored to the bottom of the panel, invisible until stumbled
-   on, and dragged the wrong way round. The bounds live in JS too (MATCH_MIN_PX / MIN_LOG_BODY_PX):
-   the log body above is `flex: 1; min-height: 0` in both the fullscreen and embedded panels, so it
-   yields all the way to zero and the only honest cap is "whatever the body can spare", measured
-   live. min-height here is just a floor for the height JS writes. */
+/* A plain height, dragged by LogMatchPane.js and stored by LogViewer.js (the list sits behind two
+   v-ifs, so a height held in the child would be lost the moment either closes). Resizing is a drag
+   on .log-match-pane-header above rather than `resize: vertical`, whose handle sits on the
+   bottom-right corner - diagonally opposite the edge that actually moves on a pane anchored to the
+   bottom of the panel, invisible until stumbled on, and dragged the wrong way round. The bounds
+   live in JS too (MATCH_MIN_PX in LogMatchPane, MIN_LOG_BODY_PX in LogViewer): the log body above
+   is `flex: 1; min-height: 0` in both the fullscreen and embedded panels, so it yields all the way
+   to zero and the only honest cap is "whatever the body can spare", measured live. min-height here
+   is just a floor for the height JS writes. */
 .log-match-list {
   height: 132px;
   min-height: 60px;
