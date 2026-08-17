@@ -10,6 +10,7 @@ const {
   computeIoRates,
   forgetHost: forgetDockerHost,
 } = require('./docker');
+const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
@@ -42,8 +43,9 @@ const globalTimers = [];
 let lastPollCompletedTs = Date.now();
 
 // How long a poll cycle may take before it's worth a line of its own. A healthy local cycle is
-// ~2s of docker calls; the worst legitimate one is a remote host's checkHost (20s) plus the rest,
-// so this only fires when the loop is genuinely falling behind rather than merely slow.
+// now ~80ms of docker calls (it was ~2s before statsWatcher took `docker stats` off this path);
+// the worst legitimate one is still a remote host's checkHost (20s) plus the rest, so the
+// threshold stays where it is - it only fires when the loop is falling behind, not merely slow.
 const SLOW_POLL_MS = Number(process.env.SLOW_POLL_MS) || 15_000;
 
 // Sampled by index.js's vitals line. `maxMs` is since the last read, not since boot: a single bad
@@ -128,7 +130,13 @@ async function pollHost(host) {
   if (!reachable) return;
 
   try {
-    const [containers, stats, hostInfo] = await Promise.all([listContainers(host), getStats(host), getHostInfo(host)]);
+    // Read before the await so it reflects the stream as of this poll's start, and kept in the
+    // Promise.all so the fallback still runs alongside the other two rather than after them.
+    // `docker stats --no-stream` measured at 1.3-2.0s against a two-container daemon - a third of
+    // the poll interval, and a concurrency slot held for all of it - so the steady-state path is
+    // statsWatcher's long-lived stream and the one-shot call is only what a dead stream costs.
+    const streamed = statsWatcher.getSamples(host.id);
+    const [containers, stats, hostInfo] = await Promise.all([listContainers(host), streamed || getStats(host), getHostInfo(host)]);
     snapshot.containers = containers;
     snapshot.stats = stats;
     snapshot.hostInfo = hostInfo;
@@ -190,6 +198,13 @@ async function pollHost(host) {
     alerts.retainContainers(
       host.id,
       containers.map((c) => c.id)
+    );
+    // Same idea for the stats stream, but against the *running* set: `docker stats` only ever
+    // reports running containers, so this is what keeps a stopped one's last sample from
+    // outliving it and a churning host from accumulating an entry per id it has ever seen.
+    statsWatcher.retainContainers(
+      host.id,
+      containers.filter((c) => c.state === 'running').map((c) => c.id)
     );
 
     if (hostInfo && hostInfo.ncpu) {
@@ -304,6 +319,10 @@ function addHost(host) {
   const pollState = { stopped: false, timer: null };
   const diskState = { stopped: false, timer: null, failures: 0, lastDurationMs: 0 };
   hostStates.set(host.id, { pollState, diskState });
+  // Driven from here rather than from index.js alongside eventWatcher: the stats stream exists
+  // only to feed this collector, so its lifecycle is this collector's, and the settings/hosts
+  // routes get it for free through the addHost/removeHost pair they already call.
+  statsWatcher.addHost(host);
   // pollDiskUsage reads the snapshot pollHost writes (snapshot.reachable, set after checkHost
   // resolves) - firing both in parallel left diskUsage empty until the next 60s tick, since the
   // first call found no snapshot yet. pollHost never rejects, so this chain needs no .catch.
@@ -327,6 +346,7 @@ function removeHost(hostId) {
   hostStates.delete(hostId);
   snapshots.delete(hostId);
   localCpuTimesPrev.delete(hostId);
+  statsWatcher.removeHost(hostId);
   alerts.forgetHost(hostId);
   forgetDockerHost(hostId);
   logger.info('metrics.host.stopped', { host: hostId });
@@ -359,6 +379,9 @@ function stop() {
   for (const t of globalTimers) clearInterval(t);
   globalTimers.length = 0;
   for (const hostId of [...hostStates.keys()]) removeHost(hostId);
+  // removeHost already tore down each watched host's stream; this catches any left over from a
+  // host that was added to the stream but never reached hostStates.
+  statsWatcher.stop();
 }
 
 module.exports = {

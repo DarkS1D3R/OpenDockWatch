@@ -34,6 +34,7 @@ const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
+const statsWatcher = require('./statsWatcher');
 const prometheus = require('./prometheus');
 const { createWatchdog } = require('./watchdog');
 const { version: appVersion } = require('../package.json');
@@ -170,6 +171,10 @@ function logVitals() {
     sseClients: eventWatcher.broadcaster.subscriberCount(),
     events: eventWatcher.takeIngestCount(),
     hosts: metricsCollector.getHostCount(),
+    // Read against `hosts`: below it, some host's stats stream is down and that host is paying
+    // for the 1.3-2.0s one-shot `docker stats` on every 5s poll. The stream's own restart lines
+    // say so as it happens; this is what says it is *still* happening an hour later.
+    statsLive: statsWatcher.liveCount(),
   });
 }
 

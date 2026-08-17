@@ -292,6 +292,28 @@ function computeIoRates(current, prev, elapsedSec) {
   };
 }
 
+// One `{{json .}}` row from `docker stats` -> the sample shape the rest of the app consumes.
+// Shared by the one-shot getStats below and statsWatcher's stream parser, which read the exact
+// same rows from the exact same CLI - separate copies would be free to drift apart silently.
+function statsRowToSample(raw) {
+  const netIO = parseIOPair(raw.NetIO);
+  const blockIO = parseIOPair(raw.BlockIO);
+  return {
+    cpuPerc: raw.CPUPerc,
+    memUsage: raw.MemUsage,
+    memPerc: raw.MemPerc,
+    netIO: raw.NetIO,
+    blockIO: raw.BlockIO,
+    netRxBytes: netIO.in,
+    netTxBytes: netIO.out,
+    blockReadBytes: blockIO.in,
+    blockWriteBytes: blockIO.out,
+  };
+}
+
+// The one-shot form, kept as statsWatcher's fallback rather than as the steady-state path: it
+// measured at 1.3-2.0s per call against a two-container daemon, because the CLI collects a whole
+// sample cycle before it can print a CPU percentage and only then exits. See streamStats.
 async function getStats(host) {
   const stdout = await run([...hostArgs(host), 'stats', '--no-stream', '--format', '{{json .}}']);
   const byId = {};
@@ -300,19 +322,7 @@ async function getStats(host) {
     .map((l) => l.trim())
     .filter(Boolean)) {
     const raw = JSON.parse(line);
-    const netIO = parseIOPair(raw.NetIO);
-    const blockIO = parseIOPair(raw.BlockIO);
-    byId[raw.Container.slice(0, 12)] = {
-      cpuPerc: raw.CPUPerc,
-      memUsage: raw.MemUsage,
-      memPerc: raw.MemPerc,
-      netIO: raw.NetIO,
-      blockIO: raw.BlockIO,
-      netRxBytes: netIO.in,
-      netTxBytes: netIO.out,
-      blockReadBytes: blockIO.in,
-      blockWriteBytes: blockIO.out,
-    };
+    byId[raw.Container.slice(0, 12)] = statsRowToSample(raw);
   }
   return byId;
 }
@@ -590,6 +600,14 @@ function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
 
+// The streaming form of `docker stats`: one long-lived process per host that reprints every
+// running container roughly twice a second, instead of a fresh 1.3-2.0s process every 5s poll.
+// Deliberately outside run()'s semaphore, same as streamEvents/streamLogs - the whole point is
+// that it stops holding one of MAX_CONCURRENT slots for a third of every poll interval.
+function streamStats(host) {
+  return spawn('docker', [...hostArgs(host), 'stats', '--format', '{{json .}}']);
+}
+
 // `docker system df` deduplicates shared image layers by walking the whole overlay2 tree, so it
 // gets its own much longer timeout - it is not in the same cost class as any other call here.
 // **How much longer depends on the storage, not on the number of images**: measured on the same
@@ -653,7 +671,9 @@ module.exports = {
   streamLogs,
   downloadLogs,
   streamEvents,
+  streamStats,
   getStats,
+  statsRowToSample,
   getTopology,
   getHostInfo,
   getDiskUsage,
