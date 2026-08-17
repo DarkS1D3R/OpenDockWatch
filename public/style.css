@@ -334,18 +334,49 @@ body {
   stroke-dasharray: 2, 2;
   pointer-events: none;
 }
-.spark-hover-time {
+/* The hovered values, shown for as long as the pointer is anywhere over the chart. They used to
+   be `title` attributes on the 6px hover dots, which is the wrong mechanism twice over: a native
+   tooltip needs the pointer held still on the element itself for about a second, and it vanishes
+   the moment that element moves - which the dots do on every poll, since the line redraws every
+   5s. Aiming at a 6px target that walks away from you is not a way to read a chart. The crosshair
+   already tracks horizontal position alone (SparkTile.onHover), so this rides along with it. */
+.spark-readout {
   position: absolute;
-  top: -2px;
-  transform: translate(-50%, -100%);
+  top: 6px;
+  margin-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 11px;
+  line-height: 1.45;
   color: var(--text);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 4px 6px;
   white-space: nowrap;
+  /* Must never take the pointer: the mousemove that positions this is on the chart underneath,
+     so a readout that swallowed it would freeze itself the instant it appeared. */
   pointer-events: none;
+  z-index: 2;
+}
+/* Flipped to the near side past the halfway mark rather than clamped at the edge - clamping would
+   park it on top of the very line it is annotating. See hoverReadout in SparkTile.js. */
+.spark-readout-flip {
+  transform: translateX(-100%);
+  margin-left: -8px;
+}
+.spark-readout-time {
+  color: var(--muted);
+}
+.spark-readout-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.spark-readout-value {
+  margin-left: auto;
+  font-weight: 600;
 }
 .spark-axis {
   position: relative;
