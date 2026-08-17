@@ -217,3 +217,124 @@ test('pollHost probe gate', async (t) => {
     assert.equal(metricsCollector.getSnapshot(HOST.id).reachable, true);
   });
 });
+
+// Almost everything `docker info` reports is fixed for a daemon's lifetime, so the call is cached
+// and the two counts that do move are recomputed from the `docker ps` the poll already made.
+test('pollHost host info', async (t) => {
+  const HOST = { id: 'info' };
+  const containers = [
+    { id: 'aaa', name: 'web', state: 'running', alertsDisabled: false, composeProject: null },
+    { id: 'bbb', name: 'old', state: 'exited', alertsDisabled: false, composeProject: null },
+  ];
+
+  function stub(t2, { cached = null, infoFails = false } = {}) {
+    const calls = [];
+    t2.mock.method(docker, 'listContainers', () => {
+      calls.push('list');
+      return Promise.resolve(containers);
+    });
+    t2.mock.method(docker, 'getStats', () => Promise.resolve({}));
+    t2.mock.method(docker, 'cachedHostInfo', () => cached);
+    t2.mock.method(docker, 'getHostInfo', () => {
+      calls.push('info');
+      // Deliberately wrong counts: a cached info call cannot know what the container set is now,
+      // so the poll has to be the thing that fixes them up.
+      return infoFails
+        ? Promise.reject(Object.assign(new Error('info failed'), { stderr: 'daemon gone' }))
+        : Promise.resolve({ ncpu: 4, memTotalBytes: 1e9, serverVersion: '29.0', containers: 99, containersRunning: 99 });
+    });
+    t2.mock.method(statsWatcher, 'getSamples', () => null);
+    t2.mock.method(statsWatcher, 'retainContainers', () => {});
+    t2.mock.method(alerts, 'handleHostReachability', () => {});
+    t2.mock.method(alerts, 'handleSample', () => {});
+    t2.mock.method(alerts, 'handleHostSample', () => {});
+    t2.mock.method(alerts, 'retainContainers', () => {});
+    t2.mock.method(db, 'insertContainerMetrics', () => {});
+    t2.mock.method(db, 'insertHostMetric', () => {});
+    t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
+    return { calls };
+  }
+
+  await t.test('calls docker info when nothing is cached', async (t2) => {
+    const s = stub(t2);
+    await metricsCollector.pollHost(HOST);
+    assert.ok(s.calls.includes('info'));
+  });
+
+  // The saving: a process per host per 5s poll for values that cannot have changed.
+  await t.test('skips the call entirely while the cache is fresh', async (t2) => {
+    const s = stub(t2, { cached: { ncpu: 4, memTotalBytes: 1e9, serverVersion: '29.0', containers: 99, containersRunning: 99 } });
+    await metricsCollector.pollHost(HOST);
+    assert.equal(s.calls.includes('info'), false, '`docker info` ran despite a fresh cached value');
+    assert.deepEqual(s.calls, ['list']);
+  });
+
+  await t.test('recomputes the container counts from the poll, cached or not', async (t2) => {
+    for (const cached of [null, { ncpu: 4, memTotalBytes: 1e9, serverVersion: '29.0', containers: 99, containersRunning: 99 }]) {
+      stub(t2, { cached });
+      await metricsCollector.pollHost(HOST);
+      const info = metricsCollector.getSnapshot(HOST.id).hostInfo;
+      assert.equal(info.containers, 2, 'counts must come from `docker ps`, not from the info call');
+      assert.equal(info.containersRunning, 1);
+      assert.equal(info.ncpu, 4, 'the fields that are actually fixed still come from the info call');
+      assert.equal(info.serverVersion, '29.0');
+      metricsCollector.getAllSnapshots().delete(HOST.id);
+      t2.mock.restoreAll();
+    }
+  });
+
+  // The counts are written onto a copy, or the first poll would rewrite the object every later
+  // poll inside the TTL is handed - and the cached "info" would drift into whatever the container
+  // set happened to be when it was first cached.
+  await t.test('does not write the recomputed counts back into the cached object', async (t2) => {
+    const cached = { ncpu: 4, memTotalBytes: 1e9, serverVersion: '29.0', containers: 99, containersRunning: 99 };
+    stub(t2, { cached });
+    await metricsCollector.pollHost(HOST);
+    assert.equal(cached.containers, 99, 'the cached info object was mutated by the poll');
+    assert.equal(cached.containersRunning, 99);
+  });
+});
+
+// Reachability is derived from the poll's calls, but two of the three can now be answered from
+// memory. A cached or streamed value proves nothing about the host still being there.
+test('pollHost reachability counts only live calls', async (t) => {
+  const HOST = { id: 'live' };
+
+  function stub(t2, { streamed, cached }) {
+    const reach = [];
+    const boom = (what) => () => Promise.reject(Object.assign(new Error(`${what} failed`), { stderr: 'connection refused' }));
+    t2.mock.method(docker, 'listContainers', boom('list'));
+    t2.mock.method(docker, 'getStats', boom('stats'));
+    t2.mock.method(docker, 'getHostInfo', boom('info'));
+    t2.mock.method(docker, 'cachedHostInfo', () => cached);
+    t2.mock.method(docker, 'noteHostFailure', () => {});
+    t2.mock.method(docker, 'lastCheckError', () => 'connection refused');
+    t2.mock.method(statsWatcher, 'getSamples', () => streamed);
+    t2.mock.method(alerts, 'handleHostReachability', (id, n, r, w) => reach.push([r, w]));
+    t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
+    return { reach };
+  }
+
+  // Without this, a daemon that died would keep looking reachable for up to STALE_SAMPLES_MS,
+  // because the stats stream's buffered samples kept fulfilling one of the three.
+  await t.test('streamed stats do not keep a dead host looking alive', async (t2) => {
+    const s = stub(t2, { streamed: { aaa: { cpuPerc: '1%' } }, cached: null });
+    await metricsCollector.pollHost(HOST);
+    assert.deepEqual(s.reach, [[false, true]], 'the only live call failed, so the host is down');
+    assert.equal(metricsCollector.getSnapshot(HOST.id).reachable, false);
+  });
+
+  // Same for the info cache, which is the longer of the two windows at HOST_INFO_TTL_MS.
+  await t.test('a cached docker info does not keep a dead host looking alive', async (t2) => {
+    const s = stub(t2, { streamed: null, cached: { ncpu: 4 } });
+    await metricsCollector.pollHost(HOST);
+    assert.deepEqual(s.reach, [[false, true]]);
+  });
+
+  await t.test('nor do both together', async (t2) => {
+    const s = stub(t2, { streamed: { aaa: {} }, cached: { ncpu: 4 } });
+    await metricsCollector.pollHost(HOST);
+    assert.deepEqual(s.reach, [[false, true]]);
+    assert.equal(metricsCollector.getSnapshot(HOST.id).reachable, false);
+  });
+});

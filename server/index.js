@@ -503,8 +503,14 @@ api.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId
   }
 });
 
+// Served from the collector's snapshot, same reason as /containers and /stats: it already has a
+// current `docker info` for every host, and this route is hit on every host switch by every
+// viewer. The snapshot's copy is also the better answer - its container counts are recomputed
+// from the poll's `docker ps` rather than left at whatever the cached info call last reported.
 api.get('/hosts/:hostId/info', requireHost, async (req, res) => {
   const host = req.odwHost;
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  if (snapshot && snapshot.reachable && snapshot.hostInfo) return res.json(snapshot.hostInfo);
   try {
     res.json(await getHostInfo(host));
   } catch (err) {

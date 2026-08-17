@@ -145,10 +145,38 @@ async function run(args, timeoutMs = CMD_TIMEOUT_MS) {
   }
 }
 
+// Nearly everything `docker info` reports is fixed for a daemon's lifetime - CPU count, total
+// memory, server version, hostname - so refetching it every 5s bought nothing and cost a process
+// per host per poll. A TTL rather than "once, forever" because a VM resize or a daemon upgrade
+// should still land, just not within one poll.
+const HOST_INFO_TTL_MS = Number(process.env.HOST_INFO_TTL_MS) || 60_000;
+const hostInfoCache = new Map(); // hostId -> { ts, info }
+
+// The cached value if it is still fresh, else null. Exported so metricsCollector can tell whether
+// a poll's info came from the daemon or from here - a value served from memory says nothing about
+// whether the host is still reachable, and reachability is derived from the poll's live calls.
+function cachedHostInfo(hostId) {
+  const cached = hostInfoCache.get(hostId);
+  return cached && Date.now() - cached.ts < HOST_INFO_TTL_MS ? cached.info : null;
+}
+
+// The two counts are the only fields on `docker info` that move between polls, and `docker ps -a`
+// carries the same facts - the collector already fetches it every poll, so they are recomputed
+// from that rather than being a reason to refetch the whole thing. Pure and exported for testing.
+function containerCounts(containers) {
+  let running = 0;
+  for (const c of containers) {
+    if (c.state === 'running') running += 1;
+  }
+  return { containers: containers.length, containersRunning: running };
+}
+
+// Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
+// cache here rather than in a wrapper keeps the two from disagreeing about what was last fetched.
 async function getHostInfo(host) {
   const stdout = await run([...hostArgs(host), 'info', '--format', '{{json .}}']);
   const raw = JSON.parse(stdout);
-  return {
+  const info = {
     ncpu: raw.NCPU,
     memTotalBytes: raw.MemTotal,
     serverVersion: raw.ServerVersion,
@@ -156,6 +184,8 @@ async function getHostInfo(host) {
     containersRunning: raw.ContainersRunning,
     hostname: raw.Name,
   };
+  hostInfoCache.set(host.id, { ts: Date.now(), info });
+  return info;
 }
 
 // Why the last probe failed, kept per host so the reason survives the boolean this returns.
@@ -513,6 +543,7 @@ async function getTopologyMeta(host, containers) {
 // daemon entirely.
 function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
+  hostInfoCache.delete(hostId);
   lastCheckErrors.delete(hostId);
 }
 
@@ -695,6 +726,8 @@ module.exports = {
   getDiskUsage,
   getDiskUsageImages,
   parseDiskUsageImages,
+  cachedHostInfo,
+  containerCounts,
   getContainerInspect,
   maskEnvValues,
   parseByteString,

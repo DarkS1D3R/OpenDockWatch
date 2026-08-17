@@ -4,7 +4,7 @@ const { loadHosts } = require('./hosts');
 // branches - which now depend on which of these calls fail - without a docker daemon. The pure
 // helpers below have nothing to mock and stay destructured.
 const docker = require('./docker');
-const { getDiskUsage, parseMemUsedBytes, computeIoRates, forgetHost: forgetDockerHost } = require('./docker');
+const { getDiskUsage, parseMemUsedBytes, computeIoRates, containerCounts, forgetHost: forgetDockerHost } = require('./docker');
 const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
@@ -143,20 +143,33 @@ async function pollHost(host) {
     return;
   }
 
-  // Read before the await so it reflects the stream as of this poll's start, and kept alongside
-  // the other two so the fallback still runs in parallel rather than after them. `docker stats
-  // --no-stream` measured at 1.3-2.0s against a two-container daemon - a third of the poll
-  // interval, and a concurrency slot held for all of it - so the steady-state path is
-  // statsWatcher's long-lived stream and the one-shot call is only what a dead stream costs.
+  // Both read before the await so they reflect this poll's start, and both kept in the settle list
+  // so a fallback still runs in parallel rather than after the others. Two of the three calls are
+  // routinely answered without touching the daemon at all: stats from statsWatcher's long-lived
+  // stream (`docker stats --no-stream` measured at 1.3-2.0s against a two-container daemon), and
+  // info from its TTL cache (almost everything it reports is fixed for a daemon's lifetime).
   const streamed = statsWatcher.getSamples(host.id);
-  // allSettled, not all: reachability is now derived from these, and "one of the three failed" is
-  // not the same fact as "the daemon is gone". Failing all three is the second fact; anything less
-  // is a failed poll on a host that is demonstrably still answering, and firing host_unreachable
-  // for it would be a worse answer than the probe used to give.
-  const results = await Promise.allSettled([docker.listContainers(host), streamed || docker.getStats(host), docker.getHostInfo(host)]);
+  const cachedInfo = docker.cachedHostInfo(host.id);
+  // allSettled, not all: reachability is derived from these, and "one of the three failed" is not
+  // the same fact as "the daemon is gone". Anything short of every live call failing is a failed
+  // poll on a host that is demonstrably still answering, and firing host_unreachable for that
+  // would be a worse answer than the probe this replaced used to give.
+  const results = await Promise.allSettled([
+    docker.listContainers(host),
+    streamed || docker.getStats(host),
+    cachedInfo || docker.getHostInfo(host),
+  ]);
   const failure = results.find((r) => r.status === 'rejected');
 
-  if (!results.some((r) => r.status === 'fulfilled')) {
+  // Only the calls that actually reached the daemon count towards reachability. A value served
+  // from a stream buffer or a cache says nothing about whether the host is still there, so
+  // counting one would leave a dead host looking reachable for as long as those stayed warm -
+  // up to STALE_SAMPLES_MS or HOST_INFO_TTL_MS of a dashboard reporting a host that is gone.
+  // listContainers is always live, so this is never empty.
+  const wentToDaemon = [true, !streamed, !cachedInfo];
+  const liveResults = results.filter((_, i) => wentToDaemon[i]);
+
+  if (liveResults.every((r) => r.status === 'rejected')) {
     docker.noteHostFailure(host.id, failure.reason);
     markUnreachable(snapshot, host, wasReachable);
     return;
@@ -174,9 +187,13 @@ async function pollHost(host) {
   }
 
   try {
-    const [containers, stats, hostInfo] = results.map((r) => r.value);
+    const [containers, stats, info] = results.map((r) => r.value);
     snapshot.containers = containers;
     snapshot.stats = stats;
+    // The container counts are the only part of `docker info` that moves between polls, and the
+    // list just fetched carries the same facts - so they are recomputed rather than being a reason
+    // to refetch. Spread onto a copy: `info` is the object every poll inside the TTL shares.
+    const hostInfo = { ...info, ...containerCounts(containers) };
     snapshot.hostInfo = hostInfo;
 
     const ts = Date.now();
