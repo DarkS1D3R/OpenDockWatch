@@ -1,8 +1,9 @@
-// Declared up here, not down beside healthColor, purely so the state icons below can be built from
-// it at module load rather than repeating its three hex values as literals - a const is in its TDZ
-// until its own initializer runs, so a consumer that runs at load time has to come after it.
-const HEALTH_COLOR = { healthy: '#3fb950', unhealthy: '#f85149', starting: '#d29922' };
-const ACCENT_COLOR = '#4f8cff';
+import { ACCENT, MUTED, STATE_COLORS } from './theme.js';
+
+// Values from theme.js, but the *mapping* lives here: docker's health axis says "healthy", the
+// state axis says "running", and they are one colour. Declared up here rather than beside
+// healthColor so the icons below can build from it at load - a const is in its TDZ until then.
+const HEALTH_COLOR = { healthy: STATE_COLORS.running, unhealthy: STATE_COLORS.unhealthy, starting: STATE_COLORS.starting };
 
 // Running is the only state with a second axis worth showing - health. Same dot shape, colored per
 // HEALTH_COLOR rather than one flat green, so "running" stops reading as "fine" for a container
@@ -14,13 +15,13 @@ function runningIcon(color) {
 const ICON_RUNNING = runningIcon(HEALTH_COLOR.healthy);
 const ICON_RUNNING_STARTING = runningIcon(HEALTH_COLOR.starting);
 const ICON_RUNNING_UNHEALTHY = runningIcon(HEALTH_COLOR.unhealthy);
-const ICON_RESTARTING = `<svg class="state-icon state-icon-spin" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 4.5A4 4 0 1 0 10 6.5" fill="none" stroke="${ACCENT_COLOR}" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2v2.5H7" fill="none" stroke="${ACCENT_COLOR}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const ICON_PAUSED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="2" width="2" height="8" rx="0.6" fill="#8b909c"/><rect x="7" y="2" width="2" height="8" rx="0.6" fill="#8b909c"/></svg>`;
-const ICON_STOPPED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="#8b909c" stroke-width="1.4"/></svg>`;
-// Same square as ICON_STOPPED but dashed and in --accent, not --muted: a container that was
-// `docker create`d but never started is not the same fact as one that ran and exited, and the two
-// used to be indistinguishable (both fell into the generic "else" branch below).
-const ICON_CREATED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="${ACCENT_COLOR}" stroke-width="1.4" stroke-dasharray="2 1.5"/></svg>`;
+const ICON_RESTARTING = `<svg class="state-icon state-icon-spin" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 4.5A4 4 0 1 0 10 6.5" fill="none" stroke="${ACCENT}" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2v2.5H7" fill="none" stroke="${ACCENT}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_PAUSED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="2" width="2" height="8" rx="0.6" fill="${MUTED}"/><rect x="7" y="2" width="2" height="8" rx="0.6" fill="${MUTED}"/></svg>`;
+const ICON_STOPPED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="${STATE_COLORS.stopped}" stroke-width="1.4"/></svg>`;
+// Same square as ICON_STOPPED but dashed and in the created colour, not the stopped one: a
+// container that was `docker create`d but never started is not the same fact as one that ran and
+// exited, and the two used to be indistinguishable (both fell into the generic "else" branch below).
+const ICON_CREATED = `<svg class="state-icon" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="${STATE_COLORS.created}" stroke-width="1.4" stroke-dasharray="2 1.5"/></svg>`;
 
 export function stateEmoji(state, health) {
   if (state === 'running') {
@@ -65,7 +66,7 @@ export function iconFor(image, composeService) {
     if (pattern.test(haystack)) return badge;
   }
   const initial = (composeService || image || '?').trim().charAt(0).toUpperCase() || '?';
-  return { text: initial, bg: '#4f8cff' };
+  return { text: initial, bg: ACCENT };
 }
 
 const MEM_UNIT_BYTES = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
@@ -193,6 +194,9 @@ function escapeRegExp(str) {
 // Many containers (color-aware console apps) emit raw ANSI SGR escapes like "\x1b[34mINFO" -
 // fine in a terminal, garbage once piped through a non-terminal reader. Maps the common 8/16-color
 // foreground codes; anything else (background, cursor moves) is simply dropped.
+// Deliberately NOT built from theme.js, despite 31/32/33 happening to hold the same three hexes:
+// this is a terminal palette reproducing what the container meant by "red", not this app's state
+// vocabulary. Repointing it at STATE_COLORS would tie log rendering to the dashboard's design.
 const ANSI_COLOR_MAP = {
   30: '#6e7681',
   31: '#f85149',

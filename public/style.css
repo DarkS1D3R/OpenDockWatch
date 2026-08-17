@@ -8,6 +8,12 @@
   --accent: #4f8cff;
   --danger: #e5534b;
   --ok: #3fb950;
+  /* The warning hue, previously repeated as a literal in eleven rules. --ok/--muted/--accent/--warn
+     are the four this file shares with public/js/theme.js's STATE_COLORS (running/stopped/created/
+     starting) - test/theme.test.js reads them back out of this block and fails if the two drift.
+     --danger is deliberately not in that set: it is a different red for error text, not the
+     graph's #f85149 unhealthy border. */
+  --warn: #d29922;
   --seq-mem: #199e70;
   /* The four metric-series hues (CPU --accent, RAM --seq-mem, and these two) were validated as a
      categorical set against the tile surface #171a20: every one inside the L 0.48-0.67 band, above
@@ -1064,7 +1070,7 @@ table.containers td:nth-child(7) {
   border-top: 2px dashed var(--accent);
 }
 .line-tree-mount {
-  border-top: 2px solid #d29922;
+  border-top: 2px solid var(--warn);
 }
 .line-tree-volume {
   border-top: 2px solid #e8c766;
@@ -1076,7 +1082,7 @@ table.containers td:nth-child(7) {
   border-color: #2d5fa8;
 }
 .swatch-mount {
-  border-color: #d29922;
+  border-color: var(--warn);
 }
 .bar-swatch {
   width: 14px;
@@ -1424,13 +1430,15 @@ table.containers td:nth-child(7) {
 .log-match-close {
   padding: 0 6px;
 }
-/* A plain height, set from LogViewer.js. Resizing is a drag on .log-match-pane-header above rather
-   than `resize: vertical`, whose handle sits on the bottom-right corner - diagonally opposite the
-   edge that actually moves on a pane anchored to the bottom of the panel, invisible until stumbled
-   on, and dragged the wrong way round. The bounds live in JS too (MATCH_MIN_PX / MIN_LOG_BODY_PX):
-   the log body above is `flex: 1; min-height: 0` in both the fullscreen and embedded panels, so it
-   yields all the way to zero and the only honest cap is "whatever the body can spare", measured
-   live. min-height here is just a floor for the height JS writes. */
+/* A plain height, dragged by LogMatchPane.js and stored by LogViewer.js (the list sits behind two
+   v-ifs, so a height held in the child would be lost the moment either closes). Resizing is a drag
+   on .log-match-pane-header above rather than `resize: vertical`, whose handle sits on the
+   bottom-right corner - diagonally opposite the edge that actually moves on a pane anchored to the
+   bottom of the panel, invisible until stumbled on, and dragged the wrong way round. The bounds
+   live in JS too (MATCH_MIN_PX in LogMatchPane, MIN_LOG_BODY_PX in LogViewer): the log body above
+   is `flex: 1; min-height: 0` in both the fullscreen and embedded panels, so it yields all the way
+   to zero and the only honest cap is "whatever the body can spare", measured live. min-height here
+   is just a floor for the height JS writes. */
 .log-match-list {
   height: 132px;
   min-height: 60px;
@@ -1615,8 +1623,8 @@ table.containers td:nth-child(7) {
   color: #fff;
 }
 .log-level-toggle button.level-warn.active {
-  background: #d29922;
-  border-color: #d29922;
+  background: var(--warn);
+  border-color: var(--warn);
   color: #1a1305;
 }
 .log-level-toggle button.level-info.active {
@@ -1884,16 +1892,16 @@ table.containers td:nth-child(7) {
 }
 
 .tile-icon-disk {
-  color: #d29922;
-  background: color-mix(in srgb, #d29922 15%, transparent);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
 }
 /* Amber, not red: `docker system df` failing costs you a number, not your monitoring - every other
    panel is unaffected. Clamped to two lines because the message carries the full failing command. */
 .disk-usage-unavailable {
   margin-top: 6px;
   padding: 5px 8px;
-  border-left: 2px solid #d29922;
-  background: color-mix(in srgb, #d29922 10%, transparent);
+  border-left: 2px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
   border-radius: 0 4px 4px 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2135,7 +2143,7 @@ button.log-pane-main-btn.active:hover {
   border-left-color: var(--danger);
 }
 .alert-row.severity-warning {
-  border-left-color: #d29922;
+  border-left-color: var(--warn);
 }
 /* Per-kind count badges in the Activity columns' headers: alerts by rule, events by action.
    margin-left:auto pins the group to the right of the header (the Acknowledge-all button, when
@@ -2203,7 +2211,7 @@ button.log-pane-main-btn.active:hover {
   border-left-color: var(--danger);
 }
 .activity-badge.severity-warning {
-  border-left-color: #d29922;
+  border-left-color: var(--warn);
 }
 /* Events only - alerts have no "good news" severity, but start/create/unpause/healthy do. */
 .activity-badge.severity-ok {
@@ -2223,7 +2231,7 @@ button.log-pane-main-btn.active:hover {
   box-shadow: inset 3px 0 0 var(--danger);
 }
 .event-row.severity-warning td:first-child {
-  box-shadow: inset 3px 0 0 #d29922;
+  box-shadow: inset 3px 0 0 var(--warn);
 }
 .event-row.severity-ok td:first-child {
   box-shadow: inset 3px 0 0 var(--ok);
@@ -2235,7 +2243,7 @@ button.log-pane-main-btn.active:hover {
   color: var(--danger);
 }
 .event-row.severity-warning .event-action {
-  color: #d29922;
+  color: var(--warn);
 }
 .event-row.severity-ok .event-action {
   color: var(--ok);

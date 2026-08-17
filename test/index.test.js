@@ -360,6 +360,24 @@ test('role gating over real HTTP requests', async (t) => {
     assert.equal((await viewer.get('/api/session')).status, 200);
   });
 
+  // A GET, so the structural walk at the top of this file cannot see it - that one only covers
+  // mutating methods. The audit log is who ran what, and its `error` column carries raw docker/ssh
+  // stderr, so it sits behind requireAdmin for the same reason inspect masks Config.Env.
+  await t.test('viewer session: blocked from the audit log, which the structural walk cannot cover', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/audit')).status, 403);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get('/api/audit')).status, 200, 'gating it must not lock out the role that needs it');
+  });
+
+  // requireHostQuery, the same middleware DELETE /alerts already had: a typo'd id used to come
+  // back 200 {count: 0}, and "there was nothing to acknowledge" is not "no such host".
+  await t.test('admin session: ack-all 404s for an unknown host instead of reporting a no-op success', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.post(`/api/alerts/ack-all?hostId=${FAKE_HOST_ID}`)).status, 404);
+    assert.equal((await admin.post('/api/alerts/ack-all')).status, 400, 'a missing hostId stays a 400');
+  });
+
   await t.test('admin session: reaches the real handler past requireAdmin on both route kinds', async () => {
     const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     // A no-op UPDATE (id doesn't exist) - proves requireAdmin let it through without mutating
@@ -369,6 +387,53 @@ test('role gating over real HTTP requests', async (t) => {
     // requireAdmin gate the viewer above was stopped at, without ever shelling out to docker for
     // a host that doesn't exist.
     assert.equal((await admin.post(`/api/hosts/${FAKE_HOST_ID}/containers/abc/start`)).status, 404);
+  });
+});
+
+// :action is written into the audit row and into the *event name* of a log line before
+// containerAction ever sees it, and express URL-decodes path params - so an unvalidated one left a
+// phantom audit row for an action that never ran, and a newline in it forged a second, perfectly
+// well-formed line in `docker logs` and in the app's own Log Viewer. Both are integrity problems
+// rather than access ones: requireAdmin already runs first, so only an admin could reach it.
+test('container action validation', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const CONTAINER = 'abcabcabcabc';
+  const auditRows = () => db.client.prepare('SELECT COUNT(*) AS n FROM audit_log').get().n;
+
+  await t.test('400s on an unsupported action rather than failing out of the docker call as a 502', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/containers/${CONTAINER}/pause`);
+    assert.equal(res.status, 400, 'an unsupported action is a bad request, not a bad gateway');
+    assert.match(res.body.error, /invalid container action/);
+  });
+
+  // The forging case, encoded exactly as it would arrive over the wire. Rejected at the route, so
+  // req.params.action never reaches logger.write - whose event name, unlike its field values, is
+  // interpolated raw and would carry the newline straight through into a second log line.
+  await t.test('rejects an action carrying a newline before it can forge a log line', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const forged = 'stop%0A%5Bopendockwatch%5D%20%5BINFO%5D%20auth.success%20user=admin';
+    const res = await admin.post(`/api/hosts/${hostId}/containers/${CONTAINER}/${forged}`);
+    assert.equal(res.status, 400);
+  });
+
+  // The audit log is the record of what was actually asked for. A rejected action must leave
+  // nothing in it, or the table grows rows for actions that were never attempted.
+  await t.test('writes no audit row for an action it rejected', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const before = auditRows();
+    await admin.post(`/api/hosts/${hostId}/containers/${CONTAINER}/destroy`);
+    assert.equal(auditRows(), before, 'a rejected action still wrote to the audit log');
+  });
+
+  // The gate must not have been drawn so tight that it rejects the three real ones. These get past
+  // it and are stopped by the unknown host instead, which is as far as this can go without a daemon.
+  await t.test('lets the three supported actions through to the host lookup', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const action of ['start', 'stop', 'restart']) {
+      const res = await admin.post(`/api/hosts/${FAKE_HOST_ID}/containers/${CONTAINER}/${action}`);
+      assert.equal(res.status, 404, `${action} was rejected by the action gate instead of reaching requireHost`);
+    }
   });
 });
 

@@ -1,4 +1,5 @@
 import { healthColor } from '../format.js';
+import { STATE_COLORS, SELECTED } from '../theme.js';
 import {
   NODE_WIDTH,
   FULL_LEAF_HEIGHT,
@@ -172,10 +173,13 @@ function svgContainerNode(n) {
   const d = n.data;
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
-  let border = n.created ? '#4f8cff' : n.stopped ? '#8b909c' : '#3fb950';
-  if (n.starting) border = '#d29922';
-  if (n.unhealthy) border = '#f85149';
-  if (n.selected) border = '#4f8cff';
+  // The same precedence CY_STYLE gets from selector order (created -> starting -> unhealthy ->
+  // selected), spelled out because there are no cascading selectors here - but off the same
+  // theme.js values, so the export can no longer drift from the screen. See CLAUDE.md.
+  let border = n.created ? STATE_COLORS.created : n.stopped ? STATE_COLORS.stopped : STATE_COLORS.running;
+  if (n.starting) border = STATE_COLORS.starting;
+  if (n.unhealthy) border = STATE_COLORS.unhealthy;
+  if (n.selected) border = SELECTED;
   const dash = n.created ? ' stroke-dasharray="6 4"' : '';
   let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
   if (n.blastUpstream)

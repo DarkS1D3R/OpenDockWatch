@@ -1,4 +1,8 @@
 import { containerFullHeight } from './elements.js';
+// The container state/health borders below come from here, not from literals: svgExport.js
+// hand-draws the same five and used to carry its own copies, so the export could silently
+// disagree with the screen. The pill/group colours further down are their own vocabulary.
+import { STATE_COLORS, SELECTED } from '../theme.js';
 
 // Below this zoom, a fit-to-screen view of more than a handful of containers is mostly
 // unreadable anyway - compact mode trades CPU/RAM bars and metric text for just enough to answer
@@ -91,7 +95,7 @@ export const CY_STYLE = [
     style: {
       'background-color': '#1d2027',
       'border-width': 2,
-      'border-color': '#3fb950',
+      'border-color': STATE_COLORS.running,
       width: 170,
       height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
       shape: 'round-rectangle',
@@ -102,7 +106,7 @@ export const CY_STYLE = [
     style: {
       'background-color': '#1d2027',
       'border-width': 2,
-      'border-color': '#8b909c',
+      'border-color': STATE_COLORS.stopped,
       width: 170,
       height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
       shape: 'round-rectangle',
@@ -110,13 +114,13 @@ export const CY_STYLE = [
   },
   {
     // Created but never started - dashed like .log-panel.pane-desynced elsewhere in this app,
-    // reusing that same "dashed = not in its normal state" visual language, in --accent (matches
+    // reusing that same "dashed = not in its normal state" visual language, in the accent (matches
     // state-created in style.css) so it doesn't read as gray/stopped at a glance.
     selector: 'node.created',
     style: {
       'background-color': '#1d2027',
       'border-width': 2,
-      'border-color': '#4f8cff',
+      'border-color': STATE_COLORS.created,
       'border-style': 'dashed',
       width: 170,
       height: (ele) => (ele.data('compact') ? COMPACT_HEIGHT : containerFullHeight(ele.data('portLines'))),
@@ -126,19 +130,19 @@ export const CY_STYLE = [
   {
     selector: 'node.starting',
     style: {
-      'border-color': '#d29922',
+      'border-color': STATE_COLORS.starting,
     },
   },
   {
     selector: 'node.unhealthy',
     style: {
-      'border-color': '#f85149',
+      'border-color': STATE_COLORS.unhealthy,
     },
   },
   {
     selector: 'node.selected',
     style: {
-      'border-color': '#4f8cff',
+      'border-color': SELECTED,
       'border-width': 4,
     },
   },

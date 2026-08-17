@@ -11,11 +11,15 @@ const { pathToFileURL } = require('node:url');
 // per CLAUDE.md. pathToFileURL rather than a plain relative string: import()'s relative-specifier
 // resolution expects forward slashes, so a path.join'd path breaks on Windows where it comes out
 // backslash-separated.
-let elements, svgExport;
+let elements, svgExport, theme;
 before(async () => {
   const graphDir = path.join(__dirname, '..', 'public', 'js', 'graph');
   elements = await import(pathToFileURL(path.join(graphDir, 'elements.js')));
   svgExport = await import(pathToFileURL(path.join(graphDir, 'svgExport.js')));
+  // The colour assertions below read STATE_COLORS rather than repeating its hex values. Pinning
+  // literals here was worse than no test: it passed while svgExport and CY_STYLE disagreed, which
+  // is the one failure those assertions look like they exist to catch. See test/theme.test.js.
+  theme = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'theme.js')));
 });
 
 test('aggregateGroups', async (t) => {
@@ -409,26 +413,43 @@ function svgContainerFixture(overrides = {}) {
 }
 
 test('renderSvg', async (t) => {
+  const strokes = (svg) => [...svg.matchAll(/stroke="(#[0-9a-f]{6})"/gi)].map((m) => m[1].toLowerCase());
+
   await t.test('a running container renders a rect in the running border color and its name as text', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
-    assert.match(svg, /stroke="#3fb950"/);
+    assert.ok(strokes(svg).includes(theme.STATE_COLORS.running));
     assert.match(svg, /web/);
   });
 
   await t.test('an unhealthy container uses the unhealthy border color', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true })], edges: [] });
-    assert.match(svg, /stroke="#f85149"/);
+    assert.ok(strokes(svg).includes(theme.STATE_COLORS.unhealthy));
   });
 
   await t.test('a created-but-never-started container gets a dashed accent-colored border, distinct from stopped', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ running: false, created: true })], edges: [] });
-    assert.match(svg, /stroke="#4f8cff"/);
+    assert.ok(strokes(svg).includes(theme.STATE_COLORS.created));
+    assert.ok(!strokes(svg).includes(theme.STATE_COLORS.stopped), 'created must not fall back to the stopped colour');
     assert.match(svg, /stroke-dasharray="6 4"/);
   });
 
   await t.test('a selected container uses the selected border color', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture({ selected: true })], edges: [] });
-    assert.match(svg, /stroke="#4f8cff"/);
+    assert.ok(strokes(svg).includes(theme.SELECTED));
+  });
+
+  // The precedence CY_STYLE gets free from selector order, which svgExport has to restate by hand:
+  // the more urgent fact wins the border. Asserted as a chain rather than one case, since the bug
+  // this guards is an `if` landing in the wrong order, which a single-state test cannot see.
+  await t.test('health outranks state, and selection outranks health', () => {
+    const starting = svgExport.renderSvg({ nodes: [svgContainerFixture({ starting: true })], edges: [] });
+    assert.ok(strokes(starting).includes(theme.STATE_COLORS.starting), 'starting must beat running');
+
+    const unhealthy = svgExport.renderSvg({ nodes: [svgContainerFixture({ starting: true, unhealthy: true })], edges: [] });
+    assert.ok(strokes(unhealthy).includes(theme.STATE_COLORS.unhealthy), 'unhealthy must beat starting');
+
+    const selected = svgExport.renderSvg({ nodes: [svgContainerFixture({ unhealthy: true, selected: true })], edges: [] });
+    assert.ok(strokes(selected).includes(theme.SELECTED), 'selected must beat unhealthy');
   });
 
   await t.test('a bind-mount pill with a wrapped multi-line label emits one tspan per line', () => {

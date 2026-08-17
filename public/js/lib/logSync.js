@@ -32,3 +32,20 @@ function nearestNonNull(arr, fromIndex, step) {
   }
   return -1;
 }
+
+// The other half of the sync: this answers "where am I now" where closestIndexByTs answers "where
+// do I scroll to" - the last line box starting at or above scrollTop, i.e. the one at the top of
+// the viewport. -1 when nothing is rendered. `offsetAt` is lazy on purpose; see CLAUDE.md.
+export function topIndexByOffset(length, offsetAt, scrollTop) {
+  if (!length) return -1;
+  let lo = 0;
+  let hi = length - 1;
+  // Upper mid (`+ 1`), unlike closestIndexByTs above: this loop moves `lo` to `mid` rather than
+  // `mid + 1`, so a lower mid would leave lo === mid when hi === lo + 1 and spin forever.
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsetAt(mid) <= scrollTop) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}

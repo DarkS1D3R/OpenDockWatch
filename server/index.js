@@ -27,6 +27,7 @@ const {
   getContainerInspect,
   maskEnvValues,
   poolStats,
+  ALLOWED_ACTIONS,
   CONTAINER_ACTION_TIMEOUT_MS,
   DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
@@ -89,6 +90,16 @@ const CONTAINER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
 function requireContainerId(req, res, next) {
   if (!CONTAINER_ID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid container id' });
+  next();
+}
+
+// :action reaches the audit log and the *event name* of a log line before containerAction can
+// reject it, and express URL-decodes path params - so unchecked, a bogus action writes a phantom
+// audit row and an embedded newline forges a whole second log line. docker.js's set, not a copy.
+function requireContainerAction(req, res, next) {
+  if (!ALLOWED_ACTIONS.has(req.params.action)) {
+    return res.status(400).json({ error: `invalid container action - expected one of ${[...ALLOWED_ACTIONS].join(', ')}` });
+  }
   next();
 }
 
@@ -722,7 +733,10 @@ api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   });
 });
 
-api.get('/audit', (req, res) => {
+// Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column carries
+// raw docker/ssh stderr. Same call as masking Config.Env for a viewer - read-only does not mean
+// "may read everything", and nothing in public/js reads this route at all. See CLAUDE.md.
+api.get('/audit', requireAdmin, (req, res) => {
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
 });
@@ -739,10 +753,10 @@ api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-api.post('/alerts/ack-all', requireAdmin, (req, res) => {
-  const hostId = req.query.hostId;
-  if (!hostId) return res.status(400).json({ error: 'hostId required' });
-  const count = db.ackAllAlerts(hostId);
+// requireHostQuery, the same as DELETE /alerts below: a typo'd id used to come back 200 with a
+// count of 0, which reads as "there was nothing to acknowledge" when the truth is "no such host".
+api.post('/alerts/ack-all', requireAdmin, requireHostQuery, (req, res) => {
+  const count = db.ackAllAlerts(req.query.hostId);
   res.json({ ok: true, count });
 });
 
@@ -1064,44 +1078,51 @@ api.delete('/settings/container-rules/:id', requireAdmin, (req, res) => {
   res.json(db.getContainerAlertRules());
 });
 
-api.post('/hosts/:hostId/containers/:id/:action', requireAdmin, requireHost, requireContainerId, async (req, res) => {
-  const host = req.odwHost;
-  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
-  const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
-  const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
-  const startedAt = Date.now();
+api.post(
+  '/hosts/:hostId/containers/:id/:action',
+  requireAdmin,
+  requireHost,
+  requireContainerId,
+  requireContainerAction,
+  async (req, res) => {
+    const host = req.odwHost;
+    const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+    const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
+    const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
+    const startedAt = Date.now();
 
-  // Written before containerAction runs, not after it resolves - the daemon can emit the
-  // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
-  // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
-  const auditId = db.insertAuditLog({
-    ts: Date.now(),
-    username: req.session.username || null,
-    hostId: req.params.hostId,
-    containerId: req.params.id,
-    containerName: container ? container.name : null,
-    action: req.params.action,
-    result: 'pending',
-    error: null,
-  });
+    // Written before containerAction runs, not after it resolves - the daemon can emit the
+    // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
+    // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
+    const auditId = db.insertAuditLog({
+      ts: Date.now(),
+      username: req.session.username || null,
+      hostId: req.params.hostId,
+      containerId: req.params.id,
+      containerName: container ? container.name : null,
+      action: req.params.action,
+      result: 'pending',
+      error: null,
+    });
 
-  // Paired with the completion line below rather than logging only on success: `docker stop` can
-  // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
-  // a pressed button left nothing in the log at all - only a 'pending' audit row.
-  logger.info(`container.${req.params.action}.requested`, logFields);
+    // Paired with the completion line below rather than logging only on success: `docker stop` can
+    // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
+    // a pressed button left nothing in the log at all - only a 'pending' audit row.
+    logger.info(`container.${req.params.action}.requested`, logFields);
 
-  try {
-    await containerAction(host, req.params.id, req.params.action);
-    db.updateAuditLogResult(auditId, 'ok', null);
-    logger.info(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt });
-    res.json({ ok: true });
-  } catch (err) {
-    const detail = err.stderr || err.message;
-    db.updateAuditLogResult(auditId, 'error', detail);
-    logger.error(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
-    dockerError(res, err);
+    try {
+      await containerAction(host, req.params.id, req.params.action);
+      db.updateAuditLogResult(auditId, 'ok', null);
+      logger.info(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt });
+      res.json({ ok: true });
+    } catch (err) {
+      const detail = err.stderr || err.message;
+      db.updateAuditLogResult(auditId, 'error', detail);
+      logger.error(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
+      dockerError(res, err);
+    }
   }
-});
+);
 
 api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {
   const host = req.odwHost;

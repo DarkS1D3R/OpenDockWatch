@@ -97,7 +97,10 @@ function startWatcher(host) {
     }, HEALTHY_AFTER_MS);
   });
 
-  child.on('exit', () => {
+  // 'close', not 'exit', for the reason spelled out in eventWatcher: a child that never spawned
+  // emits 'error' then 'close' and never 'exit', so an 'exit' handler left the host permanently on
+  // the 1.3-2.0s one-shot `docker stats` with nothing to restore the stream. See CLAUDE.md.
+  child.on('close', () => {
     // Identity check rather than a lookup by id: an edit through Settings is a removeHost +
     // addHost pair, so a dead stream's pending restart could otherwise revive against a *new*
     // state object under the same id and leave two streams running for one host. See CLAUDE.md.
