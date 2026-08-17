@@ -280,26 +280,28 @@ const stmts = {
   setContainerAlertRuleSortOrder: db.prepare(`UPDATE container_alert_rules SET sort_order = ? WHERE id = ?`),
 };
 
-// One transaction for the whole poll, not one implicit commit per row. WAL mode still runs at
-// synchronous=FULL, so per-row commits meant one fsync per container per 5s - and better-sqlite3
-// is synchronous, so on a slow bind-mounted volume that lands straight on the event loop.
-const insertContainerMetricsTx = db.transaction((samples) => {
+// One transaction for the whole poll, not one commit per row - and that now includes the host
+// row, which used to be a loose .run() right after this one committed. A commit is not an fsync
+// here (WAL runs at synchronous=NORMAL) but it is still event-loop time. See CLAUDE.md.
+const insertMetricsTx = db.transaction((samples, hostSample) => {
   for (const sample of samples) stmts.insertContainerMetric.run(sample);
+  if (hostSample) stmts.insertHostMetric.run(hostSample);
 });
 
-function insertContainerMetrics(samples) {
+function insertMetrics(samples, hostSample = null) {
   // better-sqlite3 would happily run an empty transaction; skipping it avoids a pointless commit
-  // on a host whose containers are all stopped, which is every poll for an idle host.
-  if (!samples.length) return;
-  timed('insertContainerMetrics', () => insertContainerMetricsTx(samples));
+  // on a poll with nothing at all to write - an unreachable host's, or one whose `docker info`
+  // came back without a cpu count to divide by.
+  if (!samples.length && !hostSample) return;
+  timed('insertMetrics', () => insertMetricsTx(samples, hostSample));
 }
 
-// better-sqlite3 is synchronous, so every write here is event-loop time, and at WAL's default
-// synchronous=FULL a commit is an fsync - which is why a slow bind-mounted volume shows up as
-// application lag. watchdog.js can say the loop stalled but never why; this is the attribution.
-// Only the two writes big enough to matter are wrapped (the per-poll transaction and the hourly
-// prune, which is a full table scan) - timing every single-row statement would cost more than it
-// tells you. Rounded on read, not per call, to keep the hot path to one subtraction.
+// better-sqlite3 is synchronous, so every write here is event-loop time - which is why a slow
+// bind-mounted volume shows up as application lag, and why a WAL checkpoint (where the fsyncs
+// actually are, not at each commit) can land inside one. watchdog.js can say the loop stalled but
+// never why; this is the attribution. Only the two writes big enough to matter are wrapped (the
+// per-poll transaction and the hourly prune, which is a full table scan) - timing every single-row
+// statement would cost more than it tells you. Rounded on read to keep the hot path to one subtraction.
 const SLOW_DB_WRITE_MS = Number(process.env.SLOW_DB_WRITE_MS) || 250;
 let writeStats = { lastMs: 0, maxMs: 0, slow: 0, op: null };
 
@@ -330,6 +332,8 @@ function takeWriteStats() {
   return out;
 }
 
+// The standalone form, deliberately not what the poll uses - it takes a commit of its own rather
+// than joining the poll's. Kept for callers writing a host row outside a poll, e.g. seeding in tests.
 function insertHostMetric(sample) {
   stmts.insertHostMetric.run(sample);
 }
@@ -545,7 +549,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
 
 module.exports = {
   client: db,
-  insertContainerMetrics,
+  insertMetrics,
   insertHostMetric,
   insertEvent,
   insertAuditLog,

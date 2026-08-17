@@ -202,7 +202,7 @@ async function pollHost(host) {
     let cpuSum = 0;
     let memSum = 0;
     // Collected first, then written in one transaction and only then alerted on. Inserting per
-    // container cost a commit (and an fsync) each; alerting per container mid-loop would have put
+    // container cost a commit each; alerting per container mid-loop would have put
     // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
     const samples = [];
     const alertSamples = [];
@@ -241,7 +241,24 @@ async function pollHost(host) {
       });
     }
 
-    db.insertContainerMetrics(samples);
+    // Built here rather than after the write, so it can go into the same transaction as the
+    // container samples instead of taking a commit of its own straight afterwards. The
+    // alerting it feeds still happens after, below - handleHostSample does its own db writes and
+    // fire() is an async webhook, neither of which may be inside a synchronous transaction.
+    const hostSample =
+      hostInfo && hostInfo.ncpu
+        ? {
+            hostId: host.id,
+            ts,
+            cpuPercent: cpuSum / hostInfo.ncpu,
+            memUsedBytes: memSum,
+            systemCpuPercent: localSystemUsage ? localSystemUsage.cpuPercent : null,
+            systemMemUsedBytes: localSystemUsage ? localSystemUsage.memUsedBytes : null,
+            systemMemTotalBytes: localSystemUsage ? localSystemUsage.memTotalBytes : null,
+          }
+        : null;
+
+    db.insertMetrics(samples, hostSample);
     // One settings+rules read for the whole poll rather than one per container - resolved lazily so
     // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
     const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);
@@ -262,20 +279,11 @@ async function pollHost(host) {
       containers.filter((c) => c.state === 'running').map((c) => c.id)
     );
 
-    if (hostInfo && hostInfo.ncpu) {
-      db.insertHostMetric({
-        hostId: host.id,
-        ts,
-        cpuPercent: cpuSum / hostInfo.ncpu,
-        memUsedBytes: memSum,
-        systemCpuPercent: localSystemUsage ? localSystemUsage.cpuPercent : null,
-        systemMemUsedBytes: localSystemUsage ? localSystemUsage.memUsedBytes : null,
-        systemMemTotalBytes: localSystemUsage ? localSystemUsage.memTotalBytes : null,
-      });
+    if (hostSample) {
       alerts.handleHostSample({
         hostId: host.id,
         hostName: host.name || host.id,
-        cpuPercent: cpuSum / hostInfo.ncpu,
+        cpuPercent: hostSample.cpuPercent,
         memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
         ts,
       });

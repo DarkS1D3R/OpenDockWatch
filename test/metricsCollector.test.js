@@ -102,8 +102,7 @@ test('pollHost reachability', async (t) => {
     t2.mock.method(alerts, 'handleSample', () => {});
     t2.mock.method(alerts, 'handleHostSample', () => {});
     t2.mock.method(alerts, 'retainContainers', () => {});
-    t2.mock.method(db, 'insertContainerMetrics', () => {});
-    t2.mock.method(db, 'insertHostMetric', () => {});
+    t2.mock.method(db, 'insertMetrics', () => {});
     // removeHost only unwinds a host that was addHost-ed; these drive pollHost directly, so the
     // snapshot is what has to be cleared or the next subtest inherits this one's reachability.
     t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
@@ -183,7 +182,7 @@ test('pollHost probe gate', async (t) => {
     t2.mock.method(statsWatcher, 'getSamples', () => null);
     t2.mock.method(alerts, 'handleHostReachability', (id, n, r, w) => reach.push([r, w]));
     t2.mock.method(alerts, 'retainContainers', () => {});
-    t2.mock.method(db, 'insertContainerMetrics', () => {});
+    t2.mock.method(db, 'insertMetrics', () => {});
     // removeHost only unwinds a host that was addHost-ed; these drive pollHost directly, so the
     // snapshot is what has to be cleared or the next subtest inherits this one's reachability.
     t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
@@ -249,8 +248,7 @@ test('pollHost host info', async (t) => {
     t2.mock.method(alerts, 'handleSample', () => {});
     t2.mock.method(alerts, 'handleHostSample', () => {});
     t2.mock.method(alerts, 'retainContainers', () => {});
-    t2.mock.method(db, 'insertContainerMetrics', () => {});
-    t2.mock.method(db, 'insertHostMetric', () => {});
+    t2.mock.method(db, 'insertMetrics', () => {});
     t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
     return { calls };
   }
@@ -336,5 +334,71 @@ test('pollHost reachability counts only live calls', async (t) => {
     await metricsCollector.pollHost(HOST);
     assert.deepEqual(s.reach, [[false, true]]);
     assert.equal(metricsCollector.getSnapshot(HOST.id).reachable, false);
+  });
+});
+
+// The container samples and the host row go to sqlite in one transaction, so the collector has to
+// hand both to one call. Mutation-testing found this gap: dropping the host row from that call
+// left every db.test.js assertion passing, because those mock the write and never look at what it
+// was given - host metrics would simply have stopped being recorded, silently.
+test('pollHost writes container samples and the host row together', async (t) => {
+  const HOST = { id: 'wr', name: 'Writer' };
+  const containers = [
+    { id: 'aaa', name: 'web', state: 'running', alertsDisabled: false, composeProject: null },
+    { id: 'bbb', name: 'old', state: 'exited', alertsDisabled: false, composeProject: null },
+  ];
+  const stats = { aaa: { cpuPerc: '20.0%', memUsage: '256MiB / 1GiB', memPerc: '25.0%' } };
+
+  function stub(t2, { ncpu = 4 } = {}) {
+    const writes = [];
+    const hostAlerts = [];
+    t2.mock.method(docker, 'listContainers', () => Promise.resolve(containers));
+    t2.mock.method(docker, 'getStats', () => Promise.resolve(stats));
+    t2.mock.method(docker, 'cachedHostInfo', () => (ncpu ? { ncpu, memTotalBytes: 1024 ** 3 } : { memTotalBytes: 1024 ** 3 }));
+    t2.mock.method(statsWatcher, 'getSamples', () => null);
+    t2.mock.method(statsWatcher, 'retainContainers', () => {});
+    t2.mock.method(alerts, 'handleHostReachability', () => {});
+    t2.mock.method(alerts, 'handleSample', () => {});
+    t2.mock.method(alerts, 'retainContainers', () => {});
+    t2.mock.method(alerts, 'handleHostSample', (s) => hostAlerts.push(s));
+    t2.mock.method(db, 'insertMetrics', (samples, hostSample) => writes.push({ samples, hostSample }));
+    t2.after(() => metricsCollector.getAllSnapshots().delete(HOST.id));
+    return { writes, hostAlerts };
+  }
+
+  await t.test('one write call carrying both', async (t2) => {
+    const s = stub(t2);
+    await metricsCollector.pollHost(HOST);
+    assert.equal(s.writes.length, 1, 'the poll must write once, not once per kind');
+    const { samples, hostSample } = s.writes[0];
+    assert.equal(samples.length, 1, 'only the running container is sampled');
+    assert.equal(samples[0].containerId, 'aaa');
+    assert.ok(hostSample, 'the host row was not handed to the same write');
+    assert.equal(hostSample.hostId, HOST.id);
+    assert.equal(hostSample.cpuPercent, 5, '20% across 4 cpus');
+    assert.equal(hostSample.memUsedBytes, 256 * 1024 ** 2);
+  });
+
+  // The row is built before the write so it can go in the transaction; the alerting it feeds has
+  // to stay after, because handleHostSample writes to sqlite itself and fire() is an async
+  // webhook - neither may run inside a synchronous better-sqlite3 transaction.
+  await t.test('the host alert still fires, and after the write', async (t2) => {
+    const s = stub(t2);
+    await metricsCollector.pollHost(HOST);
+    assert.equal(s.hostAlerts.length, 1);
+    assert.equal(s.hostAlerts[0].cpuPercent, 5);
+    assert.equal(s.hostAlerts[0].hostName, 'Writer');
+    assert.equal(s.hostAlerts[0].memPercent, 25, '256MiB of a 1GiB host');
+  });
+
+  // No cpu count means nothing to divide by, so there is no host row this poll - the container
+  // samples still have to be written rather than the whole call being skipped.
+  await t.test('no cpu count means no host row, but the samples still go', async (t2) => {
+    const s = stub(t2, { ncpu: 0 });
+    await metricsCollector.pollHost(HOST);
+    assert.equal(s.writes.length, 1);
+    assert.equal(s.writes[0].hostSample, null);
+    assert.equal(s.writes[0].samples.length, 1);
+    assert.equal(s.hostAlerts.length, 0, 'a host alert with no cpu count would divide by zero');
   });
 });

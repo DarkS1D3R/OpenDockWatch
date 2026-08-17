@@ -42,16 +42,16 @@ function rowCountFor(containerId) {
   return db.client.prepare('SELECT COUNT(*) AS n FROM container_metrics WHERE container_id = ?').get(containerId).n;
 }
 
-test('insertContainerMetrics', async (t) => {
+test('insertMetrics', async (t) => {
   await t.test('writes every sample in the batch', () => {
-    db.insertContainerMetrics([sample('c-all-1'), sample('c-all-1'), sample('c-all-2')]);
+    db.insertMetrics([sample('c-all-1'), sample('c-all-1'), sample('c-all-2')]);
     assert.equal(rowCountFor('c-all-1'), 2);
     assert.equal(rowCountFor('c-all-2'), 1);
   });
 
   await t.test('round-trips the column values, not just the row count', () => {
     const one = sample('c-values', { cpuPerc: 42.5, memUsedBytes: 999, netRxBytes: 7 });
-    db.insertContainerMetrics([one]);
+    db.insertMetrics([one]);
     const row = db.client.prepare('SELECT * FROM container_metrics WHERE container_id = ?').get('c-values');
     assert.equal(row.cpu_perc, 42.5);
     assert.equal(row.mem_used_bytes, 999);
@@ -63,7 +63,7 @@ test('insertContainerMetrics', async (t) => {
   // transaction (or throw) just to write nothing.
   await t.test('an empty batch is a no-op', () => {
     const before = db.client.prepare('SELECT COUNT(*) AS n FROM container_metrics').get().n;
-    assert.doesNotThrow(() => db.insertContainerMetrics([]));
+    assert.doesNotThrow(() => db.insertMetrics([]));
     assert.equal(db.client.prepare('SELECT COUNT(*) AS n FROM container_metrics').get().n, before);
   });
 
@@ -73,7 +73,7 @@ test('insertContainerMetrics', async (t) => {
   await t.test('a bad sample rolls the whole batch back', () => {
     const bad = sample('c-atomic');
     delete bad.memPerc;
-    assert.throws(() => db.insertContainerMetrics([sample('c-atomic'), bad, sample('c-atomic')]));
+    assert.throws(() => db.insertMetrics([sample('c-atomic'), bad, sample('c-atomic')]));
     assert.equal(rowCountFor('c-atomic'), 0, 'partial batch survived a failed insert');
   });
 
@@ -81,7 +81,7 @@ test('insertContainerMetrics', async (t) => {
   // changed what lands in the table from the history queries' point of view.
   await t.test('batched rows are readable through the history query', () => {
     const base = nextTs + 1000;
-    db.insertContainerMetrics([
+    db.insertMetrics([
       sample('c-history', { ts: base, cpuPerc: 10, netRxBytes: 1000 }),
       sample('c-history', { ts: base + 1000, cpuPerc: 20, netRxBytes: 3000 }),
     ]);
@@ -160,7 +160,7 @@ test('container_alert_rules CRUD', async (t) => {
 test('write timing stats', async (t) => {
   await t.test('a metrics write is timed and reported', () => {
     db.takeWriteStats(); // clear anything earlier tests left behind
-    db.insertContainerMetrics([
+    db.insertMetrics([
       {
         hostId: 'wstat',
         containerId: 'c1',
@@ -176,13 +176,13 @@ test('write timing stats', async (t) => {
     ]);
     const stats = db.takeWriteStats();
     assert.ok(stats.maxMs >= 0, 'a duration should have been recorded');
-    assert.equal(stats.op, 'insertContainerMetrics', 'and attributed to the statement that took it');
+    assert.equal(stats.op, 'insertMetrics', 'and attributed to the statement that took it');
   });
 
   await t.test('maxMs resets on read so one slow write cannot pin the number forever', () => {
     // The property that makes a rising floor across consecutive vitals lines meaningful: without
     // it, a single bad commit at boot would keep reporting itself every minute thereafter.
-    db.insertContainerMetrics([
+    db.insertMetrics([
       {
         hostId: 'wstat',
         containerId: 'c2',
@@ -204,7 +204,85 @@ test('write timing stats', async (t) => {
 
   await t.test('an empty sample list is not timed at all - it never reaches sqlite', () => {
     db.takeWriteStats();
-    db.insertContainerMetrics([]);
+    db.insertMetrics([]);
     assert.equal(db.takeWriteStats().op, null);
+  });
+});
+
+// The host row used to be a loose .run() straight after the container transaction committed - two
+// commits per host per poll where one would do. It now rides in the same
+// transaction. These pin that: not "both rows exist" (which a split write also satisfies) but that
+// they succeed and fail together, which only one transaction can do.
+test('insertMetrics writes the host row in the same transaction', async (t) => {
+  const hostRowsFor = (hostId) => db.client.prepare('SELECT COUNT(*) AS n FROM host_metrics WHERE host_id = ?').get(hostId).n;
+  const hostSample = (hostId, overrides = {}) => ({
+    hostId,
+    ts: (nextTs += 1000),
+    cpuPercent: 5,
+    memUsedBytes: 100,
+    systemCpuPercent: null,
+    systemMemUsedBytes: null,
+    systemMemTotalBytes: null,
+    ...overrides,
+  });
+
+  await t.test('writes the container samples and the host row together', () => {
+    db.insertMetrics([sample('c-with-host')], hostSample('h-with-container'));
+    assert.equal(rowCountFor('c-with-host'), 1);
+    assert.equal(hostRowsFor('h-with-container'), 1);
+  });
+
+  await t.test('round-trips the host row values', () => {
+    db.insertMetrics([], hostSample('h-values', { cpuPercent: 33.5, memUsedBytes: 4242, systemCpuPercent: 12.25 }));
+    const row = db.client.prepare('SELECT * FROM host_metrics WHERE host_id = ?').get('h-values');
+    assert.equal(row.cpu_percent, 33.5);
+    assert.equal(row.mem_used_bytes, 4242);
+    assert.equal(row.system_cpu_percent, 12.25);
+  });
+
+  // An idle host has no running containers but still has a host row worth writing - so "no
+  // container samples" must not be treated as "nothing to write" the way it was when this function
+  // only ever wrote container rows.
+  await t.test('a host row alone is still written', () => {
+    db.insertMetrics([], hostSample('h-alone'));
+    assert.equal(hostRowsFor('h-alone'), 1);
+  });
+
+  await t.test('no host row is fine too - not every poll has a cpu count to divide by', () => {
+    db.insertMetrics([sample('c-no-host')], null);
+    assert.equal(rowCountFor('c-no-host'), 1);
+  });
+
+  await t.test('nothing at all is a no-op', () => {
+    const before = db.client.prepare('SELECT COUNT(*) AS n FROM host_metrics').get().n;
+    assert.doesNotThrow(() => db.insertMetrics([], null));
+    assert.equal(db.client.prepare('SELECT COUNT(*) AS n FROM host_metrics').get().n, before);
+  });
+
+  // The two halves of the atomicity check, and the pair is the actual point: either one alone
+  // would still pass if the host row went back to being written outside the transaction.
+  await t.test('a bad host row rolls the container samples back with it', () => {
+    const bad = hostSample('h-bad');
+    delete bad.systemMemTotalBytes;
+    assert.throws(() => db.insertMetrics([sample('c-rolled-back'), sample('c-rolled-back')], bad));
+    assert.equal(rowCountFor('c-rolled-back'), 0, 'container samples survived a failed host row - they are not in one transaction');
+    assert.equal(hostRowsFor('h-bad'), 0);
+  });
+
+  await t.test('a bad container sample rolls the host row back with it', () => {
+    const bad = sample('c-bad');
+    delete bad.memPerc;
+    assert.throws(() => db.insertMetrics([bad], hostSample('h-rolled-back')));
+    assert.equal(hostRowsFor('h-rolled-back'), 0, 'the host row survived a failed container sample - it committed separately');
+  });
+
+  // db.js's timed() wraps this write specifically so a slow commit is attributable on the vitals
+  // line. The host row was never inside it, so half the poll's storage cost was unreported.
+  await t.test('the host row is inside the timed write, not outside it', () => {
+    db.takeWriteStats();
+    db.insertMetrics([], hostSample('h-timed'));
+    const stats = db.takeWriteStats();
+    assert.equal(stats.op, 'insertMetrics');
+    assert.ok(stats.maxMs >= 0, 'a host-only write must still be measured');
   });
 });
