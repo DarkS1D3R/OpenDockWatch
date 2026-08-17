@@ -3,6 +3,7 @@ import { apiGetEvents, apiClearEvents, eventsStreamUrl } from '../api.js';
 import { eventSeverity } from '../format.js';
 import { groupCounts } from '../lib/activityCounts.js';
 import { filterAlerts, filterEvents } from '../lib/activityFilter.js';
+import ConfirmButton from './ConfirmButton.js';
 
 // The Activity tab: an alerts column (search + acknowledge) and an events column (SSE-backed
 // search). Mounted fresh (v-if) each time opened, so its own mounted()/beforeUnmount() own the
@@ -11,6 +12,7 @@ import { filterAlerts, filterEvents } from '../lib/activityFilter.js';
 // fetched/streamed state, so clearing them is handled entirely in-place.
 export default {
   name: 'ActivityView',
+  components: { ConfirmButton },
   props: {
     hostId: { type: String, required: true },
     alerts: { type: Array, default: () => [] },
@@ -191,7 +193,12 @@ export default {
           </div>
           <button v-if="isAdmin && hasUnacknowledged" class="small-btn" @click="$emit('ack-all')">Acknowledge all</button>
           <button v-if="alertSearch || alertRuleFilter" class="small-btn" @click="clearAlertFilters">Clear filters</button>
-          <button v-if="isAdmin && alerts.length" class="small-btn" @click="$emit('clear-alerts')">Clear activity</button>
+          <confirm-button
+            v-if="isAdmin && alerts.length"
+            label="Clear activity"
+            hint="Hides every alert on this host - the alert engine is unaffected"
+            @confirm="$emit('clear-alerts')"
+          ></confirm-button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
           <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
@@ -232,7 +239,12 @@ export default {
             >+{{ eventCounts.hidden.length }} more <b>{{ eventCounts.hiddenTotal }}</b></span>
           </div>
           <button v-if="eventSearch || eventActionFilter" class="small-btn" @click="clearEventFilters">Clear filters</button>
-          <button v-if="isAdmin && events.length" class="small-btn" @click="clearEvents">Clear events</button>
+          <confirm-button
+            v-if="isAdmin && events.length"
+            label="Clear events"
+            hint="Hides every event on this host - restart counts and crash-loop detection are unaffected"
+            @confirm="clearEvents"
+          ></confirm-button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
           <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />

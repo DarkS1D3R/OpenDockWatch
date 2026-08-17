@@ -1546,6 +1546,13 @@ table.containers td:nth-child(7) {
   border-color: var(--accent);
   color: #fff;
 }
+/* An armed ConfirmButton. Filled rather than outlined, so the one button on screen that will do
+   something destructive on the next click doesn't read as just another control in the row. */
+.confirm-btn.armed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
 .filter-error-text {
   font-size: 11px;
   color: var(--danger);

@@ -673,8 +673,25 @@ api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   );
 });
 
+// The clears are soft, so `cleared_at` already records when - this records *who*, which is the
+// audit question and the one thing that column can't answer. No container, and no pending/ok pair
+// either: unlike a container action the delete is synchronous, so there is no window to report.
+function auditClear(req, hostId, action) {
+  db.insertAuditLog({
+    ts: Date.now(),
+    username: req.session.username || null,
+    hostId,
+    containerId: null,
+    containerName: null,
+    action,
+    result: 'ok',
+    error: null,
+  });
+}
+
 api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
   const count = db.clearEvents(req.params.hostId);
+  auditClear(req, req.params.hostId, 'clear_events');
   logger.info('events.clear', { host: req.params.hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });
@@ -724,6 +741,7 @@ api.delete('/alerts', requireAdmin, (req, res) => {
   const hostId = req.query.hostId;
   if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.clearAlerts(hostId);
+  auditClear(req, hostId, 'clear_alerts');
   logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });
 });

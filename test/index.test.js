@@ -730,6 +730,27 @@ test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async 
     const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     assert.equal((await admin.delete(`/api/hosts/${FAKE_HOST_ID}/events`)).status, 404);
   });
+
+  // cleared_at records when a clear happened; only the audit log records who, and it is the one
+  // table a clear doesn't touch. The subtest above already issued one of each as ADMIN_USER.
+  await t.test('both clears leave an audit row naming the admin who ran them', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const rows = (await admin.get(`/api/audit?hostId=${hostId}`)).body;
+    for (const action of ['clear_alerts', 'clear_events']) {
+      const row = rows.find((r) => r.action === action);
+      assert.ok(row, `no audit row for ${action}`);
+      assert.equal(row.username, ADMIN_USER);
+      assert.equal(row.result, 'ok');
+      assert.equal(row.container_id, null, 'a clear is host-wide, not about one container');
+    }
+  });
+
+  // The manual-stop/start suppression in alerts.js reads the same table by action, and a clear
+  // row that landed in either count would suppress a real crash_loop or container_crashed alert.
+  await t.test('a clear row cannot be read as a manual container action', () => {
+    assert.equal(db.countManualStopsSince(hostId, 'aaaaaaaaaaaa', 0), 0);
+    assert.equal(db.countManualStartsSince(hostId, 'aaaaaaaaaaaa', 0), 0);
+  });
 });
 
 // A page load is ~44 separate requests because there is no build step, and every one of them used
