@@ -726,9 +726,13 @@ test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async 
     assert.equal((await admin.get(`/api/hosts/${hostId}/events`)).body.length, 0);
   });
 
-  await t.test('DELETE /hosts/:hostId/events 404s for an unknown host', async () => {
+  // The two clears scope their host differently - a path segment for events, ?hostId= for alerts -
+  // and used to answer an unknown host differently with it: 404 from requireHost, versus a 200 and
+  // a count of 0 for a typo'd id that matched no rows because no such host was ever monitored.
+  await t.test('both clears 404 for an unknown host', async () => {
     const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     assert.equal((await admin.delete(`/api/hosts/${FAKE_HOST_ID}/events`)).status, 404);
+    assert.equal((await admin.delete(`/api/alerts?hostId=${FAKE_HOST_ID}`)).status, 404);
   });
 
   // cleared_at records when a clear happened; only the audit log records who, and it is the one

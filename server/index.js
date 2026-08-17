@@ -102,6 +102,15 @@ function requireHost(req, res, next) {
   next();
 }
 
+// Same 400/404 pair for the routes that scope by ?hostId= rather than a path segment, so a typo'd
+// host id can't come back 200 having done nothing. Sets no req.odwHost: these routes only ever
+// hand the id to sqlite, never to the docker CLI, so there is nothing to resolve it to.
+function requireHostQuery(req, res, next) {
+  if (!req.query.hostId) return res.status(400).json({ error: 'hostId required' });
+  if (!getHost(req.query.hostId)) return res.status(404).json({ error: 'unknown host' });
+  next();
+}
+
 // A browser allows ~6 connections per origin over HTTP/1.1, some held open indefinitely by
 // design (SSE streams) - a request that never answers holds a slot until the tab can't issue
 // any request at all. So: answer, always, even 504. SSE routes are exempt by path suffix.
@@ -737,9 +746,8 @@ api.post('/alerts/ack-all', requireAdmin, (req, res) => {
   res.json({ ok: true, count });
 });
 
-api.delete('/alerts', requireAdmin, (req, res) => {
+api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
   const hostId = req.query.hostId;
-  if (!hostId) return res.status(400).json({ error: 'hostId required' });
   const count = db.clearAlerts(hostId);
   auditClear(req, hostId, 'clear_alerts');
   logger.info('alerts.clear', { host: hostId, user: req.session.username, count });

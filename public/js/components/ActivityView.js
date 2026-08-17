@@ -195,7 +195,7 @@ export default {
           <button v-if="alertSearch || alertRuleFilter" class="small-btn" @click="clearAlertFilters">Clear filters</button>
           <confirm-button
             v-if="isAdmin && alerts.length"
-            label="Clear activity"
+            label="Clear alerts"
             hint="Hides every alert on this host - the alert engine is unaffected"
             @confirm="$emit('clear-alerts')"
           ></confirm-button>

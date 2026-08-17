@@ -2160,7 +2160,7 @@ button.log-pane-main-btn.active:hover {
 .activity-column .log-section-header {
   gap: 10px;
   margin-bottom: 18px;
-  /* Up to three buttons (Acknowledge all / Clear filters / Clear activity or events) plus the
+  /* Up to three buttons (Acknowledge all / Clear filters / Clear alerts or events) plus the
      badge row can outgrow a narrow column - wrap instead of overflowing it. */
   flex-wrap: wrap;
 }
