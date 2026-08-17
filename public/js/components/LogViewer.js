@@ -306,10 +306,9 @@ export default {
     downloadLogs() {
       window.location.href = downloadLogsUrl(this.hostId, this.containerId, this.tail);
     },
-    // Every scroll this pane makes itself goes through here. onScroll broadcasts to sibling panes,
-    // so a self-made move must not - a sync-driven one would ping-pong straight back, and a live
-    // tail would drag panes the user deliberately scrolled into history. Cleared a frame later,
-    // once the native scroll event it caused has already fired and been ignored.
+    // Every scroll this pane makes itself goes through here, because onScroll broadcasts to
+    // siblings and a self-made move must not. Cleared a frame later, once the native scroll event
+    // it caused has fired and been ignored. See CLAUDE.md.
     scrollWithoutBroadcast(fn) {
       this._programmatic = true;
       fn();
@@ -330,10 +329,9 @@ export default {
         if (tsMs != null) this.$emit('scroll-sync', { containerId: this.containerId, tsMs });
       });
     },
-    // The line currently at the top of the scrolled viewport. The search is topIndexByOffset in
-    // lib/logSync.js, beside the closestIndexByTs that answers the opposite question; offsetTop is
-    // monotonic per line even with wrapped text, since <pre>'s children are exactly filteredLines
-    // in order with no wrapper in between, which is what makes a binary search valid at all.
+    // The line at the top of the scrolled viewport; the search is topIndexByOffset in lib/logSync.js.
+    // A binary search is valid because <pre>'s children are exactly filteredLines in order with no
+    // wrapper between, so offsetTop is monotonic even with wrapped text.
     visibleTopTsMs() {
       const el = this.$refs.logView;
       if (!el) return null;
@@ -411,10 +409,9 @@ export default {
         this.prevMatch();
       }
     },
-    // Two callers that are not the same event, hence the flag. Pressing ▼ is the user navigating,
-    // and in a peer-to-peer synced group that should carry the siblings along exactly as dragging
-    // the scrollbar down would; the live tail and the post-pause catch-up are this pane's own
-    // bookkeeping and must stay silent. Default broadcasts, so the template's @click needs no argument.
+    // Two callers that are not the same event, hence the flag: pressing ▼ is the user navigating and
+    // should carry the siblings, while the live tail and the post-pause catch-up are this pane's own
+    // bookkeeping and stay silent. Default broadcasts, so the template's @click needs no argument.
     scrollToBottom({ broadcast = true } = {}) {
       this.atBottom = true;
       const el = this.$refs.logView;

@@ -33,14 +33,9 @@ function nearestNonNull(arr, fromIndex, step) {
   return -1;
 }
 
-// The other half of the same feature: closestIndexByTs answers "where do I scroll to", this
-// answers "where am I now". Given the rendered line boxes' offsets, the last one that starts at or
-// above scrollTop - i.e. the line at the top of the viewport, whose timestamp is what a pane
-// broadcasts to its siblings. Returns -1 when nothing is rendered.
-//
-// Takes a lazy `offsetAt(i)` rather than an array because it runs on every frame of a drag scroll
-// over a pane holding up to MAX_LOG_LINES lines: materialising the offsets would turn an O(log n)
-// probe into an O(n) copy per frame, which is the cost this binary search exists to avoid.
+// The other half of the sync: this answers "where am I now" where closestIndexByTs answers "where
+// do I scroll to" - the last line box starting at or above scrollTop, i.e. the one at the top of
+// the viewport. -1 when nothing is rendered. `offsetAt` is lazy on purpose; see CLAUDE.md.
 export function topIndexByOffset(length, offsetAt, scrollTop) {
   if (!length) return -1;
   let lo = 0;

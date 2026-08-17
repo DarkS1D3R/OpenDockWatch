@@ -10,6 +10,7 @@ import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
 import { parseMemUsedBytes } from './format.js';
+import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -501,6 +502,9 @@ const app = createApp({
     },
     async logout() {
       await apiLogout();
+      // The Logs tab's remembered panes are per browser tab, not per account - so signing out has
+      // to drop them, or the next person to sign in here arrives at a selection someone else made.
+      clearAllOpenPanes();
       window.location.href = '/login';
     },
     openSettings() {

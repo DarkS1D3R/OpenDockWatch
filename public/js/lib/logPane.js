@@ -9,11 +9,9 @@ export function clampPaneHeight(height, { minHeight, maxHeight }) {
   return Math.round(Math.min(maxHeight, Math.max(minHeight, height)));
 }
 
-// How tall the strip may grow right now: whatever it already occupies, plus whatever the log body
-// can give up without dropping under minBodyHeight. Measured live rather than declared in CSS,
-// because the body is `flex: 1; min-height: 0` and so yields all the way to zero, and the panel's
-// own height differs by mode - a viewport calc in fullscreen, measured by LogsView when embedded.
-// A fixed px cap eats the whole log on a short window; a vh cap can only ever suit one of the two.
+// How tall the strip may grow right now: what it already occupies, plus what the log body can give
+// up above minBodyHeight. Measured rather than declared in CSS - neither a px nor a vh cap can be
+// right for both panel modes, and the body yields to zero on its own. See CLAUDE.md.
 export function maxPaneHeight({ paneHeight, bodyHeight, minBodyHeight }) {
   return paneHeight + Math.max(0, bodyHeight - minBodyHeight);
 }
@@ -27,10 +25,9 @@ export function dragHeight({ startHeight, startY, clientY, minHeight, maxHeight 
 
 const TYPING_TAGS = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'];
 
-// Space toggles pause, and its listener is on `document` so a pane doesn't have to be focused
-// first. That convenience is the reason this predicate has to be careful: it is the only thing
-// stopping space from failing to type in the filter box, failing to press a focused button, or
-// scrolling the page out from under the log.
+// The listener is on `document` so a pane needs no focus first, which is why this has to be
+// careful: it is the only thing stopping space from failing to type in the filter box, failing to
+// press a focused button, or scrolling the page out from under the log.
 export function shouldTogglePause(event, { multiPane = false, hovered = false } = {}) {
   if (event.key !== ' ' && event.code !== 'Space') return false;
   // Any modifier held means the user meant something else entirely.
@@ -42,10 +39,9 @@ export function shouldTogglePause(event, { multiPane = false, hovered = false } 
   return !multiPane || hovered;
 }
 
-// One badge rather than a span per state: the three are mutually exclusive, and "active" is only
-// legible as a state because it sits exactly where the paused ones do - so it is always rendered
-// rather than being an absence. Manual pause outranks suspension: if the user paused it, that is
-// the answer to "why isn't this moving".
+// One badge, always rendered: "active" only reads as a state because it sits where the paused ones
+// do. Manual pause outranks suspension - if the user paused it, that is the answer to "why isn't
+// this moving".
 export function statusBadge({ paused, suspended, pendingCount = 0 }) {
   if (paused) {
     return {

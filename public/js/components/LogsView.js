@@ -1,5 +1,6 @@
 import { stateEmoji } from '../format.js';
 import { MAX_OPEN_LOG_PANES } from '../constants.js';
+import { loadOpenPanes, saveOpenPanes } from '../lib/logsPersistence.js';
 import LogViewer from './LogViewer.js';
 
 // The Logs tab: a container list on the left and up to MAX_OPEN_LOG_PANES embedded LogViewers
@@ -62,13 +63,19 @@ export default {
     },
   },
   watch: {
-    hostId() {
-      this.openIds = [];
-      this.lastSyncTsMs = null;
-      this.disabledSyncIds = [];
-      this.mainId = null;
-      this.joinTsMsById = {};
+    // Switching host restores that host's own saved panes rather than clearing - the memory is
+    // keyed per host precisely because a container id means nothing on a different daemon, so
+    // "what did I have open here" is a question each host answers for itself.
+    hostId(id) {
+      this.restoreOpenPanes(id);
     },
+    // Anything naming a pane is worth remembering; the scroll positions (lastSyncTsMs,
+    // joinTsMsById) deliberately are not, since every pane re-tails on return and a saved
+    // timeframe would land the group somewhere the logs no longer are.
+    openIds: 'persistOpenPanes',
+    viewMode: 'persistOpenPanes',
+    disabledSyncIds: 'persistOpenPanes',
+    mainId: 'persistOpenPanes',
     // A container that disappears from the list (removed, or filtered out by the topbar's state
     // toggle) shouldn't leave a pane stuck rendering a stream for an id no longer in it - or leave
     // its sync-disabled/main status lingering for a *different* container that later reuses the id.
@@ -85,9 +92,14 @@ export default {
     this._panes = {};
   },
   mounted() {
+    this.restoreOpenPanes(this.hostId);
+    // Arriving from the List view's "Logs" button overrides whatever was remembered: that click
+    // names a container, which is a more specific request than "put back what I had".
     if (this.openContainerId) {
       this.viewMode = 'single';
       this.openIds = [this.openContainerId];
+      this.disabledSyncIds = [];
+      this.mainId = null;
     }
     this.updateWrapHeight();
     // document.body doesn't actually resize with the viewport (its box is content-driven, not
@@ -99,6 +111,27 @@ export default {
     window.removeEventListener('resize', this.updateWrapHeight);
   },
   methods: {
+    // Deliberately does *not* filter against the current container list - after a host switch that
+    // list is still the previous host's, so filtering would drop every restored id and persist the
+    // emptiness. The allContainers watcher prunes on the first real poll instead. See CLAUDE.md.
+    restoreOpenPanes(hostId) {
+      const saved = loadOpenPanes(hostId);
+      this.viewMode = saved ? saved.viewMode : 'multi';
+      this.openIds = saved ? saved.openIds : [];
+      this.disabledSyncIds = saved ? saved.disabledSyncIds : [];
+      this.mainId = saved ? saved.mainId : null;
+      // Scroll state is per visit, not per host: the panes re-tail from scratch on return.
+      this.lastSyncTsMs = null;
+      this.joinTsMsById = {};
+    },
+    persistOpenPanes() {
+      saveOpenPanes(this.hostId, {
+        viewMode: this.viewMode,
+        openIds: this.openIds,
+        disabledSyncIds: this.disabledSyncIds,
+        mainId: this.mainId,
+      });
+    },
     updateWrapHeight() {
       const el = this.$refs.wrap;
       if (!el) return;

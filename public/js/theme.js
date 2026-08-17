@@ -22,10 +22,9 @@ export const STATE_COLORS = {
 // created -> starting -> unhealthy -> selected: the more urgent fact wins the border.
 export const SELECTED = ACCENT;
 
-// The style.css custom property carrying each state's value, so test/theme.test.js can hold the two
-// sides together across a boundary no import can cross. `unhealthy` is absent on purpose: the CSS
-// has no counterpart for it - --danger (#e5534b) is a different red for a different job, and
-// conflating them here would quietly repaint every error message in the app.
+// The style.css custom property carrying each state's value, so test/theme.test.js can hold the
+// two sides together across a boundary no import can cross. `unhealthy` is deliberately absent -
+// the CSS has no counterpart for it. See CLAUDE.md.
 export const CSS_VAR_FOR_STATE = {
   running: '--ok',
   stopped: '--muted',

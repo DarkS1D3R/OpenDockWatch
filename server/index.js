@@ -733,10 +733,9 @@ api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   });
 });
 
-// Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column
-// carries raw docker/ssh stderr - host names, paths, "Permission denied (publickey)". Same call as
-// masking Config.Env for a viewer; read-only does not mean "may read everything". Nothing in
-// public/js reads this route at all, so gating it costs the UI nothing.
+// Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column carries
+// raw docker/ssh stderr. Same call as masking Config.Env for a viewer - read-only does not mean
+// "may read everything", and nothing in public/js reads this route at all. See CLAUDE.md.
 api.get('/audit', requireAdmin, (req, res) => {
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
