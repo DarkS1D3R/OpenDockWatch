@@ -746,6 +746,9 @@ module.exports = {
   lastCheckError,
   noteHostFailure,
   noteHostReachable,
+  // Exported so index.js can reject a bad :action at the route rather than retyping the set - the
+  // check below is the last line of defence, but by then the audit row and log line already exist.
+  ALLOWED_ACTIONS,
   DISK_USAGE_TIMEOUT_MS,
   CONTAINER_ACTION_TIMEOUT_MS,
 };
