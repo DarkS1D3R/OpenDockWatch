@@ -524,12 +524,12 @@ export default {
           </select>
           <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
           <button
-            class="small-btn"
+            class="small-btn log-pause-btn"
             :class="{ active: paused }"
             @click="togglePause"
             :title="paused ? 'Paused - new lines are held until you resume (space)' : 'Pause the log - new lines are held rather than dropped (space)'"
           >
-            {{ paused ? '▶' : '⏸' }} <span class="btn-label">{{ paused ? 'Resume' : 'Pause' }}</span>
+            <span class="btn-icon">{{ paused ? '▶' : '⏸' }}</span> <span class="btn-label">{{ paused ? 'Resume' : 'Pause' }}</span>
           </button>
           <button
             class="small-btn"

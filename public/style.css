@@ -1488,6 +1488,15 @@ table.containers td:nth-child(7) {
 .log-panel-controls .log-filter-input-wrap input {
   height: 32px;
 }
+/* Centers the icon+label pair vertically regardless of glyph metrics - a couple of these buttons
+   render icon-only once compact mode (below) drops the label, and centering via line-height/
+   vertical-align alone left a lone glyph sitting off-center in the 32px box. */
+.log-panel-controls button:not(.filter-clear-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
 .log-filter-group {
   display: flex;
   align-items: center;
@@ -1535,14 +1544,22 @@ table.containers td:nth-child(7) {
 .search-clear-wrap {
   position: relative;
 }
-/* The plain Unicode arrow renders as a thin, hard-to-read stroke at .small-btn's 11px - unlike the
+/* The plain Unicode arrows render as thin, hard-to-read strokes at .small-btn's 11px - unlike the
    emoji icons on the other buttons here (🕐, 🔍, ☰), which already carry enough visual weight at
-   that size. Bumped on its own rather than the whole button, so the label text next to it (when
-   shown) isn't oversized too. */
-.log-download-btn .btn-icon {
+   that size. Bumped on their own rather than the whole button, so the label text next to it (when
+   shown) isn't oversized too - and it's the one glyph left once compact mode drops the label. The
+   button itself now centers via flex (above), so no vertical-align nudge is needed here. */
+.log-download-btn .btn-icon,
+.log-pause-btn .btn-icon {
   font-size: 15px;
   line-height: 1;
-  vertical-align: -2px;
+}
+/* ⏸ (Media Control Symbols) sits lower in its own em-box than an arrow glyph does - flex only
+   centers the box, not the ink inside it, so this glyph still reads low next to ⬇ even once
+   centered. Nudged up on its own; ▶ (resume) shares the class but doesn't need it, the shift is
+   small enough not to look wrong on that glyph either. */
+.log-pause-btn .btn-icon {
+  transform: translateY(-2px);
 }
 .regex-toggle-btn {
   font-family: monospace;
