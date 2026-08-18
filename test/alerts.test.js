@@ -1035,3 +1035,240 @@ test('handleDiskUsage', async (t) => {
     assert.equal(fired.length, 0);
   });
 });
+
+// A webhook URL *is* the credential - a Discord/Gotify token or an ntfy topic sits in its path, so
+// anyone who can read `docker logs` can post as the alerting integration. webhookScheme() is the
+// only sanctioned way to put one in a line; this proves no other path prints it. See CLAUDE.md.
+const WEBHOOK_SECRET = 'zzleakcanaryzz';
+const SECRET_URLS = {
+  discord: `discord://123456789/${WEBHOOK_SECRET}`,
+  ntfy: `ntfy://ntfy.sh/${WEBHOOK_SECRET}`,
+  gotify: `gotify://gotify.example.com/${WEBHOOK_SECRET}`,
+  slack: `https://hooks.slack.com/services/T00/B00/${WEBHOOK_SECRET}`,
+};
+
+// Every level, not just the one a given path uses: the whole point is to catch a line added later
+// on a path nobody thought about, and a new line is as likely to be error as info.
+function captureLogger(t) {
+  const lines = [];
+  for (const level of ['info', 'warn', 'error']) {
+    t.mock.method(logger, level, (event, fields) => lines.push({ level, event, fields }));
+  }
+  return lines;
+}
+
+function assertNoLeak(lines, label) {
+  const leaked = lines.filter((l) => JSON.stringify(l).includes(WEBHOOK_SECRET));
+  assert.deepEqual(leaked, [], `${label} put the webhook credential in the log: ${JSON.stringify(leaked)}`);
+  assert.ok(lines.length > 0, `${label} logged nothing at all - this assertion proved nothing`);
+}
+
+function stubFetch(t, impl) {
+  const original = global.fetch;
+  global.fetch = impl;
+  t.after(() => (global.fetch = original));
+}
+
+function pendingRow(overrides = {}) {
+  return {
+    id: 9,
+    ts: Date.now(),
+    host_id: 'h',
+    container_id: 'c',
+    container_name: 'web',
+    rule: 'container_cpu',
+    severity: 'warning',
+    message: 'boom',
+    webhook_attempts: 1,
+    ...overrides,
+  };
+}
+
+function unhealthyEvent() {
+  return {
+    hostId: 'h',
+    containerId: 'c1',
+    containerName: 'web',
+    composeProject: null,
+    action: 'health_status: unhealthy',
+    ts: Date.now(),
+    raw: {},
+  };
+}
+
+test('the webhook URL never reaches a log line', async (t) => {
+  await t.test('webhookScheme redacts every scheme buildDelivery accepts', () => {
+    for (const [name, url] of Object.entries(SECRET_URLS)) {
+      const scheme = alerts.webhookScheme(url);
+      assert.ok(!scheme.includes(WEBHOOK_SECRET), `webhookScheme leaked the ${name} credential: ${scheme}`);
+      assert.match(scheme, /^[a-z]+:\/\/…$/, `webhookScheme returned something other than a bare scheme for ${name}: ${scheme}`);
+    }
+  });
+
+  await t.test('a delivered alert logs the scheme, not the URL', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null) });
+    stubFetch(t, async () => ({ ok: true }));
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a successful notify()');
+    assert.ok(
+      lines.some((l) => l.event === 'alert.webhook.delivered' && l.fields.via === 'discord://…'),
+      'the delivered line lost its redacted `via` field'
+    );
+  });
+
+  await t.test('a failed delivery logs the error, not the URL', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.slack : null) });
+    stubFetch(t, async () => ({ ok: false, status: 500 }));
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a failed notify()');
+    assert.ok(
+      lines.some((l) => l.event === 'alert.webhook.failed'),
+      'the failure path stopped logging'
+    );
+  });
+
+  // The timeout branch builds its own message rather than passing the fetch error through, which is
+  // the branch most likely to reach for the URL to say *what* timed out.
+  await t.test('a timed-out delivery logs the error, not the URL', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.ntfy : null) });
+    stubFetch(t, async () => {
+      const err = new Error('The operation was aborted due to timeout');
+      err.name = 'TimeoutError';
+      throw err;
+    });
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a timed-out notify()');
+  });
+
+  await t.test('the retry sweep logs neither the URL it retries against nor the backlog depth with it', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.gotify : null),
+      getPendingWebhookRetries: () => [pendingRow()],
+    });
+    stubFetch(t, async () => ({ ok: true }));
+
+    await alerts.retryFailedWebhooks();
+    assertNoLeak(lines, 'a successful retry sweep');
+    assert.ok(
+      lines.some((l) => l.event === 'alert.webhook.retry_delivered'),
+      'the retry sweep stopped logging deliveries'
+    );
+    assert.ok(
+      lines.some((l) => l.event === 'alert.webhook.backlog'),
+      'the backlog line went missing'
+    );
+  });
+
+  await t.test('a still-failing retry logs the attempt, not the URL', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null),
+      getPendingWebhookRetries: () => [pendingRow({ webhook_attempts: 3 })],
+    });
+    stubFetch(t, async () => ({ ok: false, status: 502 }));
+
+    await alerts.retryFailedWebhooks();
+    assertNoLeak(lines, 'a failed retry sweep');
+    assert.ok(
+      lines.some((l) => l.event === 'alert.webhook.retry_failed'),
+      'the retry failure path stopped logging'
+    );
+  });
+
+  // sendTestAlert throws rather than logging, and index.js hands that message to the admin's
+  // browser - so the message itself is the surface here, not a log line.
+  await t.test('the test-alert failure message carries no credential', async (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.slack : null) });
+    stubFetch(t, async () => ({ ok: false, status: 500 }));
+
+    await assert.rejects(
+      () => alerts.sendTestAlert(),
+      (err) => !err.message.includes(WEBHOOK_SECRET),
+      'sendTestAlert put the webhook credential in the error it hands back to the caller'
+    );
+  });
+
+  // The messages below are the ones a runtime that words its fetch errors differently would hand
+  // back. undici says "fetch failed" today, so none of this is reachable on Node 22 - which is the
+  // point: the guarantee must not rest on a message format nobody promised.
+  await t.test('a runtime error naming the constructed URL is redacted before it is logged', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null) });
+    stubFetch(t, async (url) => {
+      throw new TypeError(`Failed to parse URL from ${url}`);
+    });
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a fetch error naming the delivery URL');
+    const failed = lines.find((l) => l.event === 'alert.webhook.failed');
+    assert.equal(failed.fields.error, 'Failed to parse URL from https://…');
+  });
+
+  await t.test('a runtime error naming the raw URL is redacted before it is logged', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null) });
+    stubFetch(t, async () => {
+      throw new TypeError(`connect ECONNREFUSED for ${SECRET_URLS.discord}`);
+    });
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a fetch error naming the configured URL');
+    assert.match(lines.find((l) => l.event === 'alert.webhook.failed').fields.error, /discord:\/\/…$/);
+  });
+
+  // The narrower case the full-URL swap alone would miss: a message carrying only the credential
+  // path, with no scheme or host in front of it to match on.
+  await t.test('a runtime error naming only the credential path is redacted', async (t) => {
+    const lines = captureLogger(t);
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.slack : null) });
+    stubFetch(t, async () => {
+      throw new Error(`404 Not Found: /services/T00/B00/${WEBHOOK_SECRET}`);
+    });
+
+    alerts.handleEvent(unhealthyEvent());
+    await flushMicrotasks();
+    assertNoLeak(lines, 'a fetch error naming the credential path');
+    assert.equal(lines.find((l) => l.event === 'alert.webhook.failed').fields.error, '404 Not Found: /…');
+  });
+
+  // index.js answers Settings' "Test webhook" with this message, so it reaches a browser rather
+  // than a log - the same credential, a different surface.
+  await t.test('sendTestAlert redacts before handing the message back to the caller', async (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.gotify : null) });
+    stubFetch(t, async (url) => {
+      throw new TypeError(`Failed to parse URL from ${url}`);
+    });
+
+    await assert.rejects(
+      () => alerts.sendTestAlert(),
+      (err) => !err.message.includes(WEBHOOK_SECRET) && /Failed to parse URL/.test(err.message),
+      'the test-alert error kept the credential on its way to the browser'
+    );
+  });
+
+  await t.test('an error with nothing to redact is passed through whole, name and stack included', async (t) => {
+    mockDb(t, { getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null) });
+    const thrown = new TypeError('fetch failed');
+    stubFetch(t, async () => {
+      throw thrown;
+    });
+
+    await assert.rejects(
+      () => alerts.sendTestAlert(),
+      (err) => err === thrown,
+      'a message with no credential in it was re-wrapped, trading the original name and stack for nothing'
+    );
+  });
+});

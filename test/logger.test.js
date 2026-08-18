@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const logger = require('../server/logger');
 
 // formatFields isn't exported, so these go through the real info/warn/error and capture what
@@ -78,5 +80,39 @@ test('logger levels', async (t) => {
     assert.equal(capture(() => logger.info('e'))[0].stream, 'stdout');
     assert.equal(capture(() => logger.warn('e'))[0].stream, 'stderr');
     assert.equal(capture(() => logger.error('e'))[0].stream, 'stderr');
+  });
+});
+
+// A failure that only reaches console.error is invisible to the Log Viewer's level filters, which
+// is the entire reason this module exists - so the rule is enforced, not just written down. Raw
+// source scan: a comment writing out `console.log(` trips it too, which is a cheap price.
+const SERVER_DIR = path.join(__dirname, '..', 'server');
+const CONSOLE_CALL_RE = /\bconsole\.\w+\s*\(/g;
+
+test('logger is the only thing in server/ that writes to console', async (t) => {
+  const files = fs.readdirSync(SERVER_DIR).filter((name) => name.endsWith('.js'));
+
+  await t.test('no server module calls console directly', () => {
+    const offenders = [];
+    for (const name of files) {
+      // logger.js is the sanctioned writer - it *is* the wrapper the rule points everything at.
+      if (name === 'logger.js') continue;
+      const source = fs.readFileSync(path.join(SERVER_DIR, name), 'utf8');
+      for (const [call] of source.matchAll(CONSOLE_CALL_RE)) offenders.push(`${name}: ${call}`);
+    }
+    assert.deepEqual(offenders, [], `these bypass logger, so the Log Viewer's level filters never see them: ${offenders.join(', ')}`);
+  });
+
+  // Guards the scan against passing because it read nothing - a moved directory or a changed
+  // extension would otherwise leave an empty file list quietly asserting an empty offender list.
+  await t.test('the scan actually read the server modules', () => {
+    assert.ok(files.length > 5, `only found ${files.length} server modules - the scan is looking in the wrong place`);
+    assert.ok(files.includes('logger.js'), 'server/logger.js not found by the scan');
+  });
+
+  await t.test('logger.js itself still owns every console call', () => {
+    const source = fs.readFileSync(path.join(SERVER_DIR, 'logger.js'), 'utf8');
+    const calls = [...source.matchAll(CONSOLE_CALL_RE)].map(([c]) => c);
+    assert.ok(calls.length > 0, 'logger.js writes to console through something this scan cannot see');
   });
 });
