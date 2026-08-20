@@ -408,3 +408,73 @@ test('insertMetrics writes the host row in the same transaction', async (t) => {
     assert.ok(stats.maxMs >= 0, 'a host-only write must still be measured');
   });
 });
+
+// Every alerts/events statement lives in db.js as a `name: db.prepare(`...`)` pair, so the check is
+// a scan of the source rather than of the exports - that also catches a query added but not yet
+// wired up. Prettier keeps the shape; PREPARE_COUNT_RE below fails loudly if one ever escapes it.
+const DB_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'server', 'db.js'), 'utf8');
+const NAMED_PREPARE_RE = /(\w+):\s*db\.prepare\(`([^`]*)`\)/g;
+const PREPARE_COUNT_RE = /db\.prepare\(/g;
+// Table position, not a bare word: `alert_breaches` and `container_alert_rules` are not soft-deleted
+// and must not be dragged in by a substring match.
+const SOFT_DELETED_TABLE_RE = /\b(?:FROM|INTO|UPDATE|JOIN)\s+(?:alerts|events)\b/i;
+
+// Named, not pattern-matched, so adding a statement here is a deliberate act with a stated reason.
+// The first three are the exceptions CLAUDE.md documents; the reasons are repeated at the statements
+// themselves in db.js.
+const CLEARED_AT_EXEMPT = {
+  lastAlertFire: 'alerts.js cooldown - clearing the Activity tab must not re-arm a rule mid-cooldown',
+  countRestartsSince: 'what the container did, not what the tab shows - clearing must not reset crash-loop detection',
+  countRestartsByContainerSince: 'same as countRestartsSince, for the whole-host restart column',
+  markWebhookDelivered: 'single row by primary key; the id came from getPendingWebhookRetries, which already filters',
+  markWebhookAttemptFailed: 'single row by primary key, same as markWebhookDelivered',
+  pruneEvents: 'age-based retention delete - cleared rows are exactly what it has to reclaim',
+  pruneAlerts: 'age-based retention delete, same as pruneEvents',
+};
+
+function preparedStatements() {
+  const found = new Map();
+  for (const [, name, sql] of DB_SOURCE.matchAll(NAMED_PREPARE_RE)) found.set(name, sql);
+  return found;
+}
+
+test('alerts and events queries filter cleared_at', async (t) => {
+  const statements = preparedStatements();
+
+  await t.test('the scan sees every prepared statement in db.js', () => {
+    const total = (DB_SOURCE.match(PREPARE_COUNT_RE) || []).length;
+    assert.equal(statements.size, total, 'a statement is written in a shape this scan does not match - it would be checked by nobody');
+  });
+
+  await t.test('every soft-deleted read and update filters cleared_at', () => {
+    const offenders = [];
+    let checked = 0;
+    for (const [name, sql] of statements) {
+      if (!SOFT_DELETED_TABLE_RE.test(sql)) continue;
+      if (/^\s*INSERT\b/i.test(sql)) continue;
+      if (name in CLEARED_AT_EXEMPT) continue;
+      checked += 1;
+      if (!sql.includes('cleared_at')) offenders.push(name);
+    }
+    assert.ok(checked > 0, 'nothing was checked - the scan or the table pattern has stopped matching');
+    assert.deepEqual(
+      offenders,
+      [],
+      `these read cleared rows back: ${offenders.join(', ')}. Filter cleared_at, or add a reason to CLEARED_AT_EXEMPT.`
+    );
+  });
+
+  // A renamed or deleted statement leaves its exemption behind, quietly excusing whatever takes the
+  // name next. Failing here forces the reason to be re-justified against the new query.
+  await t.test('no stale exemptions', () => {
+    const stale = Object.keys(CLEARED_AT_EXEMPT).filter((name) => !statements.has(name));
+    assert.deepEqual(stale, [], `exempted statements that no longer exist: ${stale.join(', ')}`);
+  });
+
+  await t.test('the clears themselves are still soft', () => {
+    for (const name of ['clearEventsByHost', 'clearAlertsByHost']) {
+      assert.match(statements.get(name), /^\s*UPDATE\b/i, `${name} must set cleared_at, never DELETE`);
+      assert.ok(statements.get(name).includes('cleared_at = ?'), `${name} must stamp cleared_at`);
+    }
+  });
+});

@@ -267,22 +267,47 @@ function forgetHost(hostId) {
   }
 }
 
+// A thrown message is not ours: undici says "fetch failed" today, but that wording is no contract
+// and other runtimes name the URL in it. Both URL forms and the raw one's path embed the token, so
+// each is swapped for its scheme before the message can be logged or answered. See CLAUDE.md.
+function redactWebhookUrls(message, ...urls) {
+  let out = String(message == null ? '' : message);
+  const present = urls.filter(Boolean);
+  // Whole URLs first, every one of them, before any path swap runs: one URL's path is a substring
+  // of another's whole URL here (a discord:// token reappears in the discord.com endpoint), so
+  // interleaving the two passes would chew a hole in a URL the later pass still had to match.
+  for (const url of present) out = out.split(url).join(webhookScheme(url));
+  for (const url of present) {
+    let path;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      continue;
+    }
+    if (path.length > 1) out = out.split(path).join('/…');
+  }
+  return out;
+}
+
 async function deliverWebhook(rawUrl, alert, format) {
-  const delivery = buildDelivery(rawUrl, alert, format);
-  let res;
+  let delivery;
   try {
-    res = await fetch(delivery.url, {
+    delivery = buildDelivery(rawUrl, alert, format);
+    const res = await fetch(delivery.url, {
       method: 'POST',
       headers: delivery.headers,
       body: delivery.body,
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
+    if (!res.ok) {
+      throw new Error(`webhook responded with HTTP ${res.status}`);
+    }
   } catch (err) {
     if (err.name === 'TimeoutError') throw new Error(`webhook did not respond within ${WEBHOOK_TIMEOUT_MS / 1000}s`, { cause: err });
-    throw err;
-  }
-  if (!res.ok) {
-    throw new Error(`webhook responded with HTTP ${res.status}`);
+    const message = redactWebhookUrls(err.message, rawUrl, delivery && delivery.url);
+    // Nothing was redacted, so nothing is gained by re-wrapping - keep the original error whole
+    // rather than trading its name and stack for an identical message.
+    throw message === err.message ? err : new Error(message, { cause: err });
   }
 }
 
