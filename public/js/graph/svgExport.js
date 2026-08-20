@@ -175,7 +175,7 @@ function svgContainerNode(n) {
   const y1 = n.y - n.height / 2;
   // The same precedence CY_STYLE gets from selector order (created -> starting -> unhealthy ->
   // selected), spelled out because there are no cascading selectors here - but off the same
-  // theme.js values, so the export can no longer drift from the screen. See CLAUDE.md.
+  // theme.js values, so the export can no longer drift from the screen. See public/CLAUDE.md.
   let border = n.created ? STATE_COLORS.created : n.stopped ? STATE_COLORS.stopped : STATE_COLORS.running;
   if (n.starting) border = STATE_COLORS.starting;
   if (n.unhealthy) border = STATE_COLORS.unhealthy;

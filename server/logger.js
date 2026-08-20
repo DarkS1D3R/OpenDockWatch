@@ -21,7 +21,7 @@ function write(level, event, fields) {
 
 // Boot banner. Deliberately the one thing here that isn't a tagged single-line event: it's a
 // visual marker for where a restart begins when scrolling back through `docker logs`, and the
-// app.started line carrying the actual data follows it immediately. See CLAUDE.md.
+// app.started line carrying the actual data follows it immediately. See server/CLAUDE.md.
 const BANNER = String.raw`
     ____  ____ _       __
    / __ \/ __ \ |     / /   OpenDockWatch

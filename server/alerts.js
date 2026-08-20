@@ -175,7 +175,7 @@ function alertContext() {
 // The effective per-container config: the global threshold config, with any fields the matched
 // rule sets overriding it (a rule's own null field still inherits the global value), plus which
 // event rules are muted for this container. No matching rule (the common case) returns the global
-// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see CLAUDE.md.
+// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see server/CLAUDE.md.
 function resolveContainerConfig({ hostId, containerName, composeProject }, ctx) {
   const { global, rules } = ctx || alertContext();
   const rule = findMatchingRule(rules, hostId, containerName, composeProject);
@@ -206,7 +206,7 @@ function mutedByRule(eventRule, { hostId, containerId, containerName, composePro
 
 // Consecutive-breach tracking keyed "hostId:containerId:rule": fires once a breach is sustained
 // for sustainMs (a single over-threshold sample is noise), resets on dipping under threshold
-// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see CLAUDE.md.
+// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see server/CLAUDE.md.
 const breachStarts = new Map();
 
 // Restores breachStarts from before the last restart - called once at boot (index.js), not at
@@ -269,7 +269,7 @@ function forgetHost(hostId) {
 
 // A thrown message is not ours: undici says "fetch failed" today, but that wording is no contract
 // and other runtimes name the URL in it. Both URL forms and the raw one's path embed the token, so
-// each is swapped for its scheme before the message can be logged or answered. See CLAUDE.md.
+// each is swapped for its scheme before the message can be logged or answered. See server/CLAUDE.md.
 function redactWebhookUrls(message, ...urls) {
   let out = String(message == null ? '' : message);
   const present = urls.filter(Boolean);
@@ -519,7 +519,7 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
 // reads 400%, matching the UI); memPerc is MemPerc against the container's own limit.
 function handleSample({ hostId, containerId, containerName, composeProject, cpuPerc, memPerc, ts, alertsDisabled }, ctx) {
   // Unconditional, before any rules-table read - zero DB cost for a container opted out via the
-  // label, same as today. See CLAUDE.md for why this stays separate from container_alert_rules.
+  // label, same as today. See server/CLAUDE.md for why this stays separate from container_alert_rules.
   if (alertsDisabled) return;
   const cfg = resolveContainerConfig({ hostId, containerName, composeProject }, ctx);
   const sustainMs = cfg.sustainMinutes * 60_000;

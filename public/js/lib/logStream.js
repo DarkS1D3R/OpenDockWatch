@@ -1,6 +1,6 @@
 // Shared EventSource-backed log line stream: connection lifecycle, non-reactive line buffering,
 // rAF-batched flush, hidden-tab suspension, and the loading-spinner timer. Caller owns the
-// reactive line array; onFlush(batch) hands over {id, text} to append. See CLAUDE.md.
+// reactive line array; onFlush(batch) hands over {id, text} to append. See public/CLAUDE.md.
 const defaultSchedule = (cb) => requestAnimationFrame(cb);
 const defaultDoc = typeof document === 'undefined' ? null : document;
 

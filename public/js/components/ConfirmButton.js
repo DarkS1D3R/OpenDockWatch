@@ -1,6 +1,6 @@
 // A destructive action's second click, as a `.small-btn` that arms itself instead of a dialog.
 // First click swaps the label and turns it red, second within ARM_MS emits `confirm`; the timeout,
-// a blur, or unmounting all disarm it. See CLAUDE.md for why it isn't window.confirm.
+// a blur, or unmounting all disarm it. See public/CLAUDE.md for why it isn't window.confirm.
 const ARM_MS = 4000;
 
 export default {

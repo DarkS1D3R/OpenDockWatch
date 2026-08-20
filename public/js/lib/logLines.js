@@ -1,7 +1,7 @@
 import { detectLogLevel, stripAnsi, highlightLine, parseLineTsMs } from '../format.js';
 
 // Per-line work for the log views, split into the part done once (decorateLine, at append) and
-// the part that depends on the current filter (selectLines). See CLAUDE.md for the perf numbers
+// the part that depends on the current filter (selectLines). See public/CLAUDE.md for the perf numbers
 // behind why this exists - the ContainerDetail regression that made it worth fixing everywhere.
 
 // `baseHtml` is the no-filter rendering, which is what the overwhelming majority of renders want:
@@ -25,7 +25,7 @@ export function decorateLines(lines) {
 // only by hideNonMatching:false, which reuses baseHtml same as the no-filter case. A line whose
 // level was never detected is always kept. An invalid regex matches everything (not nothing) so a
 // half-typed pattern doesn't blank the pane. `hideNonMatching:false` keeps every line (LogViewer's
-// "reveal" mode, after clicking a hit - see CLAUDE.md) while still reporting `isMatch` per line, so
+// "reveal" mode, after clicking a hit - see public/CLAUDE.md) while still reporting `isMatch` per line, so
 // the hits box and the click-to-reveal behavior can tell an actual hit from context around it.
 export function selectLines(lines, { levels = null, filterText = '', regexMode = false, testRegex = null, hideNonMatching = true } = {}) {
   const filtering = filterText.length > 0;
@@ -48,7 +48,7 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
 
 // The Log Viewer's search cursor is a line *id*, never a position. A pane tailing at
 // MAX_LOG_LINES trims from the front, so every drop shifts an index by one and it silently comes
-// to name a different line - the highlight walks the hit list on its own. See CLAUDE.md.
+// to name a different line - the highlight walks the hit list on its own. See public/CLAUDE.md.
 export function hitIndexFor(lines, activeId) {
   if (!lines.length) return -1;
   if (activeId == null) return 0;

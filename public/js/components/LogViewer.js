@@ -14,7 +14,7 @@ const MIN_LOG_BODY_PX = 120;
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
-// controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
+// controls differ by mode - see public/CLAUDE.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
   // Registered locally, the same way SettingsPanel registers its five tabs: root registration in
@@ -308,7 +308,7 @@ export default {
     },
     // Every scroll this pane makes itself goes through here, because onScroll broadcasts to
     // siblings and a self-made move must not. Cleared a frame later, once the native scroll event
-    // it caused has fired and been ignored. See CLAUDE.md.
+    // it caused has fired and been ignored. See public/CLAUDE.md.
     scrollWithoutBroadcast(fn) {
       this._programmatic = true;
       fn();

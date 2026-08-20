@@ -203,7 +203,7 @@ async function pollHost(host) {
     let memSum = 0;
     // Collected first, then written in one transaction and only then alerted on. Inserting per
     // container cost a commit each; alerting per container mid-loop would have put
-    // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
+    // its own db writes - and fire()'s async webhook - inside that transaction. See server/CLAUDE.md.
     const samples = [];
     const alertSamples = [];
     for (const c of containers) {

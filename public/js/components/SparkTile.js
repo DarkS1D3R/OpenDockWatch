@@ -13,7 +13,7 @@ const V_GRID_DIVISIONS_DETAILED = 20;
 
 // One metric tile: header, optional corner box, sparkline SVG (primary + optional secondary
 // line sharing one peak), hover crosshair + readout, x-axis, legend. Hover is a controlled prop
-// (parent owns one shared hoverIndex) so every tile's crosshair moves together. See CLAUDE.md.
+// (parent owns one shared hoverIndex) so every tile's crosshair moves together. See public/CLAUDE.md.
 export default {
   name: 'SparkTile',
   props: {

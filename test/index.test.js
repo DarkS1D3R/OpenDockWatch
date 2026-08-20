@@ -141,7 +141,7 @@ test('security headers are set on every response', async (t) => {
       .find((d) => d.startsWith('script-src'));
     assert.ok(scriptSrc, 'no script-src directive');
     assert.equal(scriptSrc.includes("'unsafe-inline'"), false, 'script-src must not allow inline scripts');
-    // Present deliberately, and load-bearing - see CLAUDE.md. Asserted so removing it "to tighten
+    // Present deliberately, and load-bearing - see server/CLAUDE.md. Asserted so removing it "to tighten
     // the CSP" fails here rather than silently rendering every component blank in a browser.
     assert.match(scriptSrc, /'unsafe-eval'/);
   });

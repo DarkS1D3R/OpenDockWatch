@@ -10,7 +10,7 @@ export const HIDDEN_POLL_MS = 30_000;
 export const MAX_LOG_LINES = 3000;
 // How many containers' logs the Logs tab can stream side by side, scroll-synced by timestamp -
 // a connection budget as much as a layout choice: each pane is a long-lived EventSource and a
-// browser allows only ~6 per origin. Four leaves two connections for the poll loop; see CLAUDE.md.
+// browser allows only ~6 per origin. Four leaves two connections for the poll loop; see public/CLAUDE.md.
 export const MAX_OPEN_LOG_PANES = 4;
 export const PREVIEW_TAIL = 100;
 export const METRICS_HISTORY_LEN = 24;

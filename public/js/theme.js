@@ -1,6 +1,6 @@
 // The one source for the colours the container state and health axes are drawn in. They used to be
 // hex literals in four places - format.js's state icons, graph/style.js's CY_STYLE, svgExport.js's
-// hand-drawn nodes, and style.css - so changing one silently disagreed with the rest. See CLAUDE.md.
+// hand-drawn nodes, and style.css - so changing one silently disagreed with the rest. See public/CLAUDE.md.
 
 // Palette tokens, not states: ACCENT and MUTED are the same two values style.css exposes as
 // --accent and --muted, and several things besides container state are drawn in them.
@@ -24,7 +24,7 @@ export const SELECTED = ACCENT;
 
 // The style.css custom property carrying each state's value, so test/theme.test.js can hold the
 // two sides together across a boundary no import can cross. `unhealthy` is deliberately absent -
-// the CSS has no counterpart for it. See CLAUDE.md.
+// the CSS has no counterpart for it. See public/CLAUDE.md.
 export const CSS_VAR_FOR_STATE = {
   running: '--ok',
   stopped: '--muted',

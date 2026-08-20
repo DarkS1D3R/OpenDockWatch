@@ -8,7 +8,7 @@ const { pathToFileURL } = require('node:url');
 // and renderSvg are pure data transforms that never touch cytoscape/DOM globals, so importing
 // them directly is safe without a browser or a mocked cytoscape. graph.js itself (the live
 // cytoscape controller the rest of graph/ feeds into) is DOM-coupled and stays syntax-check-only,
-// per CLAUDE.md. pathToFileURL rather than a plain relative string: import()'s relative-specifier
+// per public/CLAUDE.md. pathToFileURL rather than a plain relative string: import()'s relative-specifier
 // resolution expects forward slashes, so a path.join'd path breaks on Windows where it comes out
 // backslash-separated.
 let elements, svgExport, theme;

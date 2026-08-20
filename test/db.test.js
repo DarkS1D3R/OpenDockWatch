@@ -420,7 +420,7 @@ const PREPARE_COUNT_RE = /db\.prepare\(/g;
 const SOFT_DELETED_TABLE_RE = /\b(?:FROM|INTO|UPDATE|JOIN)\s+(?:alerts|events)\b/i;
 
 // Named, not pattern-matched, so adding a statement here is a deliberate act with a stated reason.
-// The first three are the exceptions CLAUDE.md documents; the reasons are repeated at the statements
+// The first three are the exceptions server/CLAUDE.md documents; the reasons are repeated at the statements
 // themselves in db.js.
 const CLEARED_AT_EXEMPT = {
   lastAlertFire: 'alerts.js cooldown - clearing the Activity tab must not re-arm a rule mid-cooldown',

@@ -105,7 +105,7 @@ function requireContainerAction(req, res, next) {
 
 // Resolves :hostId to a configured host so route handlers don't each repeat the getHost()/404
 // pair. The property is `odwHost` and must not be `host`: express defines req.host as a getter-only
-// property (the Host header), so assigning it silently no-ops and handlers get a string. See CLAUDE.md.
+// property (the Host header), so assigning it silently no-ops and handlers get a string. See server/CLAUDE.md.
 function requireHost(req, res, next) {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
@@ -229,7 +229,7 @@ if (process.env.TRUST_PROXY === 'true') {
 
 // No helmet dependency for five fixed headers. CSP is the load-bearing one: container log output
 // reaches the DOM through v-html, and the absence of 'unsafe-inline' below is what stops a crafted
-// log line's <img onerror=…> from running. See CLAUDE.md for what each escape hatch costs.
+// log line's <img onerror=…> from running. See server/CLAUDE.md for what each escape hatch costs.
 const CSP = [
   "default-src 'self'",
   // 'unsafe-eval' is not optional: with no build step, Vue compiles every component's `template`
@@ -282,7 +282,7 @@ function slowThresholdFor(path) {
 }
 
 app.use((req, res, next) => {
-  // SSE routes are held open by design (see the connection-budget section of CLAUDE.md) - logging
+  // SSE routes are held open by design (see the connection-budget section of server/CLAUDE.md) - logging
   // one every time a log/event stream finally closes after minutes or hours would be noise, not
   // signal, and those already get their own open/close pair with heldSec.
   if (STREAMING_PATH_RE.test(req.path)) return next();
@@ -718,7 +718,7 @@ api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
 
 // Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
 // the Activity tab is open, so "which streams are actually open right now" is worth being able to
-// reconstruct from the log when the UI goes unresponsive. See CLAUDE.md's connection budget.
+// reconstruct from the log when the UI goes unresponsive. See server/CLAUDE.md's connection budget.
 api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   const unsubscribe = eventWatcher.broadcaster.subscribe(res, req.params.hostId);
   const openedAt = Date.now();
@@ -735,7 +735,7 @@ api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
 
 // Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column carries
 // raw docker/ssh stderr. Same call as masking Config.Env for a viewer - read-only does not mean
-// "may read everything", and nothing in public/js reads this route at all. See CLAUDE.md.
+// "may read everything", and nothing in public/js reads this route at all. See server/CLAUDE.md.
 api.get('/audit', requireAdmin, (req, res) => {
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));

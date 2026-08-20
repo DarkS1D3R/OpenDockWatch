@@ -24,7 +24,7 @@ before(async () => {
 });
 
 // This is hand-editable storage that decides which log streams get opened, so every case here is
-// about what a malformed entry must NOT be able to do to the tab. See CLAUDE.md.
+// about what a malformed entry must NOT be able to do to the tab. See public/CLAUDE.md.
 test('normalizeOpenPanes', async (t) => {
   const full = { viewMode: 'multi', openIds: ['a', 'b'], disabledSyncIds: ['b'], mainId: 'a' };
 

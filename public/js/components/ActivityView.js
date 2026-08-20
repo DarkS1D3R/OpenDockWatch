@@ -53,7 +53,7 @@ export default {
     },
     // Counted off the *searched* lists, not the raw ones, so the badges describe the rows the
     // search left - a breakdown that disagreed with the list under it would be worse than none.
-    // Not off the badge-filtered ones though: see CLAUDE.md. Alerts group by rule and carry their
+    // Not off the badge-filtered ones though: see public/CLAUDE.md. Alerts group by rule and carry their
     // severity for colouring; events group by action.
     alertCounts() {
       return groupCounts(this.alertView.searched, (a) => a.rule, { metaOf: (a) => a.severity });

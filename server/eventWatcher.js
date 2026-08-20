@@ -118,11 +118,11 @@ function startWatcher(host) {
 
   // 'close', not 'exit': a child that never spawned at all (docker off PATH, EAGAIN under process
   // pressure) emits 'error' then 'close' and *never* 'exit', so hanging the restart off 'exit' left
-  // that host with no event stream for the life of the process. 'close' covers both. See CLAUDE.md.
+  // that host with no event stream for the life of the process. 'close' covers both. See server/CLAUDE.md.
   child.on('close', () => {
     // Identity check, not a lookup by id: an edit through Settings is a removeHost + addHost
     // pair, so a dead stream's backoff could revive against a *new* state object under the same
-    // id, leaving two `docker events` streams running for one host. See CLAUDE.md.
+    // id, leaving two `docker events` streams running for one host. See server/CLAUDE.md.
     if (watchers.get(host.id) !== state || state.stopped) return;
     if (state.healthyTimer) clearTimeout(state.healthyTimer);
     const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);

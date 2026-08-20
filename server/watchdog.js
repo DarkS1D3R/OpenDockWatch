@@ -2,7 +2,7 @@ const logger = require('./logger');
 
 // Recovery, not detection: the process/port/sqlite are alive but the poll loop stopped turning,
 // so views serve frozen data - Docker's restart policy only reacts to the process exiting, not
-// to this, so self-exit below is the only path back. See CLAUDE.md for the two signals used.
+// to this, so self-exit below is the only path back. See server/CLAUDE.md for the two signals used.
 const LAG_SAMPLE_MS = 1000;
 
 // Two thresholds, because one number can't do both jobs. A single stall this big is worth a line
