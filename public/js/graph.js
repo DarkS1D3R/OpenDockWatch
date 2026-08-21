@@ -137,7 +137,10 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
       upstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-upstream'));
       downstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-downstream'));
 
-      const transitive = [...upstream.nodeIds, ...downstream.nodeIds].reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+      // A single filter() pass over cy.nodes() rather than reduce()-ing N individual cy.$id()
+      // unions together - the latter is O(N²), since each union re-merges the whole collection so far.
+      const transitiveIds = new Set([...upstream.nodeIds, ...downstream.nodeIds]);
+      const transitive = cy.nodes().filter((n) => transitiveIds.has(n.id()));
       const keep = node.closedNeighborhood().union(transitive);
       cy.nodes().not(keep).not('.group').addClass('faded');
       cy.edges().forEach((e) => {

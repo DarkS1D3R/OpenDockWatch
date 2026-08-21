@@ -114,15 +114,11 @@ export default {
       });
     },
     // The actual hit list, independent of revealAll - the count/prev/next controls step through
-    // matches only, even while filteredLines is showing every line for context.
+    // matches only, even while filteredLines is showing every line for context. Derived from
+    // filteredLines rather than a second selectLines pass - see public/CLAUDE.md.
     matchLines() {
       if (!this.searchActive) return [];
-      return selectLines(this.lines, {
-        levels: this.levels,
-        filterText: this.filter.trim(),
-        regexMode: this.regexMode,
-        testRegex: this.testRegex,
-      });
+      return this.filteredLines.filter((l) => l.isMatch);
     },
     searchActive() {
       return !!this.filter.trim() && !this.regexError;
