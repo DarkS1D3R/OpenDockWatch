@@ -18,8 +18,8 @@ export const HOST_METRICS_HISTORY_LEN = 120;
 export const MAX_ACTIVITY_EVENTS = 500;
 
 // How many buckets each history range covers (window / bucket width) - mirrors HISTORY_RANGES in
-// server/index.js, enforced by test/sharedConstants.test.js. Used as the metrics modal's chart
-// width in slots, so a series shorter than the window draws in the right-hand part instead of stretching to fit.
+// server/historyRanges.js, enforced by test/sharedConstants.test.js. Used as the metrics modal's
+// chart width in slots, so a series shorter than the window draws in the right-hand part instead of stretching to fit.
 export const HISTORY_RANGE_SLOTS = {
   '1h': 240, // 1h / 15s
   '24h': 288, // 24h / 5m

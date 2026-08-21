@@ -70,7 +70,7 @@ export function iconFor(image, composeService) {
 }
 
 // Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by
-// test/byteUnits.test.js rather than by hand. Exported so that test can reach it.
+// test/sharedConstants.test.js rather than by hand. Exported so that test can reach it.
 export const MEM_UNIT_BYTES = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
 
 export function parseMemUsedBytes(memUsageStr) {

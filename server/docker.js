@@ -273,6 +273,9 @@ function parseHealth(status) {
   return m[1].toLowerCase() === 'health: starting' ? 'starting' : m[1].toLowerCase();
 }
 
+// Deliberately not skip-on-malformed-row like getStats/getDiskUsage below: this list is what
+// reachability and every other poll field are built from, so a container silently missing from it
+// is a worse failure than the whole poll failing and retrying in POLL_MS. Let it throw.
 async function listContainers(host) {
   const stdout = await run([...hostArgs(host), 'ps', '-a', '--format', '{{json .}}']);
   return stdout
@@ -300,7 +303,7 @@ async function listContainers(host) {
 }
 
 // Forked from format.js's MEM_UNIT_BYTES (CJS/ESM can't share a module here) - kept identical by
-// test/byteUnits.test.js rather than by hand. Exported so that test can reach it.
+// test/sharedConstants.test.js rather than by hand. Exported so that test can reach it.
 const BYTE_UNIT_MULT = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
 
 function parseByteString(str) {
