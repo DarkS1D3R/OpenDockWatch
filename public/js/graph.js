@@ -318,7 +318,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
 
     const savedCollapsed = loadCollapsedGroups(hostId);
     if (savedCollapsed.length) {
-      // Same O(n²) reduce()+union() trap as applyFading's transitive set below - one filter() pass
+      // Same O(n²) reduce()+union() trap as applyFading's transitive set above - one filter() pass
       // over cy.nodes() instead of N single-element unions.
       const savedIds = new Set(savedCollapsed);
       const toCollapse = cy.nodes().filter((n) => savedIds.has(n.id()));
