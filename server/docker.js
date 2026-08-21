@@ -402,10 +402,26 @@ function networkEdges(containers) {
   return edges;
 }
 
-// Resolves com.docker.compose.depends_on ("service:condition:restart" triples) into dependency
-// edges; fetched via a dedicated `docker ps` format since parseLabels comma-splits the whole
-// Labels blob and would truncate a multi-dependency value. Edge: source depends on target.
-function dependsOnEdges(containers, dependsOnRaw) {
+// Shared by dependsOnEdges/customDependsOnEdges/parseMountsList: all three consume a `docker ps
+// --format '{{.ID}}\t{{...}}'` blob, one id/value pair per line. Splits on the *first* tab only -
+// a value (a mounts list, a depends_on triple list) is never itself id-shaped so this can't
+// misparse one, but the reverse isn't guaranteed and this keeps the value whole either way.
+function parseIdValueLines(raw) {
+  const out = [];
+  for (const line of (raw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIdx = trimmed.indexOf('\t');
+    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
+    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+    out.push({ id, value });
+  }
+  return out;
+}
+
+// Shared by dependsOnEdges/customDependsOnEdges: both resolve a depends_on entry's short service
+// name against the same project::service -> [containerId] index.
+function buildProjectServiceIndex(containers) {
   const byProjectService = new Map();
   for (const c of containers) {
     if (!c.composeProject || !c.composeService) continue;
@@ -413,15 +429,18 @@ function dependsOnEdges(containers, dependsOnRaw) {
     if (!byProjectService.has(key)) byProjectService.set(key, []);
     byProjectService.get(key).push(c.id);
   }
+  return byProjectService;
+}
+
+// Resolves com.docker.compose.depends_on ("service:condition:restart" triples) into dependency
+// edges; fetched via a dedicated `docker ps` format since parseLabels comma-splits the whole
+// Labels blob and would truncate a multi-dependency value. Edge: source depends on target.
+function dependsOnEdges(containers, dependsOnRaw) {
+  const byProjectService = buildProjectServiceIndex(containers);
   const byId = new Map(containers.map((c) => [c.id, c]));
 
   const edges = [];
-  for (const line of (dependsOnRaw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id, value } of parseIdValueLines(dependsOnRaw)) {
     if (!value) continue;
     const source = byId.get(id);
     if (!source || !source.composeProject) continue;
@@ -442,23 +461,12 @@ function dependsOnEdges(containers, dependsOnRaw) {
 // to hosts.json's `edges` array, declared on the service itself. Each entry is "target[:label]":
 // resolves to a same-project service by short name first, else a literal container name.
 function customDependsOnEdges(containers, customDependsOnRaw) {
-  const byProjectService = new Map();
-  for (const c of containers) {
-    if (!c.composeProject || !c.composeService) continue;
-    const key = `${c.composeProject}::${c.composeService}`;
-    if (!byProjectService.has(key)) byProjectService.set(key, []);
-    byProjectService.get(key).push(c.id);
-  }
+  const byProjectService = buildProjectServiceIndex(containers);
   const byName = new Map(containers.map((c) => [c.name, c.id]));
   const byId = new Map(containers.map((c) => [c.id, c]));
 
   const edges = [];
-  for (const line of (customDependsOnRaw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id, value } of parseIdValueLines(customDependsOnRaw)) {
     if (!value) continue;
     const source = byId.get(id);
     if (!source) continue;
@@ -485,12 +493,7 @@ const ANON_VOLUME_RE = /^[0-9a-f]{64}$/i;
 
 function parseMountsList(raw) {
   const byId = new Map();
-  for (const line of (raw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const fullId = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id: fullId, value } of parseIdValueLines(raw)) {
     const id = fullId.slice(0, 12);
     const mounts = value
       .split(',')

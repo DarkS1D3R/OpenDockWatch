@@ -7,17 +7,9 @@ const db = require('./db');
 const alerts = require('./alerts');
 const logger = require('./logger');
 const { Broadcaster } = require('./sse');
+const { createRestartingWatcher } = require('./restartingWatcher');
 
 const broadcaster = new Broadcaster();
-
-const RESTART_BASE_DELAY_MS = 2000;
-const RESTART_MAX_DELAY_MS = 30000;
-// How long a stream has to stay up before we consider it "healthy" and reset the backoff -
-// spawning succeeds even for a doomed connection (e.g. SSH auth failure kills it right after),
-// so resetting on 'spawn' never actually backs off for a permanently unreachable host.
-const HEALTHY_AFTER_MS = 30000;
-
-const watchers = new Map(); // hostId -> { child, stopped, restartDelay }
 
 function parseEventLine(line, host) {
   let raw;
@@ -78,96 +70,49 @@ function ingestEvent(event) {
   }
 }
 
-function startWatcher(host) {
-  const child = docker.streamEvents(host);
-  let buffer = '';
-
-  child.stdout.on('data', (chunk) => {
-    buffer += chunk.toString('utf8');
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const event = parseEventLine(trimmed, host);
-      if (event) ingestEvent(event);
-    }
-  });
-
-  child.stderr.on('data', () => {
-    /* docker CLI warnings (e.g. host briefly unreachable) - reachability is tracked separately by metricsCollector */
-  });
-
-  // Without this handler, a spawn failure (docker not on PATH, bad SSH host, etc.) emits an
-  // unhandled 'error' that crashes the whole process - taking down monitoring for every host.
-  child.on('error', (err) => {
-    logger.error('events.stream.failed', { host: host.id, error: err.message });
-  });
-
-  const state = watchers.get(host.id) || { restartDelay: RESTART_BASE_DELAY_MS };
-  state.child = child;
-  watchers.set(host.id, state);
-
-  child.on('spawn', () => {
-    if (watchers.get(host.id) !== state) return;
-    logger.info('events.stream.started', { host: host.id, dockerHost: host.dockerHost || 'local' });
-    state.healthyTimer = setTimeout(() => {
-      state.restartDelay = RESTART_BASE_DELAY_MS;
-    }, HEALTHY_AFTER_MS);
-  });
-
-  // 'close', not 'exit': a child that never spawned at all (docker off PATH, EAGAIN under process
-  // pressure) emits 'error' then 'close' and *never* 'exit', so hanging the restart off 'exit' left
-  // that host with no event stream for the life of the process. 'close' covers both. See server/CLAUDE.md.
-  child.on('close', () => {
-    // Identity check, not a lookup by id: an edit through Settings is a removeHost + addHost
-    // pair, so a dead stream's backoff could revive against a *new* state object under the same
-    // id, leaving two `docker events` streams running for one host. See server/CLAUDE.md.
-    if (watchers.get(host.id) !== state || state.stopped) return;
-    if (state.healthyTimer) clearTimeout(state.healthyTimer);
-    const delay = Math.min(state.restartDelay, RESTART_MAX_DELAY_MS);
-    // A host whose stream keeps dying and backing off is otherwise entirely silent - the exit
-    // isn't an error, so nothing logged it, and the growing delay was invisible.
-    logger.warn('events.stream.restarting', { host: host.id, delayMs: delay });
-    state.restartTimer = setTimeout(() => {
-      if (watchers.get(host.id) !== state || state.stopped) return;
-      startWatcher(host);
-    }, delay);
-    state.restartDelay = Math.min(delay * 2, RESTART_MAX_DELAY_MS);
-  });
-}
+// The restart/backoff/teardown machinery below is shared with statsWatcher.js via
+// restartingWatcher.js - see the comment there. Only what's specific to a `docker events` stream
+// lives here: spawning it and parsing its stdout into ingestEvent calls.
+const watcher = createRestartingWatcher({
+  logPrefix: 'events',
+  spawnChild: (host) => docker.streamEvents(host),
+  wireChild: (state, child, host) => {
+    let buffer = '';
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const event = parseEventLine(trimmed, host);
+        if (event) ingestEvent(event);
+      }
+    });
+    child.stderr.on('data', () => {
+      /* docker CLI warnings (e.g. host briefly unreachable) - reachability is tracked separately by metricsCollector */
+    });
+  },
+});
 
 function start() {
   for (const host of loadHosts()) {
-    startWatcher(host);
+    watcher.startWatcher(host);
   }
 }
 
 // Used by the settings/hosts routes so a host added (or edited, via removeHost+addHost) through
 // the GUI starts streaming events right away instead of needing a process restart.
 function addHost(host) {
-  if (watchers.has(host.id)) return;
-  startWatcher(host);
-}
-
-function teardown(state) {
-  state.stopped = true;
-  if (state.healthyTimer) clearTimeout(state.healthyTimer);
-  if (state.restartTimer) clearTimeout(state.restartTimer);
-  if (state.child) state.child.kill();
+  watcher.addHost(host);
 }
 
 function removeHost(hostId) {
-  const state = watchers.get(hostId);
-  if (!state) return;
-  teardown(state);
-  watchers.delete(hostId);
-  logger.info('events.stream.stopped', { host: hostId });
+  watcher.removeHost(hostId);
 }
 
 function stop() {
-  for (const state of watchers.values()) teardown(state);
-  watchers.clear();
+  watcher.stop();
 }
 
 module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent, takeIngestCount };
