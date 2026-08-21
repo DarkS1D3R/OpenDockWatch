@@ -507,8 +507,14 @@ const app = createApp({
       clearAllOpenPanes();
       window.location.href = '/login';
     },
-    openSettings() {
+    toggleSettings() {
       // Both panels are fixed to the same right-hand 520px slot - only one at a time makes sense.
+      // Clicking the button while it's already open closes it, same as clicking a container card
+      // toggles the detail panel below.
+      if (this.settingsOpen) {
+        this.settingsOpen = false;
+        return;
+      }
       this.selectedContainerId = null;
       this.settingsOpen = true;
     },
@@ -544,7 +550,7 @@ const app = createApp({
           <button :class="{active: stateFilter==='stopped'}" @click="stateFilter='stopped'">Stopped</button>
         </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
-        <button v-if="isAdmin" class="settings-btn" @click="openSettings" title="Alert webhook settings">⚙ Settings</button>
+        <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Alert webhook settings">⚙ Settings</button>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
 
