@@ -557,9 +557,7 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
 
 // Called once per host per stats poll. cpuPercent is host-normalized (cpuSum /
 // ncpu, so 100% means all cores busy); memPercent is sum-of-container-usage
-// over host total memory. Takes the same ctx as handleSample - metricsCollector.pollHost has
-// already paid for alertContext() this cycle when there's any alerting container, and this needs
-// only its global half.
+// over host total memory. Takes the same ctx as handleSample - see server/CLAUDE.md.
 function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx) {
   const cfg = (ctx && ctx.global) || getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
@@ -594,9 +592,6 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx)
 // Called once per host per disk-usage poll (~60s). `docker system df` reports Docker's own
 // footprint, not host filesystem free space (Docker doesn't expose that) - so this is a "Docker
 // is using more than X GB" reminder, not a disk-full alert. No sustain window; cooldown suffices.
-// Takes an optional ctx for the same reason handleHostSample does, though the disk poll runs on
-// its own ~60s timer independent of pollHost's 5s cycle, so it rarely has one to reuse in practice
-// and falls back to reading its own threshold config, same as before.
 function handleDiskUsage({ hostId, hostName, rows }, ctx) {
   const cfg = (ctx && ctx.global) || getThresholdConfig();
   if (!(cfg.diskThresholdGb > 0)) return;

@@ -296,13 +296,8 @@ export function buildLineMatcher(filterText, isRegex = false) {
 }
 
 // Matches against the *raw* segment text and escapes each piece on the way out, rather than
-// escaping first and matching the (unescaped) filter against the escaped string - matching against
-// escaped HTML let a search for a substring of an entity name (e.g. "amp") find it *inside* the
-// "&amp;" a literal "&" elsewhere on the line escapes to, splitting the entity and rendering a
-// literal "&amp;" instead of "&"; and it made a search for "<" or "&" themselves highlight nothing
-// at all, since escaping had already removed every bare occurrence - while selectLines' own isMatch
-// check (lib/logLines.js) tests raw text and counted the line as a hit regardless, so the hit
-// counter and the highlighting disagreed on lines containing the characters escaping touches.
+// escaping first and matching the raw filter against the escaped string - which let a match land
+// inside an escaped entity, or a search for "<"/"&" themselves highlight nothing. See public/CLAUDE.md.
 function escapeAndHighlight(text, matcher) {
   if (!matcher) return escapeHtml(text);
   matcher.lastIndex = 0;
@@ -310,10 +305,8 @@ function escapeAndHighlight(text, matcher) {
   let lastIndex = 0;
   let match;
   while ((match = matcher.exec(text))) {
-    // A user-supplied regex (regex mode) can match zero-width (e.g. `x*`) - skip wrapping it
-    // rather than emitting an empty <mark> (a visible sliver with nothing in it, one per
-    // character on a line with no other matches), and advance by one char to guarantee progress
-    // the same way native String.replace does, instead of looping forever on the same index.
+    // A zero-width regex match (e.g. `x*`) is skipped rather than wrapped, and lastIndex advanced
+    // by one to guarantee progress - same as native String.replace, without an empty <mark> per char.
     if (match[0].length === 0) {
       matcher.lastIndex += 1;
       continue;
@@ -326,10 +319,9 @@ function escapeAndHighlight(text, matcher) {
   return html;
 }
 
-// Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps
-// case-insensitive `filterText` matches in <mark> for v-html. isRegex compiles filterText as a
-// regex instead of literal; an invalid pattern falls back to no highlighting. `matcher`, when
-// given, is used as-is instead of building one from filterText/isRegex - see buildLineMatcher.
+// Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps case-insensitive
+// `filterText` matches in <mark> for v-html - or, given a pre-built `matcher`, uses that as-is
+// instead (see buildLineMatcher). An invalid regex pattern falls back to no highlighting.
 export function highlightLine(line, filterText, isRegex = false, matcher = undefined) {
   const { ts, rest } = splitDockerTimestamp(line);
   const tsHtml = ts ? `<span class="log-ts">${ts}</span>` : '';

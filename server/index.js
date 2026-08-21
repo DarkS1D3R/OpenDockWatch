@@ -526,10 +526,8 @@ api.get('/hosts', async (req, res) => {
 // They exist as functions for exactly that reason: the bundle is the same data the separate routes
 // return, and two copies of "what a container row carries" would be free to drift apart silently.
 
-// The GROUP BY behind this changes once per poll (POLL_MS), not once per request - without this
-// cache, every open tab on a host reruns it every 5s regardless of whether the poll actually
-// ticked. Keyed off the collector's own statsTs, so it invalidates in step with the snapshot the
-// rest of containersFor already reads from rather than on a separate wall-clock timer.
+// Keyed off the collector's own statsTs, not a wall-clock timer, so this reruns once per poll
+// tick rather than once per request. See server/CLAUDE.md.
 const restartCountsCache = new Map(); // hostId -> { statsTs, counts }
 
 // Mirrors docker.js's/alerts.js's own forgetHost: without this, a host deleted (or edited, which
@@ -600,12 +598,9 @@ async function topologyFor(host) {
 // history/alerts routes serve ranges and limits this bundle deliberately does not.
 const DASHBOARD_ALERT_LIMIT = 100;
 
-// Same reasoning as restartCountsFor above, for the bundle's other two DB-only fields: the 1h
-// history bucketing and the alerts query. Both are cheap alone, but not free multiplied by every
-// open tab on a host every 5s for data that hasn't moved since the last poll. Scoped to this
-// route's own fixed args ('1h', DASHBOARD_ALERT_LIMIT) rather than folded into hostHistoryFor/
-// db.getAlerts themselves, since /metrics/history and /alerts call those with args this cache
-// doesn't cover and shouldn't apply to.
+// Same reasoning as restartCountsFor, for the bundle's other two DB-only fields. Scoped to this
+// route's own fixed args rather than folded into hostHistoryFor/db.getAlerts, whose other callers
+// use args this cache doesn't cover. See server/CLAUDE.md.
 const dashboardExtrasCache = new Map(); // hostId -> { statsTs, metricsHistory, alerts }
 
 function dashboardExtrasFor(host, statsTs) {
@@ -793,15 +788,12 @@ api.get('/alerts', (req, res) => {
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
-// Each of these mutates rows the /dashboard bundle's cached `alerts` field (dashboardExtrasCache,
-// above) already answered from - without invalidating it, a clear/ack inside the current poll
-// epoch is invisible to /dashboard until the next statsTs tick, and app.js's wholesale
-// `this.alerts = data.alerts` overwrites the client's own optimistic update with the stale list.
+// Each of these mutates rows dashboardExtrasCache already answered from - must invalidate it, or
+// a clear/ack is invisible to /dashboard until the next statsTs tick. See server/CLAUDE.md.
 api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
-  // The id alone doesn't say which host's cache to invalidate - looked up before acking (the row's
-  // host_id doesn't change), and null (not found, or already cleared) means nothing to invalidate.
+  // The id alone doesn't say which host's cache to invalidate - looked up before acking.
   const hostId = db.getAlertHostId(id);
   db.ackAlert(id);
   if (hostId) forgetDashboardCaches(hostId);

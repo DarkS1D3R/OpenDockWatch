@@ -205,15 +205,9 @@ export async function exportPng(cy) {
   }
 }
 
-// The two nodeHtmlLabel templates registered below build raw HTML (cytoscape-node-html-label
-// overlays it as real DOM, not canvas) rather than going through Vue, because the container/group
-// boxes need richer layout - metric bars, badges - than a single canvas-drawn `label: 'data(label)'`
-// string can do (that's what every *other* node kind in graph/style.js uses, and needs no escaping
-// of its own). `name`/`status`/`label` are docker/compose-supplied strings with no charset
-// restriction, so they're escaped here before going into the template; this is defence-in-depth,
-// not a live-XSS fix - the app's CSP has no 'unsafe-inline' in script-src, so an injected
-// <img onerror=...> or similar has nowhere to execute regardless. Pulled out to their own exported
-// functions so escaping is something a test can assert directly, without a real cytoscape instance.
+// The two nodeHtmlLabel templates below build raw HTML (a real DOM overlay, not canvas), unlike
+// every other node kind's `label: 'data(label)'` in graph/style.js - so name/status/label are
+// escaped before going in. Defence-in-depth, not a live fix (CSP blocks execution). See public/CLAUDE.md.
 export function containerNodeTpl(data) {
   const name = escapeHtml(data.name);
   const status = escapeHtml(data.status);

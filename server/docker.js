@@ -402,10 +402,9 @@ function networkEdges(containers) {
   return edges;
 }
 
-// Shared by dependsOnEdges/customDependsOnEdges/parseMountsList: all three consume a `docker ps
-// --format '{{.ID}}\t{{...}}'` blob, one id/value pair per line. Splits on the *first* tab only -
-// a value (a mounts list, a depends_on triple list) is never itself id-shaped so this can't
-// misparse one, but the reverse isn't guaranteed and this keeps the value whole either way.
+// Shared by dependsOnEdges/customDependsOnEdges/parseMountsList - a `docker ps --format` blob is
+// one id/value pair per line. Splits on the *first* tab only, so a value containing one (a mounts
+// list, a depends_on triple list) stays whole. See server/CLAUDE.md.
 function parseIdValueLines(raw) {
   const out = [];
   for (const line of (raw || '').split('\n')) {
@@ -524,11 +523,9 @@ function manualEdges(containers, declared = []) {
 const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
-// One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip
-// on a remote host. `--no-trunc` is only needed for Mounts (docker's table format truncates it to
-// display width same as any other column), so the ID this pulls in is full-length too; sliced back
-// to 12 chars for the depends-on lines to match listContainers' (truncated) container.id, same as
-// parseMountsList already does for the mounts line.
+// One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip.
+// `--no-trunc` (needed for Mounts, which truncates like any other column) makes the id full-length
+// too; sliced back to 12 chars for the depends-on lines. See server/CLAUDE.md.
 async function getTopologyMeta(host, containers) {
   const signature = containers
     .map((c) => c.id)

@@ -63,12 +63,9 @@ function ingestChunk(state, hostId, text) {
   }
 }
 
-// The restart/backoff/teardown machinery below is shared with eventWatcher.js via
-// restartingWatcher.js - see the comment there. Only what's specific to a `docker stats` stream
-// lives here: spawning it, buffering/parsing its stdout into samples, and dropping those samples
-// right before a restart (see beforeRestart below - the numbers stop advancing the moment the
-// stream dies, and a dashboard confidently showing a stale 40% CPU is worse than one paying for
-// the slow one-shot call again; emptying the map is what makes getSamples return null for that).
+// Restart/backoff/teardown is shared with eventWatcher.js via restartingWatcher.js - see server/CLAUDE.md.
+// beforeRestart drops samples right before a restart, since stale CPU/mem is worse than the
+// one-shot call fallback getSamples returning null triggers.
 const watcher = createRestartingWatcher({
   logPrefix: 'stats',
   spawnChild: (host) => docker.streamStats(host),

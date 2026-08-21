@@ -8,23 +8,8 @@ const RESTART_MAX_DELAY_MS = 30000;
 const HEALTHY_AFTER_MS = 30000;
 
 // The restart/backoff/teardown lifecycle eventWatcher.js and statsWatcher.js each ran a verbatim
-// copy of: one persistent child per host, exponential backoff capped at RESTART_MAX_DELAY_MS,
-// reset to the base delay once a child survives HEALTHY_AFTER_MS, and a removeHost/addHost pair
-// safe against the identity trap described below. What differs between the two - how a child is
-// spawned, how its stdout is parsed, and what (if anything) needs to happen right before a restart
-// - is taken as options, so this owns only the part that was actually identical.
-//
-// **The restart hangs off `'close'`, never `'exit'`, and that is not interchangeable**: Node emits
-// `'exit'` only for a child that actually ran, so a child that never spawned at all (`docker` off
-// PATH, an `EAGAIN`/`ENOMEM` fork failure under process pressure) emits `'error'` then `'close'`
-// and no `'exit'` whatsoever - keyed on `'exit'`, that leaves the host with no stream for the life
-// of the process. `'close'` fires in both cases and always follows `'exit'`, so it needs no second
-// handler. See server/CLAUDE.md.
-//
-// **The restart re-checks that `watchers` still holds this exact state object**, not just an entry
-// for the host id, before reviving anything: an edit through Settings is a `removeHost` + `addHost`
-// pair, so a backoff elapsing after one would otherwise restart the old watcher against the new
-// entry and leave two streams running for one host. See server/CLAUDE.md.
+// copy of, taking what differs between them (spawning, stdout parsing, a pre-restart hook) as
+// options. Restart hangs off 'close' not 'exit', and re-checks watcher identity - see server/CLAUDE.md.
 function createRestartingWatcher({ logPrefix, spawnChild, wireChild, beforeRestart, initState = () => ({}) }) {
   const watchers = new Map(); // hostId -> { child, stopped, restartDelay, ...initState() }
 
