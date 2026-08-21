@@ -77,20 +77,29 @@ export function updateGraph(cy, elements, hostId) {
 function traverseDependsOn(cy, startId, followField) {
   const fromField = followField === 'target' ? 'source' : 'target';
   const edges = cy.edges('.edge-depends-on');
+  // Adjacency built once up front rather than rescanning every depends-on edge per dequeued node -
+  // the latter is O(V·E), which on a large compose graph with a deep dependency chain multiplies
+  // out fast; this is O(V+E), same as any other BFS.
+  const byFrom = new Map(); // fromId -> [{ edgeId, nextId }]
+  edges.forEach((edge) => {
+    const from = edge.data(fromField);
+    const entry = { edgeId: edge.id(), nextId: edge.data(followField) };
+    if (byFrom.has(from)) byFrom.get(from).push(entry);
+    else byFrom.set(from, [entry]);
+  });
+
   const nodeIds = new Set();
   const edgeIds = new Set();
   const queue = [startId];
   while (queue.length) {
     const id = queue.shift();
-    edges.forEach((edge) => {
-      if (edge.data(fromField) !== id) return;
-      const nextId = edge.data(followField);
-      edgeIds.add(edge.id());
+    for (const { edgeId, nextId } of byFrom.get(id) || []) {
+      edgeIds.add(edgeId);
       if (nextId !== startId && !nodeIds.has(nextId)) {
         nodeIds.add(nextId);
         queue.push(nextId);
       }
-    });
+    }
   }
   return { nodeIds, edgeIds };
 }

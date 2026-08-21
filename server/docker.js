@@ -521,6 +521,11 @@ function manualEdges(containers, declared = []) {
 const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
+// One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip
+// on a remote host. `--no-trunc` is only needed for Mounts (docker's table format truncates it to
+// display width same as any other column), so the ID this pulls in is full-length too; sliced back
+// to 12 chars for the depends-on lines to match listContainers' (truncated) container.id, same as
+// parseMountsList already does for the mounts line.
 async function getTopologyMeta(host, containers) {
   const signature = containers
     .map((c) => c.id)
@@ -528,12 +533,33 @@ async function getTopologyMeta(host, containers) {
     .join(',');
   const cached = topologyMetaCache.get(host.id);
   if (cached && cached.signature === signature && Date.now() - cached.ts < TOPOLOGY_META_TTL_MS) return cached;
-  const [dependsOnRaw, customDependsOnRaw, mountsRaw] = await Promise.all([
-    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
-    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "opendockwatch.depends_on"}}']).catch(() => ''),
-    run([...hostArgs(host), 'ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Mounts}}']).catch(() => ''),
-  ]);
-  const meta = { ts: Date.now(), signature, dependsOnRaw, customDependsOnRaw, mountsRaw };
+  const combinedRaw = await run([
+    ...hostArgs(host),
+    'ps',
+    '-a',
+    '--no-trunc',
+    '--format',
+    '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}\t{{.Label "opendockwatch.depends_on"}}\t{{.Mounts}}',
+  ]).catch(() => '');
+  const dependsOnLines = [];
+  const customDependsOnLines = [];
+  const mountsLines = [];
+  for (const line of combinedRaw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split('\t');
+    const shortId = (parts[0] || '').slice(0, 12);
+    dependsOnLines.push(`${shortId}\t${parts[1] || ''}`);
+    customDependsOnLines.push(`${shortId}\t${parts[2] || ''}`);
+    mountsLines.push(`${parts[0] || ''}\t${parts.slice(3).join('\t')}`);
+  }
+  const meta = {
+    ts: Date.now(),
+    signature,
+    dependsOnRaw: dependsOnLines.join('\n'),
+    customDependsOnRaw: customDependsOnLines.join('\n'),
+    mountsRaw: mountsLines.join('\n'),
+  };
   topologyMetaCache.set(host.id, meta);
   return meta;
 }

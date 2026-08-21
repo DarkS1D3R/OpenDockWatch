@@ -280,32 +280,37 @@ export function parseLineTsMs(line) {
   return m ? Date.parse(m[1] + 'Z') : null;
 }
 
+// Split out of highlightLine so a caller rendering many lines against the same filter (selectLines,
+// once per matching line) can compile the pattern once instead of once per line - constructing a
+// RegExp isn't free, and a busy pane can have hundreds of matching lines per render.
+export function buildLineMatcher(filterText, isRegex = false) {
+  if (!filterText) return null;
+  if (isRegex) {
+    try {
+      return new RegExp(filterText, 'gi');
+    } catch {
+      return null;
+    }
+  }
+  return new RegExp(escapeRegExp(filterText), 'gi');
+}
+
 // Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps
 // case-insensitive `filterText` matches in <mark> for v-html. isRegex compiles filterText as a
-// regex instead of literal; an invalid pattern falls back to no highlighting.
-export function highlightLine(line, filterText, isRegex = false) {
+// regex instead of literal; an invalid pattern falls back to no highlighting. `matcher`, when
+// given, is used as-is instead of building one from filterText/isRegex - see buildLineMatcher.
+export function highlightLine(line, filterText, isRegex = false, matcher = undefined) {
   const { ts, rest } = splitDockerTimestamp(line);
   const tsHtml = ts ? `<span class="log-ts">${ts}</span>` : '';
 
-  let matcher = null;
-  if (filterText) {
-    if (isRegex) {
-      try {
-        matcher = new RegExp(filterText, 'gi');
-      } catch {
-        matcher = null;
-      }
-    } else {
-      matcher = new RegExp(escapeRegExp(filterText), 'gi');
-    }
-  }
+  const resolvedMatcher = matcher !== undefined ? matcher : buildLineMatcher(filterText, isRegex);
 
   const bodyHtml = parseAnsiSegments(rest)
     .map((seg) => {
       let html = escapeHtml(seg.text);
-      if (matcher) {
-        matcher.lastIndex = 0;
-        html = html.replace(matcher, (m) => (m ? `<mark class="log-highlight">${m}</mark>` : m));
+      if (resolvedMatcher) {
+        resolvedMatcher.lastIndex = 0;
+        html = html.replace(resolvedMatcher, (m) => (m ? `<mark class="log-highlight">${m}</mark>` : m));
       }
       const style = [seg.color ? `color:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
       return style ? `<span style="${style}">${html}</span>` : html;

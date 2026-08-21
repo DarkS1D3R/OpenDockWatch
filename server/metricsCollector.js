@@ -280,13 +280,16 @@ async function pollHost(host) {
     );
 
     if (hostSample) {
-      alerts.handleHostSample({
-        hostId: host.id,
-        hostName: host.name || host.id,
-        cpuPercent: hostSample.cpuPercent,
-        memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
-        ts,
-      });
+      alerts.handleHostSample(
+        {
+          hostId: host.id,
+          hostName: host.name || host.id,
+          cpuPercent: hostSample.cpuPercent,
+          memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
+          ts,
+        },
+        alertCtx
+      );
     }
   } catch (err) {
     logger.error('metrics.poll.failed', { host: host.id, error: err.stderr || err.message });

@@ -1,4 +1,4 @@
-import { detectLogLevel, stripAnsi, highlightLine, parseLineTsMs } from '../format.js';
+import { detectLogLevel, stripAnsi, highlightLine, buildLineMatcher, parseLineTsMs } from '../format.js';
 
 // Per-line work for the log views, split into the part done once (decorateLine, at append) and
 // the part that depends on the current filter (selectLines). See public/CLAUDE.md for the perf numbers
@@ -31,6 +31,9 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
   const filtering = filterText.length > 0;
   const filterLower = filterText.toLowerCase();
   const highlightRegex = regexMode && !!testRegex;
+  // Built once for the whole call rather than inside highlightLine per matching line - a busy pane
+  // filtered down to hundreds of hits was compiling the same RegExp hundreds of times per render.
+  const matcher = filtering ? buildLineMatcher(filterText, highlightRegex) : null;
   const out = [];
   for (const line of lines) {
     if (line.level && levels && !levels[line.level]) continue;
@@ -38,7 +41,7 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
     if (filtering && hideNonMatching && !isMatch) continue;
     out.push({
       id: line.id,
-      html: isMatch ? highlightLine(line.text, filterText, highlightRegex) : line.baseHtml,
+      html: isMatch ? highlightLine(line.text, filterText, highlightRegex, matcher) : line.baseHtml,
       tsMs: line.tsMs,
       isMatch,
     });

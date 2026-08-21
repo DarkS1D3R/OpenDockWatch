@@ -526,6 +526,28 @@ api.get('/hosts', async (req, res) => {
 // They exist as functions for exactly that reason: the bundle is the same data the separate routes
 // return, and two copies of "what a container row carries" would be free to drift apart silently.
 
+// The GROUP BY behind this changes once per poll (POLL_MS), not once per request - without this
+// cache, every open tab on a host reruns it every 5s regardless of whether the poll actually
+// ticked. Keyed off the collector's own statsTs, so it invalidates in step with the snapshot the
+// rest of containersFor already reads from rather than on a separate wall-clock timer.
+const restartCountsCache = new Map(); // hostId -> { statsTs, counts }
+
+// Mirrors docker.js's/alerts.js's own forgetHost: without this, a host deleted (or edited, which
+// is remove+re-add under a fresh connection) leaves a stale entry keyed by an id Settings may
+// later reuse for an unrelated daemon.
+function forgetDashboardCaches(hostId) {
+  restartCountsCache.delete(hostId);
+  dashboardExtrasCache.delete(hostId);
+}
+
+function restartCountsFor(hostId, statsTs) {
+  const cached = restartCountsCache.get(hostId);
+  if (statsTs && cached && cached.statsTs === statsTs) return cached.counts;
+  const counts = db.getRestartCountsByContainer(hostId, Date.now() - 3_600_000);
+  restartCountsCache.set(hostId, { statsTs, counts });
+  return counts;
+}
+
 // Served from the collector's snapshot, same reason as statsFor: at most POLL_MS stale (the
 // browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. fresh forces a
 // live call right after a start/stop/restart, where staleness reads as "didn't work".
@@ -533,7 +555,7 @@ async function containersFor(host, { fresh = false } = {}) {
   const snapshot = metricsCollector.getSnapshot(host.id);
   const useSnapshot = !fresh && snapshot && snapshot.reachable && snapshot.statsTs;
   const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const restartCounts = db.getRestartCountsByContainer(host.id, Date.now() - 3_600_000);
+  const restartCounts = restartCountsFor(host.id, snapshot && snapshot.statsTs);
   // The snapshot's container objects are the collector's own and get read on every poll - copy
   // rather than annotating them in place with a field only this response wants.
   return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
@@ -575,15 +597,37 @@ async function topologyFor(host) {
 // history/alerts routes serve ranges and limits this bundle deliberately does not.
 const DASHBOARD_ALERT_LIMIT = 100;
 
+// Same reasoning as restartCountsFor above, for the bundle's other two DB-only fields: the 1h
+// history bucketing and the alerts query. Both are cheap alone, but not free multiplied by every
+// open tab on a host every 5s for data that hasn't moved since the last poll. Scoped to this
+// route's own fixed args ('1h', DASHBOARD_ALERT_LIMIT) rather than folded into hostHistoryFor/
+// db.getAlerts themselves, since /metrics/history and /alerts call those with args this cache
+// doesn't cover and shouldn't apply to.
+const dashboardExtrasCache = new Map(); // hostId -> { statsTs, metricsHistory, alerts }
+
+function dashboardExtrasFor(host, statsTs) {
+  const cached = dashboardExtrasCache.get(host.id);
+  if (statsTs && cached && cached.statsTs === statsTs) return cached;
+  const extras = {
+    statsTs,
+    metricsHistory: hostHistoryFor(host.id, '1h'),
+    alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+  };
+  dashboardExtrasCache.set(host.id, extras);
+  return extras;
+}
+
 api.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {
   const host = req.odwHost;
   try {
     const [containers, stats] = await Promise.all([containersFor(host), statsFor(host)]);
+    const snapshot = metricsCollector.getSnapshot(host.id);
+    const extras = dashboardExtrasFor(host, snapshot && snapshot.statsTs);
     res.json({
       containers,
       stats,
-      metricsHistory: hostHistoryFor(host.id, '1h'),
-      alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+      metricsHistory: extras.metricsHistory,
+      alerts: extras.alerts,
     });
   } catch (err) {
     dockerError(res, err);
@@ -951,6 +995,7 @@ api.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   // Reconnect with the new config rather than trying to figure out exactly what changed.
   metricsCollector.removeHost(updatedHost.id);
   eventWatcher.removeHost(updatedHost.id);
+  forgetDashboardCaches(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -964,6 +1009,7 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   saveHosts(updated);
   metricsCollector.removeHost(req.params.id);
   eventWatcher.removeHost(req.params.id);
+  forgetDashboardCaches(req.params.id);
   logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
   res.json(updated);
 });

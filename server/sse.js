@@ -15,8 +15,10 @@ class Broadcaster {
     this.emitter.setMaxListeners(0);
   }
 
+  // Serialized once per publish rather than inside onPayload (once per subscriber): a host with
+  // several open tabs was re-stringifying the same object once per listener on every event/alert.
   publish(hostId, payload) {
-    this.emitter.emit(channel(hostId), payload);
+    this.emitter.emit(channel(hostId), `data: ${JSON.stringify(payload)}\n\n`);
   }
 
   // One listener per subscribed response, so the listener count *is* the number of held event
@@ -35,10 +37,10 @@ class Broadcaster {
     });
     res.flushHeaders();
 
-    const onPayload = (payload) => {
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    const onMessage = (frame) => {
+      res.write(frame);
     };
-    this.emitter.on(channel(hostId), onPayload);
+    this.emitter.on(channel(hostId), onMessage);
 
     // Behind nginx or any proxy with an idle timeout, a quiet stream gets cut -
     // a periodic comment line keeps the connection alive without affecting listeners.
@@ -46,7 +48,7 @@ class Broadcaster {
 
     return () => {
       clearInterval(heartbeat);
-      this.emitter.off(channel(hostId), onPayload);
+      this.emitter.off(channel(hostId), onMessage);
     };
   }
 }

@@ -119,8 +119,10 @@ const THRESHOLD_KEYS = {
   diskThresholdGb: { settingKey: 'alertDiskThresholdGb', envVar: 'ALERT_DISK_THRESHOLD_GB' },
 };
 
-function numSetting(settingKey, envVar, defaultValue = 0) {
-  const dbVal = db.getSetting(settingKey);
+// Takes the already-read setting value rather than reading it itself - getThresholdConfig needs
+// the raw value anyway to know whether it's overridden, and re-reading it here doubled the sqlite
+// executions (8 for 4 fields, 4 needed) on every alert-checking poll.
+function numFromSetting(dbVal, envVar, defaultValue = 0) {
   if (dbVal !== null) return dbVal === '' ? defaultValue : Number(dbVal);
   const envVal = process.env[envVar];
   return envVal !== undefined && envVal !== '' ? Number(envVal) : defaultValue;
@@ -129,8 +131,9 @@ function numSetting(settingKey, envVar, defaultValue = 0) {
 function getThresholdConfig() {
   const config = { overridden: false };
   for (const [field, { settingKey, envVar, default: def }] of Object.entries(THRESHOLD_KEYS)) {
-    if (db.getSetting(settingKey) !== null) config.overridden = true;
-    config[field] = numSetting(settingKey, envVar, def);
+    const dbVal = db.getSetting(settingKey);
+    if (dbVal !== null) config.overridden = true;
+    config[field] = numFromSetting(dbVal, envVar, def);
   }
   return config;
 }
@@ -554,9 +557,11 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
 
 // Called once per host per stats poll. cpuPercent is host-normalized (cpuSum /
 // ncpu, so 100% means all cores busy); memPercent is sum-of-container-usage
-// over host total memory.
-function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
-  const cfg = getThresholdConfig();
+// over host total memory. Takes the same ctx as handleSample - metricsCollector.pollHost has
+// already paid for alertContext() this cycle when there's any alerting container, and this needs
+// only its global half.
+function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx) {
+  const cfg = (ctx && ctx.global) || getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
 
   // Same reasoning as handleSample above: fold the enabled-check into "breached" itself so a
@@ -589,8 +594,11 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
 // Called once per host per disk-usage poll (~60s). `docker system df` reports Docker's own
 // footprint, not host filesystem free space (Docker doesn't expose that) - so this is a "Docker
 // is using more than X GB" reminder, not a disk-full alert. No sustain window; cooldown suffices.
-function handleDiskUsage({ hostId, hostName, rows }) {
-  const cfg = getThresholdConfig();
+// Takes an optional ctx for the same reason handleHostSample does, though the disk poll runs on
+// its own ~60s timer independent of pollHost's 5s cycle, so it rarely has one to reuse in practice
+// and falls back to reading its own threshold config, same as before.
+function handleDiskUsage({ hostId, hostName, rows }, ctx) {
+  const cfg = (ctx && ctx.global) || getThresholdConfig();
   if (!(cfg.diskThresholdGb > 0)) return;
 
   const totalGb = (rows || []).reduce((sum, r) => sum + parseByteString(r.size), 0) / 1024 ** 3;
