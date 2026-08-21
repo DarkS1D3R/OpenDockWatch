@@ -32,6 +32,7 @@ const {
   DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
 const db = require('./db');
+const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
@@ -55,12 +56,6 @@ const SSE_HEARTBEAT_MS = 30_000;
 // is 30s) plus the queue wait in docker.js's run(), so a request only hits this once the call
 // behind it has stopped being merely slow.
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 50_000;
-
-const HISTORY_RANGES = {
-  '1h': { sinceMs: 3_600_000, bucketMs: 15_000 },
-  '24h': { sinceMs: 86_400_000, bucketMs: 5 * 60_000 },
-  '7d': { sinceMs: 7 * 86_400_000, bucketMs: 30 * 60_000 },
-};
 
 const MAX_ROW_LIMIT = 1000;
 

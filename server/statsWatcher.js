@@ -2,7 +2,9 @@
 // so test/statsWatcher.test.js swaps it for a fake to exercise the buffering, staleness and
 // restart paths without a docker daemon. Same reason eventWatcher's tests reach db that way.
 const docker = require('./docker');
-const { statsRowToSample } = require('./docker');
+// parseStatsLine lives in docker.js - getStats (the one-shot fallback) shares it too, so a
+// malformed row is skipped there the same way it is here. Re-exported below unchanged.
+const { parseStatsLine } = docker;
 const logger = require('./logger');
 const { createRestartingWatcher } = require('./restartingWatcher');
 
@@ -11,32 +13,6 @@ const { createRestartingWatcher } = require('./restartingWatcher');
 // means the stream is up but no longer reporting - frozen CPU numbers are worse than slow ones,
 // so the collector falls back to the one-shot call rather than serving them.
 const STALE_SAMPLES_MS = 30_000;
-
-// docker draws the stats table with cursor-control escapes even when its output is a pipe (each
-// refresh is `ESC[J ESC[H <rows> ESC[H <rows> ESC[K`, verified byte-for-byte against docker 29),
-// so a row arrives with them glued to the front of the JSON. Stripped rather than parsed: the
-// escapes only describe a redraw, and nothing here needs to know where one redraw ends. Wider
-// than format.js's ANSI_STRIP_RE, which only matches colour (`m`) sequences: these are cursor
-// control (`H`/`J`/`K`), and that module is a browser ES module this one couldn't require anyway.
-// eslint-disable-next-line no-control-regex
-const ANSI_CSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
-
-// Pure and exported so the parsing is unit-testable without spawning docker, the same split
-// eventWatcher.parseEventLine and docker.js's own parsers use. Returns null for anything that
-// isn't a usable row - blank redraw padding, a truncated line, output from a future CLI whose
-// shape changed - so the caller can skip it without a try/catch of its own.
-function parseStatsLine(line) {
-  const cleaned = (line || '').replace(ANSI_CSI_RE, '').trim();
-  if (!cleaned) return null;
-  let raw;
-  try {
-    raw = JSON.parse(cleaned);
-  } catch {
-    return null;
-  }
-  if (!raw || typeof raw.Container !== 'string' || !raw.Container) return null;
-  return { id: raw.Container.slice(0, 12), sample: statsRowToSample(raw) };
-}
 
 // Runs inside the child's stdout 'data' handler, so it must never throw: an exception out of an
 // EventEmitter listener is an uncaughtException and index.js exits on those, which would end

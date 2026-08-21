@@ -164,11 +164,12 @@ function cachedHostInfo(hostId) {
 // carries the same facts - the collector already fetches it every poll, so they are recomputed
 // from that rather than being a reason to refetch the whole thing. Pure and exported for testing.
 function containerCounts(containers) {
+  const list = containers || [];
   let running = 0;
-  for (const c of containers) {
+  for (const c of list) {
     if (c.state === 'running') running += 1;
   }
-  return { containers: containers.length, containersRunning: running };
+  return { containers: list.length, containersRunning: running };
 }
 
 // Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
@@ -298,6 +299,8 @@ async function listContainers(host) {
     });
 }
 
+// Forked from format.js's MEM_UNIT_BYTES (CJS/ESM can't share a module here) - kept identical by
+// test/byteUnits.test.js rather than by hand. Exported so that test can reach it.
 const BYTE_UNIT_MULT = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
 
 function parseByteString(str) {
@@ -331,10 +334,10 @@ function computeRate(currentBytes, prevBytes, elapsedSec) {
 
 function computeIoRates(current, prev, elapsedSec) {
   return {
-    netRxRate: computeRate(current.netRxBytes, prev ? prev.netRxBytes : null, elapsedSec),
-    netTxRate: computeRate(current.netTxBytes, prev ? prev.netTxBytes : null, elapsedSec),
-    blockReadRate: computeRate(current.blockReadBytes, prev ? prev.blockReadBytes : null, elapsedSec),
-    blockWriteRate: computeRate(current.blockWriteBytes, prev ? prev.blockWriteBytes : null, elapsedSec),
+    netRxRate: computeRate(current ? current.netRxBytes : null, prev ? prev.netRxBytes : null, elapsedSec),
+    netTxRate: computeRate(current ? current.netTxBytes : null, prev ? prev.netTxBytes : null, elapsedSec),
+    blockReadRate: computeRate(current ? current.blockReadBytes : null, prev ? prev.blockReadBytes : null, elapsedSec),
+    blockWriteRate: computeRate(current ? current.blockWriteBytes : null, prev ? prev.blockWriteBytes : null, elapsedSec),
   };
 }
 
@@ -357,6 +360,28 @@ function statsRowToSample(raw) {
   };
 }
 
+// docker draws the stats table with cursor-control escapes even when its output is a pipe (each
+// refresh is `ESC[J ESC[H <rows> ESC[H <rows> ESC[K`) - a streamed row arrives with one glued to
+// the front of the JSON. Harmless no-op against the one-shot form's plain output. See server/CLAUDE.md.
+// eslint-disable-next-line no-control-regex
+const ANSI_CSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+// One line of `docker stats` output -> `{id, sample}`, or null for anything unusable. Shared by
+// getStats below and statsWatcher's stream parser (re-exported from there), so a malformed row is
+// skipped rather than losing a whole poll in one and just a container in the other. See server/CLAUDE.md.
+function parseStatsLine(line) {
+  const cleaned = (line || '').replace(ANSI_CSI_RE, '').trim();
+  if (!cleaned) return null;
+  let raw;
+  try {
+    raw = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw.Container !== 'string' || !raw.Container) return null;
+  return { id: raw.Container.slice(0, 12), sample: statsRowToSample(raw) };
+}
+
 // The one-shot form, kept as statsWatcher's fallback rather than as the steady-state path: it
 // measured at 1.3-2.0s per call against a two-container daemon, because the CLI collects a whole
 // sample cycle before it can print a CPU percentage and only then exits. See streamStats.
@@ -367,8 +392,8 @@ async function getStats(host) {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean)) {
-    const raw = JSON.parse(line);
-    byId[raw.Container.slice(0, 12)] = statsRowToSample(raw);
+    const row = parseStatsLine(line);
+    if (row) byId[row.id] = row.sample;
   }
   return byId;
 }
@@ -697,13 +722,22 @@ function streamStats(host) {
 // metricsCollector also backs off on failure rather than trusting this number alone.
 const DISK_USAGE_TIMEOUT_MS = Number(process.env.DISK_USAGE_TIMEOUT_MS) || 120_000;
 
+// A malformed/truncated line is skipped rather than thrown, same as getStats/parseStatsLine below
+// - one bad row losing the whole disk-usage read would otherwise blank the Disk panel over a
+// single line, not just the row it actually came from.
 async function getDiskUsage(host) {
   const stdout = await run([...hostArgs(host), 'system', 'df', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
-  const rows = stdout
+  const rows = [];
+  for (const line of stdout
     .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+    .map((l) => l.trim())
+    .filter(Boolean)) {
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      /* skip a malformed row rather than losing the whole read */
+    }
+  }
   return rows.map((r) => ({
     type: r.Type,
     total: r.TotalCount,
@@ -752,6 +786,7 @@ module.exports = {
   streamStats,
   getStats,
   statsRowToSample,
+  parseStatsLine,
   getTopology,
   getHostInfo,
   getDiskUsage,
@@ -771,6 +806,7 @@ module.exports = {
   customDependsOnEdges,
   parseMountsList,
   splitCombinedTopologyPs,
+  BYTE_UNIT_MULT,
   computeRate,
   computeIoRates,
   dockerCommandError,

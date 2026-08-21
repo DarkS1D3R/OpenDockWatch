@@ -119,6 +119,22 @@ test('computeIoRates', async (t) => {
       blockWriteRate: null,
     });
   });
+
+  await t.test('a null/undefined current is also null rather than throwing', () => {
+    const prev = { netRxBytes: 1000, netTxBytes: 0, blockReadBytes: 3000, blockWriteBytes: 500 };
+    assert.deepEqual(computeIoRates(null, prev, 10), {
+      netRxRate: null,
+      netTxRate: null,
+      blockReadRate: null,
+      blockWriteRate: null,
+    });
+    assert.deepEqual(computeIoRates(undefined, undefined, 10), {
+      netRxRate: null,
+      netTxRate: null,
+      blockReadRate: null,
+      blockWriteRate: null,
+    });
+  });
 });
 
 test('parseLabels', async (t) => {
@@ -575,5 +591,10 @@ test('containerCounts', async (t) => {
   // `created` and `paused` are not running, and the naive `!== 'exited'` gets both wrong.
   await t.test('only `running` counts as running', () => {
     assert.equal(containerCounts([{ state: 'created' }, { state: 'paused' }, { state: 'restarting' }]).containersRunning, 0);
+  });
+
+  await t.test('null/undefined counts as zero rather than throwing', () => {
+    assert.deepEqual(containerCounts(null), { containers: 0, containersRunning: 0 });
+    assert.deepEqual(containerCounts(undefined), { containers: 0, containersRunning: 0 });
   });
 });
