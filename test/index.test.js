@@ -695,6 +695,46 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
     assert.ok(bundle.body.alerts.length > 0, 'nothing to compare - the seed did not land');
   });
 
+  // The regression this covers: dashboardExtrasCache (index.js) is keyed on the collector's
+  // statsTs, which does not advance between the requests below - exactly the shape of two browser
+  // polls landing inside the same POLL_MS window. Without invalidating the cache on ack/clear, the
+  // second read below would still show the pre-ack/pre-clear state, and app.js's wholesale
+  // `this.alerts = data.alerts` would overwrite the client's own optimistic update with it.
+  // Its own statsTs, not the shared withSnapshot(t2)/SNAPSHOT the rest of this block uses - those
+  // already primed the cache for this host under that statsTs in earlier sub-tests above, which
+  // would make the "before" read below return their stale cached value instead of a fresh one.
+  await t.test('an ack or a clear is visible on the very next /dashboard read, even inside the same poll epoch', async (t2) => {
+    // Computed once, outside the mock, so every call within this sub-test returns the exact same
+    // statsTs - a fresh value each call would never hit the cache at all, proving nothing about
+    // the bug (which only shows up when two requests land in the same epoch).
+    const isolatedSnapshot = { ...SNAPSHOT, statsTs: Date.now() };
+    t2.mock.method(metricsCollector, 'getSnapshot', () => isolatedSnapshot);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const alertId = db.insertAlert({
+      ts: Date.now(),
+      hostId,
+      containerId: 'aaaaaaaaaaaa',
+      containerName: 'web',
+      rule: 'container_cpu',
+      severity: 'warning',
+      message: 'cache-invalidation regression check',
+    });
+
+    // Primes the cache with the alert present and unacknowledged.
+    const before = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    const beforeRow = before.body.alerts.find((a) => a.id === alertId);
+    assert.ok(beforeRow, 'seeded alert missing from the primed bundle');
+    assert.equal(beforeRow.acknowledged, 0);
+
+    assert.equal((await admin.post(`/api/alerts/${alertId}/ack`)).status, 200);
+    const afterAck = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    assert.equal(afterAck.body.alerts.find((a) => a.id === alertId).acknowledged, 1, 'ack not reflected on the next /dashboard read');
+
+    assert.equal((await admin.delete(`/api/alerts?hostId=${hostId}`)).status, 200);
+    const afterClear = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    assert.ok(!afterClear.body.alerts.some((a) => a.id === alertId), 'cleared alert still present on the next /dashboard read');
+  });
+
   // It is scoped to one host, unlike /alerts which serves every host when given no hostId - and
   // the seed puts an alert on a second host specifically so an unscoped read would show up here.
   await t.test('its alerts are scoped to the host in the path', async (t2) => {

@@ -310,13 +310,17 @@ function escapeAndHighlight(text, matcher) {
   let lastIndex = 0;
   let match;
   while ((match = matcher.exec(text))) {
+    // A user-supplied regex (regex mode) can match zero-width (e.g. `x*`) - skip wrapping it
+    // rather than emitting an empty <mark> (a visible sliver with nothing in it, one per
+    // character on a line with no other matches), and advance by one char to guarantee progress
+    // the same way native String.replace does, instead of looping forever on the same index.
+    if (match[0].length === 0) {
+      matcher.lastIndex += 1;
+      continue;
+    }
     html += escapeHtml(text.slice(lastIndex, match.index));
     html += `<mark class="log-highlight">${escapeHtml(match[0])}</mark>`;
     lastIndex = match.index + match[0].length;
-    // A user-supplied regex (regex mode) can match zero-width (e.g. `x*`) - native String.replace
-    // guarantees progress on those by advancing one char, so this does too rather than looping
-    // forever on the same index.
-    if (match[0].length === 0) matcher.lastIndex += 1;
   }
   html += escapeHtml(text.slice(lastIndex));
   return html;

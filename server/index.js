@@ -555,7 +555,10 @@ async function containersFor(host, { fresh = false } = {}) {
   const snapshot = metricsCollector.getSnapshot(host.id);
   const useSnapshot = !fresh && snapshot && snapshot.reachable && snapshot.statsTs;
   const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const restartCounts = restartCountsFor(host.id, snapshot && snapshot.statsTs);
+  // fresh means "a start/stop/restart just happened, staleness reads as didn't work" - that
+  // applies to restartCount1h too, so it bypasses the cache here the same way the container list
+  // itself bypasses the snapshot above, rather than serving a count from before the action.
+  const restartCounts = restartCountsFor(host.id, fresh ? null : snapshot && snapshot.statsTs);
   // The snapshot's container objects are the collector's own and get read on every poll - copy
   // rather than annotating them in place with a field only this response wants.
   return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
@@ -790,10 +793,18 @@ api.get('/alerts', (req, res) => {
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
+// Each of these mutates rows the /dashboard bundle's cached `alerts` field (dashboardExtrasCache,
+// above) already answered from - without invalidating it, a clear/ack inside the current poll
+// epoch is invisible to /dashboard until the next statsTs tick, and app.js's wholesale
+// `this.alerts = data.alerts` overwrites the client's own optimistic update with the stale list.
 api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
+  // The id alone doesn't say which host's cache to invalidate - looked up before acking (the row's
+  // host_id doesn't change), and null (not found, or already cleared) means nothing to invalidate.
+  const hostId = db.getAlertHostId(id);
   db.ackAlert(id);
+  if (hostId) forgetDashboardCaches(hostId);
   res.json({ ok: true });
 });
 
@@ -801,12 +812,14 @@ api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
 // count of 0, which reads as "there was nothing to acknowledge" when the truth is "no such host".
 api.post('/alerts/ack-all', requireAdmin, requireHostQuery, (req, res) => {
   const count = db.ackAllAlerts(req.query.hostId);
+  forgetDashboardCaches(req.query.hostId);
   res.json({ ok: true, count });
 });
 
 api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
   const hostId = req.query.hostId;
   const count = db.clearAlerts(hostId);
+  forgetDashboardCaches(hostId);
   auditClear(req, hostId, 'clear_alerts');
   logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });

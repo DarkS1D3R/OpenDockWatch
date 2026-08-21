@@ -178,6 +178,11 @@ const stmts = {
     VALUES (@ts, @hostId, @containerId, @containerName, @rule, @severity, @message, 0)
   `),
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ? AND cleared_at IS NULL`),
+  // Used by index.js's single-alert ack route to know which host's dashboard cache to invalidate -
+  // the id alone doesn't say. cleared_at-filtered same as ackAlert's own WHERE: a cleared alert's
+  // ack is already a no-op, so "not found" here correctly means "nothing changed, nothing to
+  // invalidate" too, rather than needing a CLEARED_AT_EXEMPT entry.
+  getAlertHostId: db.prepare(`SELECT host_id AS hostId FROM alerts WHERE id = ? AND cleared_at IS NULL`),
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
   markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
@@ -381,6 +386,11 @@ function insertAlert(alert) {
 
 function ackAlert(id) {
   stmts.ackAlert.run(id);
+}
+
+function getAlertHostId(id) {
+  const row = stmts.getAlertHostId.get(id);
+  return row ? row.hostId : null;
 }
 
 function ackAllAlerts(hostId) {
@@ -593,6 +603,7 @@ module.exports = {
   updateAuditLogResult,
   insertAlert,
   ackAlert,
+  getAlertHostId,
   ackAllAlerts,
   markWebhookDelivered,
   markWebhookAttemptFailed,

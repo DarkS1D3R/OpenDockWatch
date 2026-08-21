@@ -340,12 +340,15 @@ test('highlightLine', async (t) => {
   });
 
   // A regex mode pattern that can match zero-width (e.g. `x*` against a line with no "x") must not
-  // spin forever - native String.replace guarantees progress on those, and the hand-rolled scan
-  // that replaced it here has to too.
-  await t.test('a zero-width regex match does not loop forever', () => {
-    assert.equal(
-      format.highlightLine('abc', 'x*', true),
-      '<mark class="log-highlight"></mark>a<mark class="log-highlight"></mark>b<mark class="log-highlight"></mark>c<mark class="log-highlight"></mark>'
-    );
+  // spin forever, and must not paint the line with an empty <mark> per character either - a zero-
+  // width match highlights nothing, it just has to advance past without hanging.
+  await t.test('a zero-width regex match does not loop forever or highlight anything', () => {
+    assert.equal(format.highlightLine('abc', 'x*', true), 'abc');
+  });
+
+  // A real match still has to be found and highlighted even with a pattern that matches zero-width
+  // everywhere else on the line - the skip-and-advance behaviour above must not swallow it.
+  await t.test('a genuine match is still highlighted around zero-width non-matches', () => {
+    assert.equal(format.highlightLine('abc', 'b*', true), 'a<mark class="log-highlight">b</mark>c');
   });
 });
