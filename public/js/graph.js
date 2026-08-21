@@ -1,4 +1,4 @@
-import { healthColor } from './format.js';
+import { healthColor, escapeHtml } from './format.js';
 import { containerFullHeight, clampPct, CONTAINER_STATE_CLASSES } from './graph/elements.js';
 import { CY_STYLE, CPU_COLOR, MEM_COLOR } from './graph/style.js';
 import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout.js';
@@ -205,6 +205,87 @@ export async function exportPng(cy) {
   }
 }
 
+// The two nodeHtmlLabel templates registered below build raw HTML (cytoscape-node-html-label
+// overlays it as real DOM, not canvas) rather than going through Vue, because the container/group
+// boxes need richer layout - metric bars, badges - than a single canvas-drawn `label: 'data(label)'`
+// string can do (that's what every *other* node kind in graph/style.js uses, and needs no escaping
+// of its own). `name`/`status`/`label` are docker/compose-supplied strings with no charset
+// restriction, so they're escaped here before going into the template; this is defence-in-depth,
+// not a live-XSS fix - the app's CSP has no 'unsafe-inline' in script-src, so an injected
+// <img onerror=...> or similar has nowhere to execute regardless. Pulled out to their own exported
+// functions so escaping is something a test can assert directly, without a real cytoscape instance.
+export function containerNodeTpl(data) {
+  const name = escapeHtml(data.name);
+  const status = escapeHtml(data.status);
+  if (data.compact) {
+    return `
+          <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            <span class="cy-node-emoji">${data.emoji}</span>
+            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-name">${name}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+  }
+  return `
+          <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
+            <span class="cy-node-emoji">${data.emoji}</span>
+            <span class="cy-node-status">${status}</span>
+            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-name">${name}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">NET</span>
+                <span class="cy-node-metric-value">${data.netIO}</span>
+                <span class="cy-node-metric-label">DISK</span>
+                <span class="cy-node-metric-value">${data.blockIO}</span>
+              </div>
+            </div>
+            ${data.ports ? `<span class="cy-node-port-badge">${data.ports}</span>` : ''}
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+}
+
+export function collapsedGroupTpl(data) {
+  const label = escapeHtml(data.label);
+  if (data.compact) {
+    return `
+          <div class="cy-node-box cy-node-group-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${label}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+  }
+  return `
+          <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${label}</span>
+            <span class="cy-node-group-count">${data.count} container${data.count === 1 ? '' : 's'}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+            </div>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+}
+
 export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, mode = 'graph') {
   const cy = cytoscape({
     container,
@@ -318,42 +399,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) =>
-          data.compact
-            ? `
-          <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
-            <span class="cy-node-emoji">${data.emoji}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
-            <span class="cy-node-name">${data.name}</span>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `
-            : `
-          <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
-            <span class="cy-node-emoji">${data.emoji}</span>
-            <span class="cy-node-status">${data.status}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
-            <span class="cy-node-name">${data.name}</span>
-            <div class="cy-node-metrics">
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">NET</span>
-                <span class="cy-node-metric-value">${data.netIO}</span>
-                <span class="cy-node-metric-label">DISK</span>
-                <span class="cy-node-metric-value">${data.blockIO}</span>
-              </div>
-            </div>
-            ${data.ports ? `<span class="cy-node-port-badge">${data.ports}</span>` : ''}
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `,
+        tpl: containerNodeTpl,
       },
       {
         query: 'node.cy-expand-collapse-collapsed-node',
@@ -361,33 +407,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) =>
-          data.compact
-            ? `
-          <div class="cy-node-box cy-node-group-box cy-node-box-compact${data.faded ? ' faded' : ''}">
-            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
-            <span class="cy-node-name">${data.label}</span>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `
-            : `
-          <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
-            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
-            <span class="cy-node-name">${data.label}</span>
-            <span class="cy-node-group-count">${data.count} container${data.count === 1 ? '' : 's'}</span>
-            <div class="cy-node-metrics">
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
-              </div>
-            </div>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `,
+        tpl: collapsedGroupTpl,
       },
     ]);
   }

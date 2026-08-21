@@ -295,6 +295,33 @@ export function buildLineMatcher(filterText, isRegex = false) {
   return new RegExp(escapeRegExp(filterText), 'gi');
 }
 
+// Matches against the *raw* segment text and escapes each piece on the way out, rather than
+// escaping first and matching the (unescaped) filter against the escaped string - matching against
+// escaped HTML let a search for a substring of an entity name (e.g. "amp") find it *inside* the
+// "&amp;" a literal "&" elsewhere on the line escapes to, splitting the entity and rendering a
+// literal "&amp;" instead of "&"; and it made a search for "<" or "&" themselves highlight nothing
+// at all, since escaping had already removed every bare occurrence - while selectLines' own isMatch
+// check (lib/logLines.js) tests raw text and counted the line as a hit regardless, so the hit
+// counter and the highlighting disagreed on lines containing the characters escaping touches.
+function escapeAndHighlight(text, matcher) {
+  if (!matcher) return escapeHtml(text);
+  matcher.lastIndex = 0;
+  let html = '';
+  let lastIndex = 0;
+  let match;
+  while ((match = matcher.exec(text))) {
+    html += escapeHtml(text.slice(lastIndex, match.index));
+    html += `<mark class="log-highlight">${escapeHtml(match[0])}</mark>`;
+    lastIndex = match.index + match[0].length;
+    // A user-supplied regex (regex mode) can match zero-width (e.g. `x*`) - native String.replace
+    // guarantees progress on those by advancing one char, so this does too rather than looping
+    // forever on the same index.
+    if (match[0].length === 0) matcher.lastIndex += 1;
+  }
+  html += escapeHtml(text.slice(lastIndex));
+  return html;
+}
+
 // Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps
 // case-insensitive `filterText` matches in <mark> for v-html. isRegex compiles filterText as a
 // regex instead of literal; an invalid pattern falls back to no highlighting. `matcher`, when
@@ -307,11 +334,7 @@ export function highlightLine(line, filterText, isRegex = false, matcher = undef
 
   const bodyHtml = parseAnsiSegments(rest)
     .map((seg) => {
-      let html = escapeHtml(seg.text);
-      if (resolvedMatcher) {
-        resolvedMatcher.lastIndex = 0;
-        html = html.replace(resolvedMatcher, (m) => (m ? `<mark class="log-highlight">${m}</mark>` : m));
-      }
+      const html = escapeAndHighlight(seg.text, resolvedMatcher);
       const style = [seg.color ? `color:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
       return style ? `<span style="${style}">${html}</span>` : html;
     })

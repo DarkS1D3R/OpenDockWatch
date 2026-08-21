@@ -7,11 +7,14 @@ const { pathToFileURL } = require('node:url');
 // (they only import format.js and each other) - aggregateGroups/buildElements/buildTreeElements
 // and renderSvg are pure data transforms that never touch cytoscape/DOM globals, so importing
 // them directly is safe without a browser or a mocked cytoscape. graph.js itself (the live
-// cytoscape controller the rest of graph/ feeds into) is DOM-coupled and stays syntax-check-only,
-// per public/CLAUDE.md. pathToFileURL rather than a plain relative string: import()'s relative-specifier
-// resolution expects forward slashes, so a path.join'd path breaks on Windows where it comes out
-// backslash-separated.
-let elements, svgExport, theme;
+// cytoscape controller the rest of graph/ feeds into) is mostly DOM-coupled and stays
+// syntax-check-only for everything else, per public/CLAUDE.md - but nothing at its module scope
+// touches a DOM/cytoscape global (those are all inside function bodies), and containerNodeTpl/
+// collapsedGroupTpl specifically are pure string builders with no such dependency of their own, so
+// importing it here to reach just those two is safe. pathToFileURL rather than a plain relative
+// string: import()'s relative-specifier resolution expects forward slashes, so a path.join'd path
+// breaks on Windows where it comes out backslash-separated.
+let elements, svgExport, theme, graph;
 before(async () => {
   const graphDir = path.join(__dirname, '..', 'public', 'js', 'graph');
   elements = await import(pathToFileURL(path.join(graphDir, 'elements.js')));
@@ -20,6 +23,7 @@ before(async () => {
   // literals here was worse than no test: it passed while svgExport and CY_STYLE disagreed, which
   // is the one failure those assertions look like they exist to catch. See test/theme.test.js.
   theme = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'theme.js')));
+  graph = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'graph.js')));
 });
 
 test('aggregateGroups', async (t) => {
@@ -569,5 +573,86 @@ test('renderSvg', async (t) => {
     const svg = svgExport.renderSvg({ nodes: [], edges: [] });
     assert.match(svg, /^<svg/);
     assert.match(svg, /<\/svg>$/);
+  });
+});
+
+function containerTplFixture(overrides = {}) {
+  return {
+    compact: false,
+    faded: false,
+    name: 'web',
+    status: 'Up 3 minutes',
+    emoji: '🟢',
+    icon: { bg: '#4f8cff', text: 'W' },
+    cpuPerc: 12.3,
+    memPerc: 45.6,
+    netIO: '1.2 KB/s / 3.4 KB/s',
+    blockIO: '0 B/s / 0 B/s',
+    ports: '',
+    portLines: 0,
+    openAlerts: 0,
+    ...overrides,
+  };
+}
+
+function groupTplFixture(overrides = {}) {
+  return {
+    compact: false,
+    faded: false,
+    label: 'shop',
+    count: 3,
+    cpuAvg: 10,
+    memAvg: 20,
+    openAlerts: 0,
+    health: null,
+    ...overrides,
+  };
+}
+
+// Both templates build raw HTML for cytoscape-node-html-label to overlay as real DOM, bypassing
+// Vue's own escaping - see graph.js's comment above them. A container/compose-project name is a
+// docker/compose-supplied string with no charset restriction, so a name like `<img onerror=...>`
+// must not reach the page unescaped even though CSP (no 'unsafe-inline' in script-src) already
+// stops it from executing - this is the defence-in-depth half of that story.
+test('containerNodeTpl', async (t) => {
+  await t.test('escapes an HTML-special container name', () => {
+    const html = graph.containerNodeTpl(containerTplFixture({ name: '<img src=x onerror=alert(1)>' }));
+    assert.ok(!html.includes('<img src=x'), 'raw tag reached the output unescaped');
+    assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'), 'escaped name missing from the output');
+  });
+
+  await t.test('escapes an HTML-special status string', () => {
+    const html = graph.containerNodeTpl(containerTplFixture({ status: '</span><script>alert(1)</script>' }));
+    assert.ok(!html.includes('<script>'), 'raw script tag reached the output unescaped');
+    assert.ok(html.includes('&lt;/span&gt;&lt;script&gt;alert(1)&lt;/script&gt;'));
+  });
+
+  await t.test('compact mode escapes the name too, without the status line', () => {
+    const html = graph.containerNodeTpl(containerTplFixture({ compact: true, name: '<b>x</b>' }));
+    assert.ok(html.includes('&lt;b&gt;x&lt;/b&gt;'));
+    assert.ok(!html.includes('cy-node-status'));
+  });
+
+  await t.test('a plain name renders unchanged', () => {
+    const html = graph.containerNodeTpl(containerTplFixture({ name: 'web-api' }));
+    assert.ok(html.includes('<span class="cy-node-name">web-api</span>'));
+  });
+});
+
+test('collapsedGroupTpl', async (t) => {
+  await t.test('escapes an HTML-special compose project name', () => {
+    const html = graph.collapsedGroupTpl(groupTplFixture({ label: '<script>alert(1)</script>' }));
+    assert.ok(!html.includes('<script>'), 'raw script tag reached the output unescaped');
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+  });
+
+  await t.test('compact mode escapes the label too', () => {
+    const html = graph.collapsedGroupTpl(groupTplFixture({ compact: true, label: '<b>x</b>' }));
+    assert.ok(html.includes('&lt;b&gt;x&lt;/b&gt;'));
+  });
+
+  await t.test('a plain label renders unchanged', () => {
+    const html = graph.collapsedGroupTpl(groupTplFixture({ label: 'shop' }));
+    assert.ok(html.includes('<span class="cy-node-name">shop</span>'));
   });
 });
