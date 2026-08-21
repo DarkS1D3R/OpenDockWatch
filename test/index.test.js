@@ -735,6 +735,38 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
     assert.ok(!afterClear.body.alerts.some((a) => a.id === alertId), 'cleared alert still present on the next /dashboard read');
   });
 
+  // Positive-space complement to the test above: within one epoch, a change that bypasses every
+  // cache-invalidating route (a direct db write, standing in for an alert firing mid-cycle from the
+  // poll loop itself) must stay invisible until the epoch turns over - otherwise the cache isn't
+  // actually caching anything, and the ack/clear test above could be passing for the wrong reason.
+  await t.test('the cache actually caches: an out-of-band change is invisible until the epoch turns over', async (t2) => {
+    let currentSnapshot = { ...SNAPSHOT, statsTs: Date.now() };
+    t2.mock.method(metricsCollector, 'getSnapshot', () => currentSnapshot);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+
+    const before = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    const beforeCount = before.body.alerts.length;
+
+    db.insertAlert({
+      ts: Date.now(),
+      hostId,
+      containerId: 'aaaaaaaaaaaa',
+      containerName: 'web',
+      rule: 'container_mem',
+      severity: 'warning',
+      message: 'cache-positive-proof check',
+    });
+
+    const stillCached = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    assert.equal(stillCached.body.alerts.length, beforeCount, 'a same-epoch read saw an out-of-band change - the cache is not caching');
+
+    // A new statsTs is a new epoch, same as the next poll tick - the insert becomes visible then.
+    // +1 rather than a fresh Date.now(), so it can't collide with the epoch above on a fast run.
+    currentSnapshot = { ...SNAPSHOT, statsTs: currentSnapshot.statsTs + 1 };
+    const nextEpoch = await admin.get(`/api/hosts/${hostId}/dashboard`);
+    assert.equal(nextEpoch.body.alerts.length, beforeCount + 1, 'the new epoch should have picked up the out-of-band change');
+  });
+
   // It is scoped to one host, unlike /alerts which serves every host when given no hostId - and
   // the seed puts an alert on a second host specifically so an unscoped read would show up here.
   await t.test('its alerts are scoped to the host in the path', async (t2) => {

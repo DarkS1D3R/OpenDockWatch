@@ -523,6 +523,29 @@ function manualEdges(containers, declared = []) {
 const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
+// Pure half of getTopologyMeta below, split out so the field-splitting itself is unit-testable
+// without mocking child_process - see server/CLAUDE.md. `parts.slice(3).join('\t')` rather than
+// `parts[3]` keeps a literal tab inside Mounts intact instead of truncating at the first one.
+function splitCombinedTopologyPs(combinedRaw) {
+  const dependsOnLines = [];
+  const customDependsOnLines = [];
+  const mountsLines = [];
+  for (const line of (combinedRaw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split('\t');
+    const shortId = (parts[0] || '').slice(0, 12);
+    dependsOnLines.push(`${shortId}\t${parts[1] || ''}`);
+    customDependsOnLines.push(`${shortId}\t${parts[2] || ''}`);
+    mountsLines.push(`${parts[0] || ''}\t${parts.slice(3).join('\t')}`);
+  }
+  return {
+    dependsOnRaw: dependsOnLines.join('\n'),
+    customDependsOnRaw: customDependsOnLines.join('\n'),
+    mountsRaw: mountsLines.join('\n'),
+  };
+}
+
 // One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip.
 // `--no-trunc` (needed for Mounts, which truncates like any other column) makes the id full-length
 // too; sliced back to 12 chars for the depends-on lines. See server/CLAUDE.md.
@@ -541,25 +564,7 @@ async function getTopologyMeta(host, containers) {
     '--format',
     '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}\t{{.Label "opendockwatch.depends_on"}}\t{{.Mounts}}',
   ]).catch(() => '');
-  const dependsOnLines = [];
-  const customDependsOnLines = [];
-  const mountsLines = [];
-  for (const line of combinedRaw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split('\t');
-    const shortId = (parts[0] || '').slice(0, 12);
-    dependsOnLines.push(`${shortId}\t${parts[1] || ''}`);
-    customDependsOnLines.push(`${shortId}\t${parts[2] || ''}`);
-    mountsLines.push(`${parts[0] || ''}\t${parts.slice(3).join('\t')}`);
-  }
-  const meta = {
-    ts: Date.now(),
-    signature,
-    dependsOnRaw: dependsOnLines.join('\n'),
-    customDependsOnRaw: customDependsOnLines.join('\n'),
-    mountsRaw: mountsLines.join('\n'),
-  };
+  const meta = { ts: Date.now(), signature, ...splitCombinedTopologyPs(combinedRaw) };
   topologyMetaCache.set(host.id, meta);
   return meta;
 }
@@ -765,6 +770,7 @@ module.exports = {
   dependsOnEdges,
   customDependsOnEdges,
   parseMountsList,
+  splitCombinedTopologyPs,
   computeRate,
   computeIoRates,
   dockerCommandError,
