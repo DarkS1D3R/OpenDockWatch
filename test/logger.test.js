@@ -69,7 +69,7 @@ test('logger field formatting', async (t) => {
 
 test('logger levels', async (t) => {
   // The Log Viewer's level filter matches on the [LEVEL] tag, so the tag is part of the contract,
-  // not decoration - see CLAUDE.md on why nothing in server/ writes to console directly.
+  // not decoration - see server/CLAUDE.md on why nothing in server/ writes to console directly.
   await t.test('each level carries its own tag', () => {
     assert.match(capture(() => logger.info('e'))[0].l, /^\[opendockwatch\] \[INFO\] /);
     assert.match(capture(() => logger.warn('e'))[0].l, /^\[opendockwatch\] \[WARN\] /);

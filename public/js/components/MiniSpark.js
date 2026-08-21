@@ -2,7 +2,7 @@ import { METRICS_HISTORY_LEN } from '../constants.js';
 import { padSlots, sparkPaths } from '../lib/spark.js';
 
 // The cell-sized sparkline in each List-view row - stripped SparkTile drawing with no header/
-// axis/legend/crosshair (see CLAUDE.md). Scale is per container against its own peak, not shared
+// axis/legend/crosshair (see public/CLAUDE.md). Scale is per container against its own peak, not shared
 // across rows (which would flatten quiet containers to a line) - the peak goes in the title attr.
 export default {
   name: 'MiniSpark',

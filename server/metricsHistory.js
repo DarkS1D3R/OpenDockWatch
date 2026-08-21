@@ -2,12 +2,12 @@ const { computeRate } = require('./docker');
 
 // Floors `ts` to its `@bucketMs`-wide window for GROUP BY. Written with `%` not `(ts/@bucketMs)*
 // @bucketMs`: better-sqlite3 binds numbers as REAL and SQLite's `/` is float division then, so
-// that form divides and re-multiplies back to `ts`, grouping nothing. See CLAUDE.md for the gotcha.
+// that form divides and re-multiplies back to `ts`, grouping nothing. See server/CLAUDE.md for the gotcha.
 const BUCKET_EXPR = 'ts - (ts % @bucketMs)';
 
 // container_metrics's net/block columns are cumulative counters, not per-poll deltas - plotted
 // raw they only ever rise. `rows` is bucketed history ordered by `bucket` ASC; elapsed time comes
-// from the real gap between buckets so a data hole doesn't invent a spike. See CLAUDE.md.
+// from the real gap between buckets so a data hole doesn't invent a spike. See server/CLAUDE.md.
 const COUNTERS = [
   ['netRxTotal', 'netRxRate'],
   ['netTxTotal', 'netTxRate'],

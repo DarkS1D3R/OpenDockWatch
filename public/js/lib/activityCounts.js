@@ -1,6 +1,6 @@
 // Counts for the Activity tab's header badges: how many of each kind of alert (by rule) and each
 // kind of event (by action) are in the list being shown. Pure, so it's unit-tested rather than
-// only syntax-checked - see CLAUDE.md on what earns a place in lib/.
+// only syntax-checked - see public/CLAUDE.md on what earns a place in lib/.
 
 // Groups by keyOf and counts, highest first. The `|| a.key.localeCompare(b.key)` tie-break is the
 // part that matters: without it two kinds on the same count swap places as new rows stream in, and

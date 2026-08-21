@@ -1,7 +1,7 @@
 // The Activity tab's two columns each filter on two independent things, and the whole point of
 // this module is that they stay independent. `search` is the free-text box: a case-insensitive
 // substring match across a few fields. `rule`/`action` is a badge click: an exact match on the one
-// field the badges group by. See CLAUDE.md for why folding the second into the first didn't work.
+// field the badges group by. See public/CLAUDE.md for why folding the second into the first didn't work.
 
 // Both return { searched, shown }. `searched` is the text search alone - what the badges are
 // counted off, so every badge stays visible and clickable while one of them is active. `shown` is

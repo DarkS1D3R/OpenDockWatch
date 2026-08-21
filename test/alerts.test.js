@@ -1038,7 +1038,7 @@ test('handleDiskUsage', async (t) => {
 
 // A webhook URL *is* the credential - a Discord/Gotify token or an ntfy topic sits in its path, so
 // anyone who can read `docker logs` can post as the alerting integration. webhookScheme() is the
-// only sanctioned way to put one in a line; this proves no other path prints it. See CLAUDE.md.
+// only sanctioned way to put one in a line; this proves no other path prints it. See server/CLAUDE.md.
 const WEBHOOK_SECRET = 'zzleakcanaryzz';
 const SECRET_URLS = {
   discord: `discord://123456789/${WEBHOOK_SECRET}`,

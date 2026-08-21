@@ -321,4 +321,34 @@ test('highlightLine', async (t) => {
     const out = format.highlightLine('2026-07-10T17:03:33.492059335Z error here', 'error');
     assert.equal(out, '<span class="log-ts">17:03:33.492</span><mark class="log-highlight">error</mark> here');
   });
+
+  // The matcher has to run against the raw text, not the already-escaped HTML: matching escaped
+  // text let a search for a substring of an entity name find it *inside* the entity a literal
+  // HTML-special character elsewhere on the line escaped to - splitting "&amp;" into "&" + a
+  // highlighted "amp" + ";", which renders as the literal text "&amp;" instead of a single "&".
+  await t.test('a match inside an escaped entity does not split the entity apart', () => {
+    const out = format.highlightLine('R&D lamp status', 'amp');
+    assert.equal(out, 'R&amp;D l<mark class="log-highlight">amp</mark> status');
+  });
+
+  // The other half of the same bug: searching for a character escaping touches (<, &, >, ", ')
+  // used to highlight nothing at all, because escaping ran first and removed every bare occurrence
+  // before the matcher ever saw the text - while selectLines' own hit count (lib/logLines.js) tests
+  // raw text and counted the line as a hit regardless, so the two disagreed on whether it matched.
+  await t.test('a match on an HTML-special character itself is still highlighted', () => {
+    assert.equal(format.highlightLine('value < threshold', '<'), 'value <mark class="log-highlight">&lt;</mark> threshold');
+  });
+
+  // A regex mode pattern that can match zero-width (e.g. `x*` against a line with no "x") must not
+  // spin forever, and must not paint the line with an empty <mark> per character either - a zero-
+  // width match highlights nothing, it just has to advance past without hanging.
+  await t.test('a zero-width regex match does not loop forever or highlight anything', () => {
+    assert.equal(format.highlightLine('abc', 'x*', true), 'abc');
+  });
+
+  // A real match still has to be found and highlighted even with a pattern that matches zero-width
+  // everywhere else on the line - the skip-and-advance behaviour above must not swallow it.
+  await t.test('a genuine match is still highlighted around zero-width non-matches', () => {
+    assert.equal(format.highlightLine('abc', 'b*', true), 'a<mark class="log-highlight">b</mark>c');
+  });
 });

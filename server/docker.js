@@ -164,11 +164,12 @@ function cachedHostInfo(hostId) {
 // carries the same facts - the collector already fetches it every poll, so they are recomputed
 // from that rather than being a reason to refetch the whole thing. Pure and exported for testing.
 function containerCounts(containers) {
+  const list = containers || [];
   let running = 0;
-  for (const c of containers) {
+  for (const c of list) {
     if (c.state === 'running') running += 1;
   }
-  return { containers: containers.length, containersRunning: running };
+  return { containers: list.length, containersRunning: running };
 }
 
 // Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
@@ -272,6 +273,9 @@ function parseHealth(status) {
   return m[1].toLowerCase() === 'health: starting' ? 'starting' : m[1].toLowerCase();
 }
 
+// Deliberately not skip-on-malformed-row like getStats/getDiskUsage below: this list is what
+// reachability and every other poll field are built from, so a container silently missing from it
+// is a worse failure than the whole poll failing and retrying in POLL_MS. Let it throw.
 async function listContainers(host) {
   const stdout = await run([...hostArgs(host), 'ps', '-a', '--format', '{{json .}}']);
   return stdout
@@ -298,6 +302,8 @@ async function listContainers(host) {
     });
 }
 
+// Forked from format.js's MEM_UNIT_BYTES (CJS/ESM can't share a module here) - kept identical by
+// test/sharedConstants.test.js rather than by hand. Exported so that test can reach it.
 const BYTE_UNIT_MULT = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
 
 function parseByteString(str) {
@@ -331,10 +337,10 @@ function computeRate(currentBytes, prevBytes, elapsedSec) {
 
 function computeIoRates(current, prev, elapsedSec) {
   return {
-    netRxRate: computeRate(current.netRxBytes, prev ? prev.netRxBytes : null, elapsedSec),
-    netTxRate: computeRate(current.netTxBytes, prev ? prev.netTxBytes : null, elapsedSec),
-    blockReadRate: computeRate(current.blockReadBytes, prev ? prev.blockReadBytes : null, elapsedSec),
-    blockWriteRate: computeRate(current.blockWriteBytes, prev ? prev.blockWriteBytes : null, elapsedSec),
+    netRxRate: computeRate(current ? current.netRxBytes : null, prev ? prev.netRxBytes : null, elapsedSec),
+    netTxRate: computeRate(current ? current.netTxBytes : null, prev ? prev.netTxBytes : null, elapsedSec),
+    blockReadRate: computeRate(current ? current.blockReadBytes : null, prev ? prev.blockReadBytes : null, elapsedSec),
+    blockWriteRate: computeRate(current ? current.blockWriteBytes : null, prev ? prev.blockWriteBytes : null, elapsedSec),
   };
 }
 
@@ -357,6 +363,28 @@ function statsRowToSample(raw) {
   };
 }
 
+// docker draws the stats table with cursor-control escapes even when its output is a pipe (each
+// refresh is `ESC[J ESC[H <rows> ESC[H <rows> ESC[K`) - a streamed row arrives with one glued to
+// the front of the JSON. Harmless no-op against the one-shot form's plain output. See server/CLAUDE.md.
+// eslint-disable-next-line no-control-regex
+const ANSI_CSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+// One line of `docker stats` output -> `{id, sample}`, or null for anything unusable. Shared by
+// getStats below and statsWatcher's stream parser (re-exported from there), so a malformed row is
+// skipped rather than losing a whole poll in one and just a container in the other. See server/CLAUDE.md.
+function parseStatsLine(line) {
+  const cleaned = (line || '').replace(ANSI_CSI_RE, '').trim();
+  if (!cleaned) return null;
+  let raw;
+  try {
+    raw = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw.Container !== 'string' || !raw.Container) return null;
+  return { id: raw.Container.slice(0, 12), sample: statsRowToSample(raw) };
+}
+
 // The one-shot form, kept as statsWatcher's fallback rather than as the steady-state path: it
 // measured at 1.3-2.0s per call against a two-container daemon, because the CLI collects a whole
 // sample cycle before it can print a CPU percentage and only then exits. See streamStats.
@@ -367,8 +395,8 @@ async function getStats(host) {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean)) {
-    const raw = JSON.parse(line);
-    byId[raw.Container.slice(0, 12)] = statsRowToSample(raw);
+    const row = parseStatsLine(line);
+    if (row) byId[row.id] = row.sample;
   }
   return byId;
 }
@@ -402,10 +430,25 @@ function networkEdges(containers) {
   return edges;
 }
 
-// Resolves com.docker.compose.depends_on ("service:condition:restart" triples) into dependency
-// edges; fetched via a dedicated `docker ps` format since parseLabels comma-splits the whole
-// Labels blob and would truncate a multi-dependency value. Edge: source depends on target.
-function dependsOnEdges(containers, dependsOnRaw) {
+// Shared by dependsOnEdges/customDependsOnEdges/parseMountsList - a `docker ps --format` blob is
+// one id/value pair per line. Splits on the *first* tab only, so a value containing one (a mounts
+// list, a depends_on triple list) stays whole. See server/CLAUDE.md.
+function parseIdValueLines(raw) {
+  const out = [];
+  for (const line of (raw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIdx = trimmed.indexOf('\t');
+    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
+    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+    out.push({ id, value });
+  }
+  return out;
+}
+
+// Shared by dependsOnEdges/customDependsOnEdges: both resolve a depends_on entry's short service
+// name against the same project::service -> [containerId] index.
+function buildProjectServiceIndex(containers) {
   const byProjectService = new Map();
   for (const c of containers) {
     if (!c.composeProject || !c.composeService) continue;
@@ -413,15 +456,18 @@ function dependsOnEdges(containers, dependsOnRaw) {
     if (!byProjectService.has(key)) byProjectService.set(key, []);
     byProjectService.get(key).push(c.id);
   }
+  return byProjectService;
+}
+
+// Resolves com.docker.compose.depends_on ("service:condition:restart" triples) into dependency
+// edges; fetched via a dedicated `docker ps` format since parseLabels comma-splits the whole
+// Labels blob and would truncate a multi-dependency value. Edge: source depends on target.
+function dependsOnEdges(containers, dependsOnRaw) {
+  const byProjectService = buildProjectServiceIndex(containers);
   const byId = new Map(containers.map((c) => [c.id, c]));
 
   const edges = [];
-  for (const line of (dependsOnRaw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id, value } of parseIdValueLines(dependsOnRaw)) {
     if (!value) continue;
     const source = byId.get(id);
     if (!source || !source.composeProject) continue;
@@ -442,23 +488,12 @@ function dependsOnEdges(containers, dependsOnRaw) {
 // to hosts.json's `edges` array, declared on the service itself. Each entry is "target[:label]":
 // resolves to a same-project service by short name first, else a literal container name.
 function customDependsOnEdges(containers, customDependsOnRaw) {
-  const byProjectService = new Map();
-  for (const c of containers) {
-    if (!c.composeProject || !c.composeService) continue;
-    const key = `${c.composeProject}::${c.composeService}`;
-    if (!byProjectService.has(key)) byProjectService.set(key, []);
-    byProjectService.get(key).push(c.id);
-  }
+  const byProjectService = buildProjectServiceIndex(containers);
   const byName = new Map(containers.map((c) => [c.name, c.id]));
   const byId = new Map(containers.map((c) => [c.id, c]));
 
   const edges = [];
-  for (const line of (customDependsOnRaw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const id = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id, value } of parseIdValueLines(customDependsOnRaw)) {
     if (!value) continue;
     const source = byId.get(id);
     if (!source) continue;
@@ -485,12 +520,7 @@ const ANON_VOLUME_RE = /^[0-9a-f]{64}$/i;
 
 function parseMountsList(raw) {
   const byId = new Map();
-  for (const line of (raw || '').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const tabIdx = trimmed.indexOf('\t');
-    const fullId = tabIdx === -1 ? trimmed : trimmed.slice(0, tabIdx);
-    const value = tabIdx === -1 ? '' : trimmed.slice(tabIdx + 1);
+  for (const { id: fullId, value } of parseIdValueLines(raw)) {
     const id = fullId.slice(0, 12);
     const mounts = value
       .split(',')
@@ -521,6 +551,32 @@ function manualEdges(containers, declared = []) {
 const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
+// Pure half of getTopologyMeta below, split out so the field-splitting itself is unit-testable
+// without mocking child_process - see server/CLAUDE.md. `parts.slice(3).join('\t')` rather than
+// `parts[3]` keeps a literal tab inside Mounts intact instead of truncating at the first one.
+function splitCombinedTopologyPs(combinedRaw) {
+  const dependsOnLines = [];
+  const customDependsOnLines = [];
+  const mountsLines = [];
+  for (const line of (combinedRaw || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split('\t');
+    const shortId = (parts[0] || '').slice(0, 12);
+    dependsOnLines.push(`${shortId}\t${parts[1] || ''}`);
+    customDependsOnLines.push(`${shortId}\t${parts[2] || ''}`);
+    mountsLines.push(`${parts[0] || ''}\t${parts.slice(3).join('\t')}`);
+  }
+  return {
+    dependsOnRaw: dependsOnLines.join('\n'),
+    customDependsOnRaw: customDependsOnLines.join('\n'),
+    mountsRaw: mountsLines.join('\n'),
+  };
+}
+
+// One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip.
+// `--no-trunc` (needed for Mounts, which truncates like any other column) makes the id full-length
+// too; sliced back to 12 chars for the depends-on lines. See server/CLAUDE.md.
 async function getTopologyMeta(host, containers) {
   const signature = containers
     .map((c) => c.id)
@@ -528,12 +584,15 @@ async function getTopologyMeta(host, containers) {
     .join(',');
   const cached = topologyMetaCache.get(host.id);
   if (cached && cached.signature === signature && Date.now() - cached.ts < TOPOLOGY_META_TTL_MS) return cached;
-  const [dependsOnRaw, customDependsOnRaw, mountsRaw] = await Promise.all([
-    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}']).catch(() => ''),
-    run([...hostArgs(host), 'ps', '-a', '--format', '{{.ID}}\t{{.Label "opendockwatch.depends_on"}}']).catch(() => ''),
-    run([...hostArgs(host), 'ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Mounts}}']).catch(() => ''),
-  ]);
-  const meta = { ts: Date.now(), signature, dependsOnRaw, customDependsOnRaw, mountsRaw };
+  const combinedRaw = await run([
+    ...hostArgs(host),
+    'ps',
+    '-a',
+    '--no-trunc',
+    '--format',
+    '{{.ID}}\t{{.Label "com.docker.compose.depends_on"}}\t{{.Label "opendockwatch.depends_on"}}\t{{.Mounts}}',
+  ]).catch(() => '');
+  const meta = { ts: Date.now(), signature, ...splitCombinedTopologyPs(combinedRaw) };
   topologyMetaCache.set(host.id, meta);
   return meta;
 }
@@ -666,13 +725,22 @@ function streamStats(host) {
 // metricsCollector also backs off on failure rather than trusting this number alone.
 const DISK_USAGE_TIMEOUT_MS = Number(process.env.DISK_USAGE_TIMEOUT_MS) || 120_000;
 
+// A malformed/truncated line is skipped rather than thrown, same as getStats/parseStatsLine below
+// - one bad row losing the whole disk-usage read would otherwise blank the Disk panel over a
+// single line, not just the row it actually came from.
 async function getDiskUsage(host) {
   const stdout = await run([...hostArgs(host), 'system', 'df', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
-  const rows = stdout
+  const rows = [];
+  for (const line of stdout
     .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+    .map((l) => l.trim())
+    .filter(Boolean)) {
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      /* skip a malformed row rather than losing the whole read */
+    }
+  }
   return rows.map((r) => ({
     type: r.Type,
     total: r.TotalCount,
@@ -721,6 +789,7 @@ module.exports = {
   streamStats,
   getStats,
   statsRowToSample,
+  parseStatsLine,
   getTopology,
   getHostInfo,
   getDiskUsage,
@@ -739,6 +808,8 @@ module.exports = {
   dependsOnEdges,
   customDependsOnEdges,
   parseMountsList,
+  splitCombinedTopologyPs,
+  BYTE_UNIT_MULT,
   computeRate,
   computeIoRates,
   dockerCommandError,

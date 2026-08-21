@@ -1,6 +1,6 @@
 // The log pane's pure chrome logic, pulled out of LogViewer.js so it can be unit-tested: the
 // match strip's resize arithmetic, the space-to-pause predicate, and the status badge. None of it
-// touches the DOM - callers measure and pass the numbers in. See CLAUDE.md.
+// touches the DOM - callers measure and pass the numbers in. See public/CLAUDE.md.
 
 // Clamped and rounded to whole pixels. Order matters and matches what the drag always did: the
 // floor is applied first, so a window too short to satisfy both bounds yields maxHeight rather
@@ -11,7 +11,7 @@ export function clampPaneHeight(height, { minHeight, maxHeight }) {
 
 // How tall the strip may grow right now: what it already occupies, plus what the log body can give
 // up above minBodyHeight. Measured rather than declared in CSS - neither a px nor a vh cap can be
-// right for both panel modes, and the body yields to zero on its own. See CLAUDE.md.
+// right for both panel modes, and the body yields to zero on its own. See public/CLAUDE.md.
 export function maxPaneHeight({ paneHeight, bodyHeight, minBodyHeight }) {
   return paneHeight + Math.max(0, bodyHeight - minBodyHeight);
 }

@@ -35,7 +35,7 @@ function nearestNonNull(arr, fromIndex, step) {
 
 // The other half of the sync: this answers "where am I now" where closestIndexByTs answers "where
 // do I scroll to" - the last line box starting at or above scrollTop, i.e. the one at the top of
-// the viewport. -1 when nothing is rendered. `offsetAt` is lazy on purpose; see CLAUDE.md.
+// the viewport. -1 when nothing is rendered. `offsetAt` is lazy on purpose; see public/CLAUDE.md.
 export function topIndexByOffset(length, offsetAt, scrollTop) {
   if (!length) return -1;
   let lo = 0;

@@ -32,6 +32,7 @@ const {
   DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
 const db = require('./db');
+const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
@@ -55,12 +56,6 @@ const SSE_HEARTBEAT_MS = 30_000;
 // is 30s) plus the queue wait in docker.js's run(), so a request only hits this once the call
 // behind it has stopped being merely slow.
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 50_000;
-
-const HISTORY_RANGES = {
-  '1h': { sinceMs: 3_600_000, bucketMs: 15_000 },
-  '24h': { sinceMs: 86_400_000, bucketMs: 5 * 60_000 },
-  '7d': { sinceMs: 7 * 86_400_000, bucketMs: 30 * 60_000 },
-};
 
 const MAX_ROW_LIMIT = 1000;
 
@@ -105,7 +100,7 @@ function requireContainerAction(req, res, next) {
 
 // Resolves :hostId to a configured host so route handlers don't each repeat the getHost()/404
 // pair. The property is `odwHost` and must not be `host`: express defines req.host as a getter-only
-// property (the Host header), so assigning it silently no-ops and handlers get a string. See CLAUDE.md.
+// property (the Host header), so assigning it silently no-ops and handlers get a string. See server/CLAUDE.md.
 function requireHost(req, res, next) {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });
@@ -229,7 +224,7 @@ if (process.env.TRUST_PROXY === 'true') {
 
 // No helmet dependency for five fixed headers. CSP is the load-bearing one: container log output
 // reaches the DOM through v-html, and the absence of 'unsafe-inline' below is what stops a crafted
-// log line's <img onerror=…> from running. See CLAUDE.md for what each escape hatch costs.
+// log line's <img onerror=…> from running. See server/CLAUDE.md for what each escape hatch costs.
 const CSP = [
   "default-src 'self'",
   // 'unsafe-eval' is not optional: with no build step, Vue compiles every component's `template`
@@ -282,7 +277,7 @@ function slowThresholdFor(path) {
 }
 
 app.use((req, res, next) => {
-  // SSE routes are held open by design (see the connection-budget section of CLAUDE.md) - logging
+  // SSE routes are held open by design (see the connection-budget section of server/CLAUDE.md) - logging
   // one every time a log/event stream finally closes after minutes or hours would be noise, not
   // signal, and those already get their own open/close pair with heldSec.
   if (STREAMING_PATH_RE.test(req.path)) return next();
@@ -526,6 +521,26 @@ api.get('/hosts', async (req, res) => {
 // They exist as functions for exactly that reason: the bundle is the same data the separate routes
 // return, and two copies of "what a container row carries" would be free to drift apart silently.
 
+// Keyed off the collector's own statsTs, not a wall-clock timer, so this reruns once per poll
+// tick rather than once per request. See server/CLAUDE.md.
+const restartCountsCache = new Map(); // hostId -> { statsTs, counts }
+
+// Mirrors docker.js's/alerts.js's own forgetHost: without this, a host deleted (or edited, which
+// is remove+re-add under a fresh connection) leaves a stale entry keyed by an id Settings may
+// later reuse for an unrelated daemon.
+function forgetDashboardCaches(hostId) {
+  restartCountsCache.delete(hostId);
+  dashboardExtrasCache.delete(hostId);
+}
+
+function restartCountsFor(hostId, statsTs) {
+  const cached = restartCountsCache.get(hostId);
+  if (statsTs && cached && cached.statsTs === statsTs) return cached.counts;
+  const counts = db.getRestartCountsByContainer(hostId, Date.now() - 3_600_000);
+  restartCountsCache.set(hostId, { statsTs, counts });
+  return counts;
+}
+
 // Served from the collector's snapshot, same reason as statsFor: at most POLL_MS stale (the
 // browser's own poll interval anyway), avoiding a live `docker ps` per tab per 5s. fresh forces a
 // live call right after a start/stop/restart, where staleness reads as "didn't work".
@@ -533,7 +548,10 @@ async function containersFor(host, { fresh = false } = {}) {
   const snapshot = metricsCollector.getSnapshot(host.id);
   const useSnapshot = !fresh && snapshot && snapshot.reachable && snapshot.statsTs;
   const containers = useSnapshot ? snapshot.containers : await listContainers(host);
-  const restartCounts = db.getRestartCountsByContainer(host.id, Date.now() - 3_600_000);
+  // fresh means "a start/stop/restart just happened, staleness reads as didn't work" - that
+  // applies to restartCount1h too, so it bypasses the cache here the same way the container list
+  // itself bypasses the snapshot above, rather than serving a count from before the action.
+  const restartCounts = restartCountsFor(host.id, fresh ? null : snapshot && snapshot.statsTs);
   // The snapshot's container objects are the collector's own and get read on every poll - copy
   // rather than annotating them in place with a field only this response wants.
   return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
@@ -575,15 +593,34 @@ async function topologyFor(host) {
 // history/alerts routes serve ranges and limits this bundle deliberately does not.
 const DASHBOARD_ALERT_LIMIT = 100;
 
+// Same reasoning as restartCountsFor, for the bundle's other two DB-only fields. Scoped to this
+// route's own fixed args rather than folded into hostHistoryFor/db.getAlerts, whose other callers
+// use args this cache doesn't cover. See server/CLAUDE.md.
+const dashboardExtrasCache = new Map(); // hostId -> { statsTs, metricsHistory, alerts }
+
+function dashboardExtrasFor(host, statsTs) {
+  const cached = dashboardExtrasCache.get(host.id);
+  if (statsTs && cached && cached.statsTs === statsTs) return cached;
+  const extras = {
+    statsTs,
+    metricsHistory: hostHistoryFor(host.id, '1h'),
+    alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+  };
+  dashboardExtrasCache.set(host.id, extras);
+  return extras;
+}
+
 api.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {
   const host = req.odwHost;
   try {
     const [containers, stats] = await Promise.all([containersFor(host), statsFor(host)]);
+    const snapshot = metricsCollector.getSnapshot(host.id);
+    const extras = dashboardExtrasFor(host, snapshot && snapshot.statsTs);
     res.json({
       containers,
       stats,
-      metricsHistory: hostHistoryFor(host.id, '1h'),
-      alerts: db.getAlerts(host.id, { limit: DASHBOARD_ALERT_LIMIT }),
+      metricsHistory: extras.metricsHistory,
+      alerts: extras.alerts,
     });
   } catch (err) {
     dockerError(res, err);
@@ -718,7 +755,7 @@ api.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => {
 
 // Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
 // the Activity tab is open, so "which streams are actually open right now" is worth being able to
-// reconstruct from the log when the UI goes unresponsive. See CLAUDE.md's connection budget.
+// reconstruct from the log when the UI goes unresponsive. See server/CLAUDE.md's connection budget.
 api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   const unsubscribe = eventWatcher.broadcaster.subscribe(res, req.params.hostId);
   const openedAt = Date.now();
@@ -735,7 +772,7 @@ api.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
 
 // Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column carries
 // raw docker/ssh stderr. Same call as masking Config.Env for a viewer - read-only does not mean
-// "may read everything", and nothing in public/js reads this route at all. See CLAUDE.md.
+// "may read everything", and nothing in public/js reads this route at all. See server/CLAUDE.md.
 api.get('/audit', requireAdmin, (req, res) => {
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
@@ -746,10 +783,15 @@ api.get('/alerts', (req, res) => {
   res.json(db.getAlerts(req.query.hostId || null, { limit }));
 });
 
+// Each of these mutates rows dashboardExtrasCache already answered from - must invalidate it, or
+// a clear/ack is invisible to /dashboard until the next statsTs tick. See server/CLAUDE.md.
 api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });
+  // The id alone doesn't say which host's cache to invalidate - looked up before acking.
+  const hostId = db.getAlertHostId(id);
   db.ackAlert(id);
+  if (hostId) forgetDashboardCaches(hostId);
   res.json({ ok: true });
 });
 
@@ -757,12 +799,14 @@ api.post('/alerts/:id/ack', requireAdmin, (req, res) => {
 // count of 0, which reads as "there was nothing to acknowledge" when the truth is "no such host".
 api.post('/alerts/ack-all', requireAdmin, requireHostQuery, (req, res) => {
   const count = db.ackAllAlerts(req.query.hostId);
+  forgetDashboardCaches(req.query.hostId);
   res.json({ ok: true, count });
 });
 
 api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
   const hostId = req.query.hostId;
   const count = db.clearAlerts(hostId);
+  forgetDashboardCaches(hostId);
   auditClear(req, hostId, 'clear_alerts');
   logger.info('alerts.clear', { host: hostId, user: req.session.username, count });
   res.json({ ok: true, count });
@@ -951,6 +995,7 @@ api.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   // Reconnect with the new config rather than trying to figure out exactly what changed.
   metricsCollector.removeHost(updatedHost.id);
   eventWatcher.removeHost(updatedHost.id);
+  forgetDashboardCaches(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -964,6 +1009,7 @@ api.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   saveHosts(updated);
   metricsCollector.removeHost(req.params.id);
   eventWatcher.removeHost(req.params.id);
+  forgetDashboardCaches(req.params.id);
   logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
   res.json(updated);
 });

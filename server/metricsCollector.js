@@ -203,7 +203,7 @@ async function pollHost(host) {
     let memSum = 0;
     // Collected first, then written in one transaction and only then alerted on. Inserting per
     // container cost a commit each; alerting per container mid-loop would have put
-    // its own db writes - and fire()'s async webhook - inside that transaction. See CLAUDE.md.
+    // its own db writes - and fire()'s async webhook - inside that transaction. See server/CLAUDE.md.
     const samples = [];
     const alertSamples = [];
     for (const c of containers) {
@@ -280,13 +280,16 @@ async function pollHost(host) {
     );
 
     if (hostSample) {
-      alerts.handleHostSample({
-        hostId: host.id,
-        hostName: host.name || host.id,
-        cpuPercent: hostSample.cpuPercent,
-        memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
-        ts,
-      });
+      alerts.handleHostSample(
+        {
+          hostId: host.id,
+          hostName: host.name || host.id,
+          cpuPercent: hostSample.cpuPercent,
+          memPercent: hostInfo.memTotalBytes ? (memSum / hostInfo.memTotalBytes) * 100 : 0,
+          ts,
+        },
+        alertCtx
+      );
     }
   } catch (err) {
     logger.error('metrics.poll.failed', { host: host.id, error: err.stderr || err.message });

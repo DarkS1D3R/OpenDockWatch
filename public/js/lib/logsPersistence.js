@@ -2,7 +2,7 @@ import { MAX_OPEN_LOG_PANES } from '../constants.js';
 
 // Which containers the Logs tab had open, per host, so leaving the tab stops losing the selection.
 // The streams are deliberately not preserved, only the choice. sessionStorage rather than the
-// localStorage graph/persistence.js uses next door, and nothing server-side - see CLAUDE.md.
+// localStorage graph/persistence.js uses next door, and nothing server-side - see public/CLAUDE.md.
 const KEY_PREFIX = 'odw:logs:panes:';
 
 const VIEW_MODES = new Set(['single', 'multi']);
@@ -47,7 +47,7 @@ export function saveOpenPanes(hostId, { viewMode, openIds, disabledSyncIds, main
 
 // Called on logout: sessionStorage is scoped to the tab, not the account, so "per session" has to
 // mean per sign-in. Keys are collected before removal - removing while walking by index skips
-// entries, since each removal shifts the rest down. See CLAUDE.md.
+// entries, since each removal shifts the rest down. See public/CLAUDE.md.
 export function clearAllOpenPanes() {
   try {
     const keys = [];

@@ -10,6 +10,7 @@ const {
   dependsOnEdges,
   customDependsOnEdges,
   parseMountsList,
+  splitCombinedTopologyPs,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
@@ -112,6 +113,22 @@ test('computeIoRates', async (t) => {
   await t.test('all rates are null with no previous sample', () => {
     const current = { netRxBytes: 2000, netTxBytes: 500, blockReadBytes: 4000, blockWriteBytes: 1000 };
     assert.deepEqual(computeIoRates(current, null, 10), {
+      netRxRate: null,
+      netTxRate: null,
+      blockReadRate: null,
+      blockWriteRate: null,
+    });
+  });
+
+  await t.test('a null/undefined current is also null rather than throwing', () => {
+    const prev = { netRxBytes: 1000, netTxBytes: 0, blockReadBytes: 3000, blockWriteBytes: 500 };
+    assert.deepEqual(computeIoRates(null, prev, 10), {
+      netRxRate: null,
+      netTxRate: null,
+      blockReadRate: null,
+      blockWriteRate: null,
+    });
+    assert.deepEqual(computeIoRates(undefined, undefined, 10), {
       netRxRate: null,
       netTxRate: null,
       blockReadRate: null,
@@ -370,6 +387,62 @@ test('parseMountsList', async (t) => {
   });
 });
 
+// getTopologyMeta's combined-call parsing: one `docker ps --no-trunc` with 4 tab-separated fields
+// (id, depends_on label, custom depends_on label, mounts) split back into the three raw blobs
+// dependsOnEdges/customDependsOnEdges/parseMountsList each expect. Full-vs-12-char id asymmetry
+// and the tab-preserving Mounts split are both untested edges the review flagged after the switch
+// from three separate `docker ps` calls to this one.
+test('splitCombinedTopologyPs', async (t) => {
+  await t.test('splits one combined line into its three raw fields', () => {
+    const fullId = 'a'.repeat(64);
+    const raw = `${fullId}\tdb:service_healthy:false\tcache:reads\t/data,pgdata`;
+    const { dependsOnRaw, customDependsOnRaw, mountsRaw } = splitCombinedTopologyPs(raw);
+    assert.equal(dependsOnRaw, `${fullId.slice(0, 12)}\tdb:service_healthy:false`);
+    assert.equal(customDependsOnRaw, `${fullId.slice(0, 12)}\tcache:reads`);
+    assert.equal(mountsRaw, `${fullId}\t/data,pgdata`);
+  });
+
+  await t.test('the depends-on lines get the id sliced to 12 chars, the mounts line keeps it full', () => {
+    // --no-trunc (needed for Mounts, which docker's table format truncates like any other column)
+    // pulls in a full-length id for every field, not just Mounts - dependsOnEdges/
+    // customDependsOnEdges expect the 12-char id listContainers uses, parseMountsList slices its
+    // own line itself, so only the two depends-on lines should come out pre-sliced here.
+    const fullId = 'b'.repeat(64);
+    const { dependsOnRaw, customDependsOnRaw, mountsRaw } = splitCombinedTopologyPs(`${fullId}\tx\ty\tz`);
+    assert.equal(dependsOnRaw.split('\t')[0], fullId.slice(0, 12));
+    assert.equal(customDependsOnRaw.split('\t')[0], fullId.slice(0, 12));
+    assert.equal(mountsRaw.split('\t')[0], fullId, 'mountsRaw should keep the full id - parseMountsList slices it itself');
+  });
+
+  await t.test('a literal tab inside the Mounts field stays intact rather than truncating at the first one', () => {
+    // parts.slice(3).join('\t') is what this pins - a naive parts[3] would drop everything after
+    // the first extra tab, which a mount source could in principle contain.
+    const raw = 'abcdef123456\t\t\t/data\tpgdata';
+    const { mountsRaw } = splitCombinedTopologyPs(raw);
+    assert.equal(mountsRaw, 'abcdef123456\t/data\tpgdata');
+  });
+
+  await t.test('handles multiple containers, one per line', () => {
+    const raw = ['a1\tsvc:condition\t\t/data', 'a2\t\tother:label\tpgdata'].join('\n');
+    const { dependsOnRaw, customDependsOnRaw, mountsRaw } = splitCombinedTopologyPs(raw);
+    assert.equal(dependsOnRaw, 'a1\tsvc:condition\na2\t');
+    assert.equal(customDependsOnRaw, 'a1\t\na2\tother:label');
+    assert.equal(mountsRaw, 'a1\t/data\na2\tpgdata');
+  });
+
+  await t.test('blank lines and blank input produce no entries', () => {
+    assert.deepEqual(splitCombinedTopologyPs('\n\n'), { dependsOnRaw: '', customDependsOnRaw: '', mountsRaw: '' });
+    assert.deepEqual(splitCombinedTopologyPs(''), { dependsOnRaw: '', customDependsOnRaw: '', mountsRaw: '' });
+  });
+
+  await t.test('a container with no labels or mounts produces an empty-valued line, not a dropped one', () => {
+    const { dependsOnRaw, customDependsOnRaw, mountsRaw } = splitCombinedTopologyPs('abcdef123456\t\t\t');
+    assert.equal(dependsOnRaw, 'abcdef123456\t');
+    assert.equal(customDependsOnRaw, 'abcdef123456\t');
+    assert.equal(mountsRaw, 'abcdef123456\t');
+  });
+});
+
 test('parseDiskUsageImages', async (t) => {
   await t.test('maps docker system df -v fields to a clean shape', () => {
     const images = parseDiskUsageImages({
@@ -518,5 +591,10 @@ test('containerCounts', async (t) => {
   // `created` and `paused` are not running, and the naive `!== 'exited'` gets both wrong.
   await t.test('only `running` counts as running', () => {
     assert.equal(containerCounts([{ state: 'created' }, { state: 'paused' }, { state: 'restarting' }]).containersRunning, 0);
+  });
+
+  await t.test('null/undefined counts as zero rather than throwing', () => {
+    assert.deepEqual(containerCounts(null), { containers: 0, containersRunning: 0 });
+    assert.deepEqual(containerCounts(undefined), { containers: 0, containersRunning: 0 });
   });
 });

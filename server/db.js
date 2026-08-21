@@ -105,7 +105,7 @@ db.exec(`
   );
 
   -- Per-container/name/compose-project alert overrides, evaluated in sort_order as an ordered,
-  -- first-match-wins list by alerts.js's resolveContainerConfig - see CLAUDE.md. host_id NULL
+  -- first-match-wins list by alerts.js's resolveContainerConfig - see server/CLAUDE.md. host_id NULL
   -- means "all hosts"; cpu/mem/sustain NULL means "inherit the global threshold for that field".
   -- muted_rules is a JSON array (container_crashed/crash_loop/unhealthy) rather than one column
   -- per rule so a future event rule doesn't need an ALTER TABLE.
@@ -125,7 +125,7 @@ db.exec(`
 
 // host_metrics gained these three columns after the table already existed for upgrading installs
 // - CREATE TABLE IF NOT EXISTS only covers a fresh database, so ALTER TABLE backfills them onto
-// one that predates this, swallowing "duplicate column" once already applied (see CLAUDE.md).
+// one that predates this, swallowing "duplicate column" once already applied (see server/CLAUDE.md).
 for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER', 'system_mem_total_bytes INTEGER']) {
   try {
     db.exec(`ALTER TABLE host_metrics ADD COLUMN ${column}`);
@@ -146,7 +146,7 @@ for (const column of ['webhook_delivered_at INTEGER', 'webhook_attempts INTEGER 
 
 // And events' own Clear marker. Its partial index has to be created down here rather than in the
 // schema block: a CREATE INDEX naming a column the ALTER above has just added would throw on an
-// upgrading database, where the block runs against the old table. See CLAUDE.md.
+// upgrading database, where the block runs against the old table. See server/CLAUDE.md.
 try {
   db.exec(`ALTER TABLE events ADD COLUMN cleared_at INTEGER`);
 } catch {
@@ -178,6 +178,9 @@ const stmts = {
     VALUES (@ts, @hostId, @containerId, @containerName, @rule, @severity, @message, 0)
   `),
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ? AND cleared_at IS NULL`),
+  // Used by index.js's ack route to know which host's dashboard cache to invalidate. Filtered same
+  // as ackAlert's own WHERE, so "not found" needs no CLEARED_AT_EXEMPT entry. See server/CLAUDE.md.
+  getAlertHostId: db.prepare(`SELECT host_id AS hostId FROM alerts WHERE id = ? AND cleared_at IS NULL`),
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
   markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
@@ -198,7 +201,7 @@ const stmts = {
   deleteBreachStart: db.prepare(`DELETE FROM alert_breaches WHERE key = ?`),
   getAllBreaches: db.prepare(`SELECT key, start_ts AS startTs FROM alert_breaches`),
   // The one alerts query that deliberately ignores cleared_at: this is alerts.js's cooldown, and
-  // clearing the Activity tab must not re-arm a rule that is still inside it. See CLAUDE.md.
+  // clearing the Activity tab must not re-arm a rule that is still inside it. See server/CLAUDE.md.
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
     WHERE host_id = ? AND container_id IS ? AND rule = ?
@@ -247,7 +250,7 @@ const stmts = {
   countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   // Buckets into `bucketMs`-wide windows and averages numeric columns; the four I/O columns use
   // MAX not AVG since they're cumulative counters - metricsHistory.js's withIoRates turns
-  // consecutive bucket totals into displayed rates. See CLAUDE.md for the restart-edge-case note.
+  // consecutive bucket totals into displayed rates. See server/CLAUDE.md for the restart-edge-case note.
   containerMetricsHistory: db.prepare(`
     SELECT
       ${BUCKET_EXPR} AS bucket,
@@ -305,7 +308,7 @@ const stmts = {
 
 // One transaction for the whole poll, not one commit per row - and that now includes the host
 // row, which used to be a loose .run() right after this one committed. A commit is not an fsync
-// here (WAL runs at synchronous=NORMAL) but it is still event-loop time. See CLAUDE.md.
+// here (WAL runs at synchronous=NORMAL) but it is still event-loop time. See server/CLAUDE.md.
 const insertMetricsTx = db.transaction((samples, hostSample) => {
   for (const sample of samples) stmts.insertContainerMetric.run(sample);
   if (hostSample) stmts.insertHostMetric.run(hostSample);
@@ -383,6 +386,11 @@ function ackAlert(id) {
   stmts.ackAlert.run(id);
 }
 
+function getAlertHostId(id) {
+  const row = stmts.getAlertHostId.get(id);
+  return row ? row.hostId : null;
+}
+
 function ackAllAlerts(hostId) {
   return stmts.ackAllAlerts.run(hostId).changes;
 }
@@ -442,7 +450,7 @@ function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
 
 // Soft, like clearAlerts below: the row stays for countRestartsSince/getRestartCountsByContainer,
 // which are the crash_loop rule and the List view's restartCount1h, and only getEvents filters it
-// out. Distinct from pruneEvents above, which is the age-based retention sweep. See CLAUDE.md.
+// out. Distinct from pruneEvents above, which is the age-based retention sweep. See server/CLAUDE.md.
 function clearEvents(hostId) {
   return stmts.clearEventsByHost.run(Date.now(), hostId).changes;
 }
@@ -457,7 +465,7 @@ function getAlerts(hostId, { limit = 200 } = {}) {
 
 // Soft, unlike deleteEvents: the row stays so lastAlertFire can still see it, and every other
 // alerts query filters it out - clearing the tab must not re-arm alerts.js's cooldown and re-fire
-// a still-breaching rule (with its webhook) on the next poll. See CLAUDE.md. hostId is required.
+// a still-breaching rule (with its webhook) on the next poll. See server/CLAUDE.md. hostId is required.
 function clearAlerts(hostId) {
   return stmts.clearAlertsByHost.run(Date.now(), hostId).changes;
 }
@@ -593,6 +601,7 @@ module.exports = {
   updateAuditLogResult,
   insertAlert,
   ackAlert,
+  getAlertHostId,
   ackAllAlerts,
   markWebhookDelivered,
   markWebhookAttemptFailed,

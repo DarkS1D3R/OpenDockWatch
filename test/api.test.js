@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 // public/js/api.js is browser code, but it touches the DOM in exactly one place - apiFetch's 401
 // redirect - so a two-property window stand-in is the whole shim it needs. Set before the import
-// so nothing can read a missing global at module scope. See CLAUDE.md.
+// so nothing can read a missing global at module scope. See public/CLAUDE.md.
 const win = { location: { href: '' } };
 globalThis.window = win;
 

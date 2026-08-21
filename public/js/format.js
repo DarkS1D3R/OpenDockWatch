@@ -69,7 +69,9 @@ export function iconFor(image, composeService) {
   return { text: initial, bg: ACCENT };
 }
 
-const MEM_UNIT_BYTES = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
+// Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by
+// test/sharedConstants.test.js rather than by hand. Exported so that test can reach it.
+export const MEM_UNIT_BYTES = { b: 1, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3 };
 
 export function parseMemUsedBytes(memUsageStr) {
   if (!memUsageStr) return 0;
@@ -280,33 +282,57 @@ export function parseLineTsMs(line) {
   return m ? Date.parse(m[1] + 'Z') : null;
 }
 
-// Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps
-// case-insensitive `filterText` matches in <mark> for v-html. isRegex compiles filterText as a
-// regex instead of literal; an invalid pattern falls back to no highlighting.
-export function highlightLine(line, filterText, isRegex = false) {
+// Split out of highlightLine so a caller rendering many lines against the same filter (selectLines,
+// once per matching line) can compile the pattern once instead of once per line - constructing a
+// RegExp isn't free, and a busy pane can have hundreds of matching lines per render.
+export function buildLineMatcher(filterText, isRegex = false) {
+  if (!filterText) return null;
+  if (isRegex) {
+    try {
+      return new RegExp(filterText, 'gi');
+    } catch {
+      return null;
+    }
+  }
+  return new RegExp(escapeRegExp(filterText), 'gi');
+}
+
+// Matches against the *raw* segment text and escapes each piece on the way out, rather than
+// escaping first and matching the raw filter against the escaped string - which let a match land
+// inside an escaped entity, or a search for "<"/"&" themselves highlight nothing. See public/CLAUDE.md.
+function escapeAndHighlight(text, matcher) {
+  if (!matcher) return escapeHtml(text);
+  matcher.lastIndex = 0;
+  let html = '';
+  let lastIndex = 0;
+  let match;
+  while ((match = matcher.exec(text))) {
+    // A zero-width regex match (e.g. `x*`) is skipped rather than wrapped, and lastIndex advanced
+    // by one to guarantee progress - same as native String.replace, without an empty <mark> per char.
+    if (match[0].length === 0) {
+      matcher.lastIndex += 1;
+      continue;
+    }
+    html += escapeHtml(text.slice(lastIndex, match.index));
+    html += `<mark class="log-highlight">${escapeHtml(match[0])}</mark>`;
+    lastIndex = match.index + match[0].length;
+  }
+  html += escapeHtml(text.slice(lastIndex));
+  return html;
+}
+
+// Escapes the line for safe innerHTML, renders ANSI colors as <span>s, and wraps case-insensitive
+// `filterText` matches in <mark> for v-html - or, given a pre-built `matcher`, uses that as-is
+// instead (see buildLineMatcher). An invalid regex pattern falls back to no highlighting.
+export function highlightLine(line, filterText, isRegex = false, matcher = undefined) {
   const { ts, rest } = splitDockerTimestamp(line);
   const tsHtml = ts ? `<span class="log-ts">${ts}</span>` : '';
 
-  let matcher = null;
-  if (filterText) {
-    if (isRegex) {
-      try {
-        matcher = new RegExp(filterText, 'gi');
-      } catch {
-        matcher = null;
-      }
-    } else {
-      matcher = new RegExp(escapeRegExp(filterText), 'gi');
-    }
-  }
+  const resolvedMatcher = matcher !== undefined ? matcher : buildLineMatcher(filterText, isRegex);
 
   const bodyHtml = parseAnsiSegments(rest)
     .map((seg) => {
-      let html = escapeHtml(seg.text);
-      if (matcher) {
-        matcher.lastIndex = 0;
-        html = html.replace(matcher, (m) => (m ? `<mark class="log-highlight">${m}</mark>` : m));
-      }
+      const html = escapeAndHighlight(seg.text, resolvedMatcher);
       const style = [seg.color ? `color:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
       return style ? `<span style="${style}">${html}</span>` : html;
     })

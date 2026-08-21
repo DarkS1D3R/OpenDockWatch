@@ -6,7 +6,7 @@ import { createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, ex
 
 // The Flow view: the cytoscape instance, graph/tree mode switching, edge/state filters,
 // fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show like
-// ContainerList. See CLAUDE.md for the pillSelection split and the root-owned fullscreen v-model.
+// ContainerList. See public/CLAUDE.md for the pillSelection split and the root-owned fullscreen v-model.
 export default {
   name: 'FlowView',
   props: {

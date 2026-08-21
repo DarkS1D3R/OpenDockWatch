@@ -1,4 +1,4 @@
-import { healthColor } from './format.js';
+import { healthColor, escapeHtml } from './format.js';
 import { containerFullHeight, clampPct, CONTAINER_STATE_CLASSES } from './graph/elements.js';
 import { CY_STYLE, CPU_COLOR, MEM_COLOR } from './graph/style.js';
 import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout.js';
@@ -19,7 +19,7 @@ export function updateGraph(cy, elements, hostId) {
 
   // cytoscape-expand-collapse physically removes a collapsed group's children from the graph, so
   // this diff must never add them back in or it'd corrupt the plugin's bookkeeping and silently
-  // un-collapse the group. Skipped entirely while hidden; afterexpand re-syncs them. See CLAUDE.md.
+  // un-collapse the group. Skipped entirely while hidden; afterexpand re-syncs them. See public/CLAUDE.md.
   const collapsedIds = new Set(cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()));
   const hiddenIds = new Set();
   if (collapsedIds.size) {
@@ -77,20 +77,29 @@ export function updateGraph(cy, elements, hostId) {
 function traverseDependsOn(cy, startId, followField) {
   const fromField = followField === 'target' ? 'source' : 'target';
   const edges = cy.edges('.edge-depends-on');
+  // Adjacency built once up front rather than rescanning every depends-on edge per dequeued node -
+  // the latter is O(V·E), which on a large compose graph with a deep dependency chain multiplies
+  // out fast; this is O(V+E), same as any other BFS.
+  const byFrom = new Map(); // fromId -> [{ edgeId, nextId }]
+  edges.forEach((edge) => {
+    const from = edge.data(fromField);
+    const entry = { edgeId: edge.id(), nextId: edge.data(followField) };
+    if (byFrom.has(from)) byFrom.get(from).push(entry);
+    else byFrom.set(from, [entry]);
+  });
+
   const nodeIds = new Set();
   const edgeIds = new Set();
   const queue = [startId];
   while (queue.length) {
     const id = queue.shift();
-    edges.forEach((edge) => {
-      if (edge.data(fromField) !== id) return;
-      const nextId = edge.data(followField);
-      edgeIds.add(edge.id());
+    for (const { edgeId, nextId } of byFrom.get(id) || []) {
+      edgeIds.add(edgeId);
       if (nextId !== startId && !nodeIds.has(nextId)) {
         nodeIds.add(nextId);
         queue.push(nextId);
       }
-    });
+    }
   }
   return { nodeIds, edgeIds };
 }
@@ -128,7 +137,10 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
       upstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-upstream'));
       downstream.edgeIds.forEach((id) => cy.$id(id).addClass('blast-downstream'));
 
-      const transitive = [...upstream.nodeIds, ...downstream.nodeIds].reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+      // A single filter() pass over cy.nodes() rather than reduce()-ing N individual cy.$id()
+      // unions together - the latter is O(N²), since each union re-merges the whole collection so far.
+      const transitiveIds = new Set([...upstream.nodeIds, ...downstream.nodeIds]);
+      const transitive = cy.nodes().filter((n) => transitiveIds.has(n.id()));
       const keep = node.closedNeighborhood().union(transitive);
       cy.nodes().not(keep).not('.group').addClass('faded');
       cy.edges().forEach((e) => {
@@ -149,7 +161,7 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
 
 // cy.png() only rasterizes cytoscape's own <canvas>, not the node-html-label plugin's DOM
 // overlay that renders everything inside a node box. html2canvas screenshots the real on-screen
-// DOM instead, canvas included. See CLAUDE.md.
+// DOM instead, canvas included. See public/CLAUDE.md.
 const EXPORT_SCALE = 2;
 
 export async function exportPng(cy) {
@@ -165,7 +177,7 @@ export async function exportPng(cy) {
 
   // html2canvas just copies cytoscape's existing (CSS-pixel-resolution) canvas bitmap, so asking
   // for a higher `scale` merely stretches an already-low-res source. Instead, render into a
-  // container EXPORT_SCALE times larger for a proportionally bigger real backing store - see CLAUDE.md.
+  // container EXPORT_SCALE times larger for a proportionally bigger real backing store - see public/CLAUDE.md.
   const rect = container.getBoundingClientRect();
   container.style.width = `${rect.width * EXPORT_SCALE}px`;
   container.style.height = `${rect.height * EXPORT_SCALE}px`;
@@ -194,6 +206,81 @@ export async function exportPng(cy) {
     cy.resize();
     cy.viewport(savedViewport);
   }
+}
+
+// The two nodeHtmlLabel templates below build raw HTML (a real DOM overlay, not canvas), unlike
+// every other node kind's `label: 'data(label)'` in graph/style.js - so name/status/label are
+// escaped before going in. Defence-in-depth, not a live fix (CSP blocks execution). See public/CLAUDE.md.
+export function containerNodeTpl(data) {
+  const name = escapeHtml(data.name);
+  const status = escapeHtml(data.status);
+  if (data.compact) {
+    return `
+          <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            <span class="cy-node-emoji">${data.emoji}</span>
+            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-name">${name}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+  }
+  return `
+          <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
+            <span class="cy-node-emoji">${data.emoji}</span>
+            <span class="cy-node-status">${status}</span>
+            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-name">${name}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">NET</span>
+                <span class="cy-node-metric-value">${data.netIO}</span>
+                <span class="cy-node-metric-label">DISK</span>
+                <span class="cy-node-metric-value">${data.blockIO}</span>
+              </div>
+            </div>
+            ${data.ports ? `<span class="cy-node-port-badge">${data.ports}</span>` : ''}
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+}
+
+export function collapsedGroupTpl(data) {
+  const label = escapeHtml(data.label);
+  if (data.compact) {
+    return `
+          <div class="cy-node-box cy-node-group-box cy-node-box-compact${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${label}</span>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
+  }
+  return `
+          <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
+            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
+            <span class="cy-node-name">${label}</span>
+            <span class="cy-node-group-count">${data.count} container${data.count === 1 ? '' : 's'}</span>
+            <div class="cy-node-metrics">
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">CPU</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
+              </div>
+              <div class="cy-node-metric-row">
+                <span class="cy-node-metric-label">RAM</span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
+              </div>
+            </div>
+            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
+          </div>
+        `;
 }
 
 export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, mode = 'graph') {
@@ -231,7 +318,10 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
 
     const savedCollapsed = loadCollapsedGroups(hostId);
     if (savedCollapsed.length) {
-      const toCollapse = savedCollapsed.reduce((coll, id) => coll.union(cy.$id(id)), cy.collection());
+      // Same O(n²) reduce()+union() trap as applyFading's transitive set above - one filter() pass
+      // over cy.nodes() instead of N single-element unions.
+      const savedIds = new Set(savedCollapsed);
+      const toCollapse = cy.nodes().filter((n) => savedIds.has(n.id()));
       if (toCollapse.length) expandCollapseApi.collapse(toCollapse, { animate: false, layoutBy: null });
     }
 
@@ -309,42 +399,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) =>
-          data.compact
-            ? `
-          <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
-            <span class="cy-node-emoji">${data.emoji}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
-            <span class="cy-node-name">${data.name}</span>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `
-            : `
-          <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
-            <span class="cy-node-emoji">${data.emoji}</span>
-            <span class="cy-node-status">${data.status}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
-            <span class="cy-node-name">${data.name}</span>
-            <div class="cy-node-metrics">
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">NET</span>
-                <span class="cy-node-metric-value">${data.netIO}</span>
-                <span class="cy-node-metric-label">DISK</span>
-                <span class="cy-node-metric-value">${data.blockIO}</span>
-              </div>
-            </div>
-            ${data.ports ? `<span class="cy-node-port-badge">${data.ports}</span>` : ''}
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `,
+        tpl: containerNodeTpl,
       },
       {
         query: 'node.cy-expand-collapse-collapsed-node',
@@ -352,33 +407,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
         valign: 'center',
         halignBox: 'center',
         valignBox: 'center',
-        tpl: (data) =>
-          data.compact
-            ? `
-          <div class="cy-node-box cy-node-group-box cy-node-box-compact${data.faded ? ' faded' : ''}">
-            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
-            <span class="cy-node-name">${data.label}</span>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `
-            : `
-          <div class="cy-node-box cy-node-group-box${data.faded ? ' faded' : ''}">
-            ${data.health ? `<span class="cy-node-group-health" style="background:${healthColor(data.health)}"></span>` : ''}
-            <span class="cy-node-name">${data.label}</span>
-            <span class="cy-node-group-count">${data.count} container${data.count === 1 ? '' : 's'}</span>
-            <div class="cy-node-metrics">
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
-              </div>
-              <div class="cy-node-metric-row">
-                <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
-              </div>
-            </div>
-            ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
-          </div>
-        `,
+        tpl: collapsedGroupTpl,
       },
     ]);
   }

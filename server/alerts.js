@@ -119,8 +119,10 @@ const THRESHOLD_KEYS = {
   diskThresholdGb: { settingKey: 'alertDiskThresholdGb', envVar: 'ALERT_DISK_THRESHOLD_GB' },
 };
 
-function numSetting(settingKey, envVar, defaultValue = 0) {
-  const dbVal = db.getSetting(settingKey);
+// Takes the already-read setting value rather than reading it itself - getThresholdConfig needs
+// the raw value anyway to know whether it's overridden, and re-reading it here doubled the sqlite
+// executions (8 for 4 fields, 4 needed) on every alert-checking poll.
+function numFromSetting(dbVal, envVar, defaultValue = 0) {
   if (dbVal !== null) return dbVal === '' ? defaultValue : Number(dbVal);
   const envVal = process.env[envVar];
   return envVal !== undefined && envVal !== '' ? Number(envVal) : defaultValue;
@@ -129,8 +131,9 @@ function numSetting(settingKey, envVar, defaultValue = 0) {
 function getThresholdConfig() {
   const config = { overridden: false };
   for (const [field, { settingKey, envVar, default: def }] of Object.entries(THRESHOLD_KEYS)) {
-    if (db.getSetting(settingKey) !== null) config.overridden = true;
-    config[field] = numSetting(settingKey, envVar, def);
+    const dbVal = db.getSetting(settingKey);
+    if (dbVal !== null) config.overridden = true;
+    config[field] = numFromSetting(dbVal, envVar, def);
   }
   return config;
 }
@@ -175,7 +178,7 @@ function alertContext() {
 // The effective per-container config: the global threshold config, with any fields the matched
 // rule sets overriding it (a rule's own null field still inherits the global value), plus which
 // event rules are muted for this container. No matching rule (the common case) returns the global
-// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see CLAUDE.md.
+// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see server/CLAUDE.md.
 function resolveContainerConfig({ hostId, containerName, composeProject }, ctx) {
   const { global, rules } = ctx || alertContext();
   const rule = findMatchingRule(rules, hostId, containerName, composeProject);
@@ -206,7 +209,7 @@ function mutedByRule(eventRule, { hostId, containerId, containerName, composePro
 
 // Consecutive-breach tracking keyed "hostId:containerId:rule": fires once a breach is sustained
 // for sustainMs (a single over-threshold sample is noise), resets on dipping under threshold
-// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see CLAUDE.md.
+// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see server/CLAUDE.md.
 const breachStarts = new Map();
 
 // Restores breachStarts from before the last restart - called once at boot (index.js), not at
@@ -269,7 +272,7 @@ function forgetHost(hostId) {
 
 // A thrown message is not ours: undici says "fetch failed" today, but that wording is no contract
 // and other runtimes name the URL in it. Both URL forms and the raw one's path embed the token, so
-// each is swapped for its scheme before the message can be logged or answered. See CLAUDE.md.
+// each is swapped for its scheme before the message can be logged or answered. See server/CLAUDE.md.
 function redactWebhookUrls(message, ...urls) {
   let out = String(message == null ? '' : message);
   const present = urls.filter(Boolean);
@@ -519,7 +522,7 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
 // reads 400%, matching the UI); memPerc is MemPerc against the container's own limit.
 function handleSample({ hostId, containerId, containerName, composeProject, cpuPerc, memPerc, ts, alertsDisabled }, ctx) {
   // Unconditional, before any rules-table read - zero DB cost for a container opted out via the
-  // label, same as today. See CLAUDE.md for why this stays separate from container_alert_rules.
+  // label, same as today. See server/CLAUDE.md for why this stays separate from container_alert_rules.
   if (alertsDisabled) return;
   const cfg = resolveContainerConfig({ hostId, containerName, composeProject }, ctx);
   const sustainMs = cfg.sustainMinutes * 60_000;
@@ -554,9 +557,9 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
 
 // Called once per host per stats poll. cpuPercent is host-normalized (cpuSum /
 // ncpu, so 100% means all cores busy); memPercent is sum-of-container-usage
-// over host total memory.
-function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
-  const cfg = getThresholdConfig();
+// over host total memory. Takes the same ctx as handleSample - see server/CLAUDE.md.
+function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx) {
+  const cfg = (ctx && ctx.global) || getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;
 
   // Same reasoning as handleSample above: fold the enabled-check into "breached" itself so a
@@ -589,8 +592,8 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }) {
 // Called once per host per disk-usage poll (~60s). `docker system df` reports Docker's own
 // footprint, not host filesystem free space (Docker doesn't expose that) - so this is a "Docker
 // is using more than X GB" reminder, not a disk-full alert. No sustain window; cooldown suffices.
-function handleDiskUsage({ hostId, hostName, rows }) {
-  const cfg = getThresholdConfig();
+function handleDiskUsage({ hostId, hostName, rows }, ctx) {
+  const cfg = (ctx && ctx.global) || getThresholdConfig();
   if (!(cfg.diskThresholdGb > 0)) return;
 
   const totalGb = (rows || []).reduce((sum, r) => sum + parseByteString(r.size), 0) / 1024 ** 3;

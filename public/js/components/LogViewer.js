@@ -14,7 +14,7 @@ const MIN_LOG_BODY_PX = 120;
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
-// controls differ by mode - see CLAUDE.md for the full embedded/multiPane/sync design).
+// controls differ by mode - see public/CLAUDE.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
   // Registered locally, the same way SettingsPanel registers its five tabs: root registration in
@@ -114,15 +114,11 @@ export default {
       });
     },
     // The actual hit list, independent of revealAll - the count/prev/next controls step through
-    // matches only, even while filteredLines is showing every line for context.
+    // matches only, even while filteredLines is showing every line for context. Derived from
+    // filteredLines rather than a second selectLines pass - see public/CLAUDE.md.
     matchLines() {
       if (!this.searchActive) return [];
-      return selectLines(this.lines, {
-        levels: this.levels,
-        filterText: this.filter.trim(),
-        regexMode: this.regexMode,
-        testRegex: this.testRegex,
-      });
+      return this.filteredLines.filter((l) => l.isMatch);
     },
     searchActive() {
       return !!this.filter.trim() && !this.regexError;
@@ -308,7 +304,7 @@ export default {
     },
     // Every scroll this pane makes itself goes through here, because onScroll broadcasts to
     // siblings and a self-made move must not. Cleared a frame later, once the native scroll event
-    // it caused has fired and been ignored. See CLAUDE.md.
+    // it caused has fired and been ignored. See public/CLAUDE.md.
     scrollWithoutBroadcast(fn) {
       this._programmatic = true;
       fn();
