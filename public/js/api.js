@@ -86,6 +86,17 @@ export async function apiContainerAction(hostId, id, action) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/${action}`, { method: 'POST', timeoutMs: 45_000 }));
 }
 
+// Batch start/stop/restart for a whole compose project, run level-by-level server-side (see
+// server/composeGroup.js) - a deep dependency chain or a slow stop across several containers can
+// legitimately take longer than a single action, so this gets real headroom rather than the 45s
+// apiContainerAction budgets for one container. The server's own REQUEST_TIMEOUT_MS (50s default)
+// is still the ultimate backstop; a response arriving after that has already been dropped server-side.
+export async function apiComposeGroupAction(hostId, project, action) {
+  return jsonOrThrow(
+    await apiFetch(`/api/hosts/${hostId}/compose/${encodeURIComponent(project)}/${action}`, { method: 'POST', timeoutMs: 55_000 })
+  );
+}
+
 export async function apiGetContainerInspect(hostId, id) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/inspect`));
 }

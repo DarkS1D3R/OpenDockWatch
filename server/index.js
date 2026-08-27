@@ -16,7 +16,6 @@ const {
   checkHost,
   testHostConnection,
   listContainers,
-  containerAction,
   streamLogs,
   downloadLogs,
   getStats,
@@ -31,8 +30,14 @@ const {
   CONTAINER_ACTION_TIMEOUT_MS,
   DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
+// The module object, not a destructured reference, for the two calls the compose-group route below
+// makes - a destructured binding is a plain copy of the function value at require time, so
+// test/index.test.js mocking docker.listContainers/getTopologyMeta afterwards would never reach it.
+// Same reasoning as statsWatcher.js's docker require - see server/CLAUDE.md.
+const docker = require('./docker');
 const db = require('./db');
 const { computeContainerUptime, computeHostUptime } = require('./uptime');
+const { orderGroupLevels } = require('./composeGroup');
 const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
@@ -1181,6 +1186,52 @@ api.delete('/settings/container-rules/:id', requireAdmin, (req, res) => {
   res.json(db.getContainerAlertRules());
 });
 
+// Shared by the single-container route below and the compose-group route further down, so a group
+// action writes exactly the same audit_log/log-line pair a single one does rather than a lighter
+// copy - alerts.js's manual-stop/manual-start suppression (countManualStopsSince/StartsSince) reads
+// audit_log by ts, so a group stop that skipped it would read every container in the group as an
+// unexpected crash the moment its die event arrived. Never throws: an action failing is a normal,
+// reportable outcome here, not an exceptional one - the group route needs to keep going past one
+// container's failure, and the single-container route below turns a false ok back into dockerError.
+async function performContainerAction(host, containerId, action, { username, containerName }) {
+  const logFields = { user: username, host: host.id, container: containerName || containerId };
+  const startedAt = Date.now();
+
+  // Written before containerAction runs, not after it resolves - the daemon can emit the
+  // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
+  // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
+  const auditId = db.insertAuditLog({
+    ts: Date.now(),
+    username: username || null,
+    hostId: host.id,
+    containerId,
+    containerName: containerName || null,
+    action,
+    result: 'pending',
+    error: null,
+  });
+
+  // Paired with the completion line below rather than logging only on success: `docker stop` can
+  // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
+  // a pressed button left nothing in the log at all - only a 'pending' audit row.
+  logger.info(`container.${action}.requested`, logFields);
+
+  try {
+    // Module object, not the destructured containerAction above - mockable for the same reason
+    // docker.listContainers/getTopologyMeta are, and metricsCollector.pollHost's own docker calls
+    // already go through the module object for the identical reason. See server/CLAUDE.md.
+    await docker.containerAction(host, containerId, action);
+    db.updateAuditLogResult(auditId, 'ok', null);
+    logger.info(`container.${action}`, { ...logFields, tookMs: Date.now() - startedAt });
+    return { ok: true };
+  } catch (err) {
+    const detail = err.stderr || err.message;
+    db.updateAuditLogResult(auditId, 'error', detail);
+    logger.error(`container.${action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
+    return { ok: false, error: detail };
+  }
+}
+
 api.post(
   '/hosts/:hostId/containers/:id/:action',
   requireAdmin,
@@ -1191,41 +1242,67 @@ api.post(
     const host = req.odwHost;
     const snapshot = metricsCollector.getSnapshot(req.params.hostId);
     const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
-    const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
-    const startedAt = Date.now();
-
-    // Written before containerAction runs, not after it resolves - the daemon can emit the
-    // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
-    // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
-    const auditId = db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
+    const result = await performContainerAction(host, req.params.id, req.params.action, {
+      username: req.session.username,
       containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'pending',
-      error: null,
     });
-
-    // Paired with the completion line below rather than logging only on success: `docker stop` can
-    // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
-    // a pressed button left nothing in the log at all - only a 'pending' audit row.
-    logger.info(`container.${req.params.action}.requested`, logFields);
-
-    try {
-      await containerAction(host, req.params.id, req.params.action);
-      db.updateAuditLogResult(auditId, 'ok', null);
-      logger.info(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt });
-      res.json({ ok: true });
-    } catch (err) {
-      const detail = err.stderr || err.message;
-      db.updateAuditLogResult(auditId, 'error', detail);
-      logger.error(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
-      dockerError(res, err);
-    }
+    if (result.ok) return res.json({ ok: true });
+    dockerError(res, { stderr: result.error });
   }
 );
+
+// Group actions are deliberately batch start/stop/restart, not real `docker compose up`/`down`/
+// `pull` - those need the compose YAML itself (to know images/build context), which this app never
+// has: it only ever talks to the docker CLI/socket, identifying a group purely from the
+// com.docker.compose.project label, the same way Flow view does. That works identically for a
+// remote SSH host, where there is no local copy of the file to hand to `docker compose` anyway.
+// See server/CLAUDE.md.
+api.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, requireContainerAction, async (req, res) => {
+  const host = req.odwHost;
+  const { project } = req.params;
+  const action = req.params.action;
+
+  let containers;
+  try {
+    containers = await docker.listContainers(host);
+  } catch (err) {
+    return dockerError(res, err);
+  }
+  const groupContainers = containers.filter((c) => c.composeProject === project);
+  if (!groupContainers.length) return res.status(404).json({ error: 'no such compose project on this host' });
+
+  // Ordering is a nicety on top of a correct-either-way action, not a precondition for it - a
+  // depends_on label that fails to parse (or the docker call behind it failing outright) falls
+  // back to one unordered level rather than failing the whole group action.
+  let edges = [];
+  try {
+    const meta = await docker.getTopologyMeta(host, containers);
+    edges = docker.dependsOnEdges(containers, meta.dependsOnRaw);
+  } catch (err) {
+    logger.warn('compose_group.order.failed', { host: host.id, project, error: err.message });
+  }
+
+  const byId = new Map(groupContainers.map((c) => [c.id, c]));
+  const levels = orderGroupLevels(
+    groupContainers.map((c) => c.id),
+    edges,
+    action
+  );
+
+  const results = [];
+  for (const level of levels) {
+    const settled = await Promise.all(
+      level.map(async (id) => {
+        const c = byId.get(id);
+        const outcome = await performContainerAction(host, id, action, { username: req.session.username, containerName: c.name });
+        return { containerId: id, containerName: c.name, ...outcome };
+      })
+    );
+    results.push(...settled);
+  }
+
+  res.json({ project, action, results });
+});
 
 api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {
   const host = req.odwHost;

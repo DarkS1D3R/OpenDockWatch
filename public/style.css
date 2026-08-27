@@ -611,6 +611,20 @@ body {
   font-weight: 600;
   user-select: none;
 }
+/* The batch Start/Stop/Restart row on a compose group's header - pushed to the far right so it
+   never collides with the chevron/name/count on the left, and its own click.stop keeps a button
+   press from also toggling the group collapsed. Normal weight/size since .group-header's own
+   font-weight: 600 would otherwise bleed into these buttons' labels. */
+.group-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  font-weight: normal;
+}
+.group-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
 .chevron {
   display: inline-block;
   transition: transform 0.1s ease;

@@ -791,6 +791,7 @@ module.exports = {
   statsRowToSample,
   parseStatsLine,
   getTopology,
+  getTopologyMeta,
   getHostInfo,
   getDiskUsage,
   getDiskUsageImages,
