@@ -16,6 +16,7 @@ export default {
       loading: false,
       error: null,
       report: null,
+      search: '',
     };
   },
   computed: {
@@ -33,6 +34,15 @@ export default {
         if (b.upPercent === null) return -1;
         return a.upPercent - b.upPercent;
       });
+    },
+    // Name or compose project, same substring/case-insensitive match ContainerList's own filter
+    // uses - a host with many projects is exactly where this report is worth searching.
+    filteredContainers() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return this.sortedContainers;
+      return this.sortedContainers.filter(
+        (c) => (c.name || c.id).toLowerCase().includes(q) || (c.composeProject || '').toLowerCase().includes(q)
+      );
     },
   },
   watch: {
@@ -88,7 +98,13 @@ export default {
           </span>
         </p>
 
+        <div v-if="sortedContainers.length" class="search-clear-wrap uptime-search-wrap">
+          <input type="text" v-model="search" placeholder="Filter by container or project…" class="uptime-search" />
+          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+        </div>
+
         <p v-if="!sortedContainers.length" class="muted">No container history in this window.</p>
+        <p v-else-if="!filteredContainers.length" class="muted">No containers match "{{ search.trim() }}".</p>
         <table v-else class="uptime-table">
           <thead>
             <tr>
@@ -102,7 +118,7 @@ export default {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="c in sortedContainers" :key="c.id" :class="{ 'uptime-removed-row': c.removed }">
+            <tr v-for="c in filteredContainers" :key="c.id" :class="{ 'uptime-removed-row': c.removed }">
               <td>{{ c.name || c.id }} <span v-if="c.removed" class="muted" title="No longer running on this host">(removed)</span></td>
               <td class="muted">{{ c.composeProject || '—' }}</td>
               <td>{{ formatPercent(c.upPercent) }}</td>

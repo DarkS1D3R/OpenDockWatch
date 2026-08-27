@@ -2287,6 +2287,19 @@ button.log-pane-main-btn.active:hover {
   margin: 0 0 14px;
   font-size: 14px;
 }
+.uptime-search-wrap {
+  max-width: 320px;
+  margin-bottom: 10px;
+}
+.uptime-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 22px 4px 8px;
+  font-size: 12px;
+  width: 100%;
+}
 table.uptime-table {
   width: 100%;
   table-layout: auto;
