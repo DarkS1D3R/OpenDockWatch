@@ -9,6 +9,7 @@ import ContainerList from './components/ContainerList.js';
 import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
+import UptimeReport from './components/UptimeReport.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import {
@@ -85,6 +86,7 @@ const app = createApp({
     ContainerMetricsModal,
     FlowView,
     LogsView,
+    UptimeReport,
   },
   data() {
     return {
@@ -102,7 +104,7 @@ const app = createApp({
       pollFailures: 0,
       actionInFlight: {},
 
-      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' - reset to the configured default once the session loads, see mounted()
+      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -415,7 +417,7 @@ const app = createApp({
       // The bottom Log Viewer belongs to List/Flow (via the detail panel's button). Closing it
       // on the way into a view that can't open it releases its connection - logViewerOpen is a
       // v-if, so this unmounts and stops the stream. See detailPanelVisible for the budget.
-      if (v === 'logs' || v === 'activity') this.closeLogViewer();
+      if (v === 'logs' || v === 'activity' || v === 'uptime') this.closeLogViewer();
       if (v === 'flow') await this.fetchTopology();
     },
     async fetchContainers({ fresh = false } = {}) {
@@ -543,6 +545,7 @@ const app = createApp({
           <button :class="{active: view==='activity'}" @click="setView('activity')">
             Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}</span>
           </button>
+          <button :class="{active: view==='uptime'}" @click="setView('uptime')">Uptime</button>
         </div>
         <div class="view-toggle">
           <button :class="{active: stateFilter==='all'}" @click="stateFilter='all'">All</button>
@@ -557,7 +560,7 @@ const app = createApp({
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
       <host-card
-        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity'"
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity' && view !== 'uptime'"
         :host-info="hostInfo"
         :host-name="currentHostName"
         :host-id="selectedHostId"
@@ -612,6 +615,8 @@ const app = createApp({
             @ack-all="ackAllAlertsAction"
             @clear-alerts="clearAlertsAction"
           ></activity-view>
+
+          <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
         </div>
 
         <container-detail

@@ -30,6 +30,7 @@ function mockDb(t, overrides = {}) {
     markWebhookAttemptFailed: () => {},
     getPendingWebhookRetries: () => [],
     getContainerAlertRules: () => [],
+    insertHostReachability: () => {},
   };
   for (const [name, impl] of Object.entries({ ...defaults, ...overrides })) {
     t.mock.method(db, name, impl);
@@ -170,6 +171,30 @@ test('handleHostReachability', async (t) => {
     const fired = captureFired(t);
     alerts.handleHostReachability('h', 'Host', true, false);
     assert.equal(fired.length, 0);
+  });
+
+  await t.test('records a down transition in host_reachability', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (hostId, ts, reachable) => rows.push({ hostId, ts, reachable }) });
+    alerts.handleHostReachability('h', 'Host', false, true);
+    assert.equal(rows.length, 1);
+    assert.deepEqual({ hostId: rows[0].hostId, reachable: rows[0].reachable }, { hostId: 'h', reachable: false });
+  });
+
+  await t.test('records an up transition in host_reachability', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (hostId, ts, reachable) => rows.push({ hostId, ts, reachable }) });
+    alerts.handleHostReachability('h', 'Host', true, false);
+    assert.equal(rows.length, 1);
+    assert.deepEqual({ hostId: rows[0].hostId, reachable: rows[0].reachable }, { hostId: 'h', reachable: true });
+  });
+
+  await t.test('writes nothing when the reachability state does not actually change', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (...args) => rows.push(args) });
+    alerts.handleHostReachability('h', 'Host', false, false);
+    alerts.handleHostReachability('h', 'Host', true, true);
+    assert.equal(rows.length, 0);
   });
 });
 

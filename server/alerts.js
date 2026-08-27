@@ -515,6 +515,10 @@ function handleEvent(event) {
 
 function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   if (wasReachable && !reachable) {
+    // host_unreachable below only ever records the down side - without a row here too, nothing
+    // durable ever says the host came back, and server/uptime.js's computeHostUptime would have no
+    // way to tell "down for the whole window" from "down for five minutes of it".
+    db.insertHostReachability(hostId, Date.now(), false);
     fire({
       hostId,
       containerId: null,
@@ -527,6 +531,7 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
   // Recovery gets no alert (nobody wants a webhook for good news) but it does get a log line -
   // going down was loud and coming back was silent, which left the log implying it's still down.
   if (!wasReachable && reachable) {
+    db.insertHostReachability(hostId, Date.now(), true);
     logger.info('host.reachable', { host: hostId, name: hostName || hostId });
   }
 }

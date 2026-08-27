@@ -121,6 +121,12 @@ export async function apiGetMetricsHistory(hostId, { range = '1h', containerId }
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));
 }
 
+// Pure db/computation server-side, same budget as the other GETs here - reconstructed from
+// history that's already retained, not a new sampling window.
+export async function apiGetUptime(hostId, { days = 30 } = {}) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/uptime?days=${days}`));
+}
+
 export async function apiGetEvents(hostId, { since, limit } = {}) {
   const qs = new URLSearchParams({ ...(since ? { since } : {}), ...(limit ? { limit } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/events?${qs}`));

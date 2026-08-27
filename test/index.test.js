@@ -794,6 +794,82 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
   });
 });
 
+// Pure db/computation like /events beside it - reconstructed from durable history, not sampled, so
+// this seeds events/host_reachability rows directly rather than mocking anything docker-shaped.
+test('GET /hosts/:hostId/uptime', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const CONTAINER = 'uptimeaaaaaa';
+  const REMOVED = 'uptimebbbbbb';
+  const now = Date.now();
+  const DAY = 86_400_000;
+
+  const SNAPSHOT = {
+    reachable: true,
+    statsTs: now,
+    containers: [{ id: CONTAINER, name: 'web', state: 'running', health: null, image: 'nginx', composeProject: 'shop' }],
+  };
+  t.beforeEach((t2) => t2.mock.method(metricsCollector, 'getSnapshot', () => SNAPSHOT));
+
+  // A restart two days ago (inside the default 30d window) so the live container has something
+  // other than a flat 100% to report, plus one row for a container that no longer exists at all -
+  // covering getContainersWithLifecycleEvents pulling in a container the snapshot doesn't have.
+  db.insertEvent({ hostId, containerId: CONTAINER, containerName: 'web', action: 'die', ts: now - 2 * DAY, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: CONTAINER, containerName: 'web', action: 'start', ts: now - 2 * DAY + 60_000, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: REMOVED, containerName: 'gone', action: 'start', ts: now - 3 * DAY, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: REMOVED, containerName: 'gone', action: 'die', ts: now - 1 * DAY, rawJson: '{}' });
+  db.insertHostReachability(hostId, now - 4 * DAY, false);
+  db.insertHostReachability(hostId, now - 4 * DAY + 3_600_000, true);
+
+  await t.test('reports both the host and every container that did something in the window', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/uptime`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.days, 30);
+    assert.ok(
+      res.body.host.upPercent > 0 && res.body.host.upPercent < 100,
+      `expected a partial host outage to show: ${res.body.host.upPercent}`
+    );
+
+    const ids = res.body.containers.map((c) => c.id).sort();
+    assert.deepEqual(ids, [CONTAINER, REMOVED].sort());
+
+    const live = res.body.containers.find((c) => c.id === CONTAINER);
+    assert.equal(live.removed, false);
+    assert.equal(live.composeProject, 'shop');
+    assert.equal(live.restartCount, 1);
+    // Up the whole accounted window except the 60s between the seeded die and start - not a flat
+    // 100%, which is the point of seeding a restart rather than just a bare 'start'.
+    assert.ok(live.upPercent > 99 && live.upPercent < 100, `expected the seeded 60s restart gap to show: ${live.upPercent}`);
+    assert.ok(live.downMs > 0 && live.downMs < 120_000, `expected ~60s of down time from the seeded restart: ${live.downMs}`);
+
+    const removed = res.body.containers.find((c) => c.id === REMOVED);
+    assert.equal(removed.removed, true);
+    assert.equal(removed.composeProject, null);
+    assert.ok(removed.downMs > 0, 'a container with no live anchor that ended on a die event should show down time, not unknown');
+  });
+
+  await t.test('days is clamped to the documented max rather than accepting an arbitrary window', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/uptime?days=99999`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.days, 90);
+  });
+
+  await t.test('a viewer can read it - no state changes here, same as /events', async () => {
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${hostId}/uptime`)).status, 200);
+  });
+
+  await t.test('an unknown host 404s', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/uptime`)).status, 404);
+  });
+
+  await t.test('it needs a session', async () => {
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/uptime`)).status, 401);
+  });
+});
+
 // The Activity tab's "Clear" buttons over HTTP: that each route reaches the right db call for the
 // host it was given, and answers a bad one properly. What a clear does to the rows - soft, scoped,
 // and what stays visible to the cooldown and the restart counters - is db.test.js's job, not a

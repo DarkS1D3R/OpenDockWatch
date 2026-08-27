@@ -32,6 +32,7 @@ const {
   DISK_USAGE_TIMEOUT_MS,
 } = require('./docker');
 const db = require('./db');
+const { computeContainerUptime, computeHostUptime } = require('./uptime');
 const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
@@ -715,6 +716,62 @@ api.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
   res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
 });
 
+const UPTIME_DAYS_DEFAULT = 30;
+const UPTIME_DAYS_MAX = 90;
+
+// Reconstructed entirely from durable history already retained for other reasons (events,
+// host_reachability) - no new sampling, no new retention window. See server/uptime.js. A container
+// currently unreachable or removed still gets a row if it has any lifecycle event in the window
+// (see getContainersWithLifecycleEvents); one that has never done anything gets 100% from the live
+// snapshot alone. Pure db/computation like /events and /metrics/history beside it - no docker call,
+// so no try/catch needed here either.
+api.get('/hosts/:hostId/uptime', requireHost, (req, res) => {
+  const hostId = req.params.hostId;
+  const days = intParam(req.query.days, UPTIME_DAYS_DEFAULT, UPTIME_DAYS_MAX) || UPTIME_DAYS_DEFAULT;
+  const until = Date.now();
+  const since = until - days * 86_400_000;
+
+  const snapshot = metricsCollector.getSnapshot(hostId);
+  const host = computeHostUptime({
+    transitions: db.getHostReachabilityTransitions(hostId, since),
+    since,
+    until,
+    seedReachable: db.getHostReachabilitySeed(hostId, since),
+    liveReachable: snapshot ? snapshot.reachable : null,
+  });
+
+  // Union of what's live right now and whatever had a lifecycle event in the window - a container
+  // that crashed badly enough to get replaced under a new id is exactly the one worth surfacing,
+  // and it would otherwise silently drop out the moment it stops existing.
+  const liveById = new Map(((snapshot && snapshot.containers) || []).map((c) => [c.id, c]));
+  const containerIds = new Map(liveById);
+  for (const row of db.getContainersWithLifecycleEvents(hostId, since)) {
+    if (!containerIds.has(row.containerId)) containerIds.set(row.containerId, { id: row.containerId, name: row.containerName });
+  }
+
+  const restartCounts = db.getRestartCountsByContainer(hostId, since);
+  const containers = [...containerIds.values()].map((c) => {
+    const live = liveById.get(c.id);
+    const uptime = computeContainerUptime({
+      events: db.getContainerLifecycleEvents(hostId, c.id, since),
+      since,
+      until,
+      seedAction: db.getContainerLifecycleSeed(hostId, c.id, since),
+      liveState: live ? { running: live.state === 'running', health: live.health } : null,
+    });
+    return {
+      id: c.id,
+      name: c.name,
+      composeProject: live ? live.composeProject : null,
+      removed: !live,
+      restartCount: restartCounts.get(c.id) || 0,
+      ...uptime,
+    };
+  });
+
+  res.json({ days, since, until, host, containers });
+});
+
 api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   const sinceTs = intParam(req.query.since, 0);
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
@@ -816,7 +873,7 @@ api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
 // settings below, but general enough (no secrets, affects every role) that the read isn't
 // admin-gated: /session already hands it to every authenticated user regardless of role, since a
 // viewer's landing tab should match the configured default too, not just an admin's.
-const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity']);
+const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity', 'uptime']);
 const DEFAULT_VIEW_KEY = 'defaultView';
 const FALLBACK_VIEW = 'list';
 

@@ -2265,6 +2265,40 @@ button.log-pane-main-btn.active:hover {
 .event-row.severity-ok .event-action {
   color: var(--ok);
 }
+/* The Uptime report's own table - deliberately not table.containers, whose nth-child widths are
+   tuned for List view's fixed Name/Image/Status/CPU/Memory/Ports/Actions layout and would apply
+   the wrong width to every column here. auto layout lets the numeric columns size to their content
+   instead. */
+.uptime-host-summary {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+table.uptime-table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.uptime-table th,
+table.uptime-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+table.uptime-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+table.uptime-table tr:last-child td {
+  border-bottom: none;
+}
+.uptime-removed-row {
+  opacity: 0.7;
+}
 .alert-row-main {
   display: flex;
   justify-content: space-between;
