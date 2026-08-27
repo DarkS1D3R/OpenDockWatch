@@ -345,51 +345,65 @@ const WEBHOOK_RETRY_WINDOW_MS = 60 * 60 * 1000;
 const WEBHOOK_RETRY_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_RETRY_BATCH_LIMIT = 20;
 
-async function retryFailedWebhooks() {
-  const { url: rawUrl, format } = getWebhookConfig();
-  // No URL right now (never configured, or cleared since the failures happened) - nothing to
-  // retry against. Rows just stay pending; if a webhook is configured later, the next sweep picks
-  // them up as long as they're still inside the retry window.
-  if (!rawUrl) return;
+// Guards against a sweep still delivering its batch when the next tick fires - each delivery can
+// take up to WEBHOOK_TIMEOUT_MS and rows only stop being "pending" once one finishes, so without
+// this a slow/down endpoint gets the same backlog handed to it twice by two overlapping sweeps.
+let retrying = false;
 
-  const sinceTs = Date.now() - WEBHOOK_RETRY_WINDOW_MS;
-  const pending = db.getPendingWebhookRetries({ maxAttempts: WEBHOOK_MAX_ATTEMPTS, sinceTs, limit: WEBHOOK_RETRY_BATCH_LIMIT });
-  // The individual retry_delivered/retry_failed lines below each describe one alert; none of them
-  // says how deep the backlog is. An endpoint that's been down for a day otherwise shows only a
-  // trickle of unrelated-looking failures, with nothing saying they're the same growing queue.
-  // Capped at WEBHOOK_RETRY_BATCH_LIMIT, so `atBatchLimit` is the tell that there are likely more.
-  if (pending.length) {
-    logger.warn('alert.webhook.backlog', { pending: pending.length, atBatchLimit: pending.length === WEBHOOK_RETRY_BATCH_LIMIT });
+async function retryFailedWebhooks() {
+  if (retrying) {
+    logger.warn('alert.webhook.retry_sweep_overlapped');
+    return;
   }
-  for (const row of pending) {
-    const alert = {
-      id: row.id,
-      ts: row.ts,
-      hostId: row.host_id,
-      containerId: row.container_id,
-      containerName: row.container_name,
-      rule: row.rule,
-      severity: row.severity,
-      message: row.message,
-    };
-    try {
-      await deliverWebhook(rawUrl, alert, format);
-      db.markWebhookDelivered(alert.id);
-      logger.info('alert.webhook.retry_delivered', {
-        host: alert.hostId,
-        rule: alert.rule,
-        attempt: row.webhook_attempts + 1,
-        delayedSec: Math.round((Date.now() - alert.ts) / 1000),
-      });
-    } catch (err) {
-      db.markWebhookAttemptFailed(alert.id);
-      logger.error('alert.webhook.retry_failed', {
-        host: alert.hostId,
-        rule: alert.rule,
-        attempt: row.webhook_attempts + 1,
-        error: err.message,
-      });
+  retrying = true;
+  try {
+    const { url: rawUrl, format } = getWebhookConfig();
+    // No URL right now (never configured, or cleared since the failures happened) - nothing to
+    // retry against. Rows just stay pending; if a webhook is configured later, the next sweep picks
+    // them up as long as they're still inside the retry window.
+    if (!rawUrl) return;
+
+    const sinceTs = Date.now() - WEBHOOK_RETRY_WINDOW_MS;
+    const pending = db.getPendingWebhookRetries({ maxAttempts: WEBHOOK_MAX_ATTEMPTS, sinceTs, limit: WEBHOOK_RETRY_BATCH_LIMIT });
+    // The individual retry_delivered/retry_failed lines below each describe one alert; none of them
+    // says how deep the backlog is. An endpoint that's been down for a day otherwise shows only a
+    // trickle of unrelated-looking failures, with nothing saying they're the same growing queue.
+    // Capped at WEBHOOK_RETRY_BATCH_LIMIT, so `atBatchLimit` is the tell that there are likely more.
+    if (pending.length) {
+      logger.warn('alert.webhook.backlog', { pending: pending.length, atBatchLimit: pending.length === WEBHOOK_RETRY_BATCH_LIMIT });
     }
+    for (const row of pending) {
+      const alert = {
+        id: row.id,
+        ts: row.ts,
+        hostId: row.host_id,
+        containerId: row.container_id,
+        containerName: row.container_name,
+        rule: row.rule,
+        severity: row.severity,
+        message: row.message,
+      };
+      try {
+        await deliverWebhook(rawUrl, alert, format);
+        db.markWebhookDelivered(alert.id);
+        logger.info('alert.webhook.retry_delivered', {
+          host: alert.hostId,
+          rule: alert.rule,
+          attempt: row.webhook_attempts + 1,
+          delayedSec: Math.round((Date.now() - alert.ts) / 1000),
+        });
+      } catch (err) {
+        db.markWebhookAttemptFailed(alert.id);
+        logger.error('alert.webhook.retry_failed', {
+          host: alert.hostId,
+          rule: alert.rule,
+          attempt: row.webhook_attempts + 1,
+          error: err.message,
+        });
+      }
+    }
+  } finally {
+    retrying = false;
   }
 }
 

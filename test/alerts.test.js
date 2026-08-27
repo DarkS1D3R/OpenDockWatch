@@ -431,6 +431,47 @@ test('retryFailedWebhooks', async (t) => {
     await assert.doesNotReject(() => alerts.retryFailedWebhooks());
     assert.deepEqual(failed, [8]);
   });
+
+  await t.test('a sweep still in flight is skipped rather than re-delivering the same batch', async (t) => {
+    let getPendingCalls = 0;
+    const delivered = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      getPendingWebhookRetries: () => {
+        getPendingCalls += 1;
+        return [
+          {
+            id: 9,
+            ts: Date.now(),
+            host_id: 'h',
+            container_id: 'c',
+            container_name: 'web',
+            rule: 'container_cpu',
+            severity: 'warning',
+            message: 'boom',
+            webhook_attempts: 0,
+          },
+        ];
+      },
+      markWebhookDelivered: (id) => delivered.push(id),
+    });
+    const originalFetch = global.fetch;
+    let resolveFetch;
+    global.fetch = () => new Promise((resolve) => (resolveFetch = resolve));
+    t.after(() => (global.fetch = originalFetch));
+    const warned = [];
+    t.mock.method(logger, 'warn', (event) => warned.push(event));
+
+    const first = alerts.retryFailedWebhooks();
+    await Promise.resolve(); // let the first sweep reach its still-pending fetch()
+    await alerts.retryFailedWebhooks(); // second tick fires while the first is still delivering
+    resolveFetch({ ok: true });
+    await first;
+
+    assert.equal(getPendingCalls, 1);
+    assert.deepEqual(delivered, [9]);
+    assert.ok(warned.includes('alert.webhook.retry_sweep_overlapped'));
+  });
 });
 
 test('threshold config (DB override vs .env default)', async (t) => {
