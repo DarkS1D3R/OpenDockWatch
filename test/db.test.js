@@ -145,6 +145,95 @@ test('clearEvents hides events without losing the restart history', async (t) =>
   });
 });
 
+test('getContainerLifecycleEvents / getContainerLifecycleSeed', async (t) => {
+  const HOST2 = 'db-test-lifecycle-host';
+  const CONTAINER = 'ccccccccffff';
+  const event = (action, ts, overrides = {}) => ({
+    hostId: HOST2,
+    containerId: CONTAINER,
+    containerName: 'web',
+    action,
+    ts,
+    rawJson: '{}',
+    ...overrides,
+  });
+
+  await t.test('the seed is the most recent qualifying event strictly before the window', () => {
+    db.insertEvent(event('create', 1000));
+    db.insertEvent(event('start', 2000));
+    assert.equal(db.getContainerLifecycleSeed(HOST2, CONTAINER, 3000), 'start');
+    assert.equal(db.getContainerLifecycleSeed(HOST2, CONTAINER, 1500), 'create');
+    assert.equal(db.getContainerLifecycleSeed(HOST2, CONTAINER, 1000), null, 'strictly before, ts=1000 must not match itself');
+  });
+
+  await t.test('in-window events come back ascending and only the classifiable actions are included', () => {
+    db.insertEvent(event('exec_create', 2500));
+    db.insertEvent(event('health_status: healthy', 3000));
+    db.insertEvent(event('die', 4000));
+    const rows = db.getContainerLifecycleEvents(HOST2, CONTAINER, 2000);
+    assert.deepEqual(
+      rows.map((r) => r.action),
+      ['start', 'health_status: healthy', 'die'],
+      'exec_create is not a state-relevant action and must not appear'
+    );
+    assert.ok(
+      rows.every((r, i) => i === 0 || r.ts >= rows[i - 1].ts),
+      'rows must be ascending by ts'
+    );
+  });
+
+  await t.test('a cleared event still counts - this is what the container did, not what the tab shows', () => {
+    db.clearEvents(HOST2);
+    const rows = db.getContainerLifecycleEvents(HOST2, CONTAINER, 0);
+    assert.ok(rows.length > 0, 'clearing the Activity tab must not erase uptime history');
+  });
+
+  await t.test('getContainersWithLifecycleEvents lists each container once regardless of how many events it has', () => {
+    db.insertEvent(event('start', 5000, { containerId: 'aaaaaaaaaaaa', containerName: 'db' }));
+    db.insertEvent(event('die', 6000, { containerId: 'aaaaaaaaaaaa', containerName: 'db' }));
+    const rows = db.getContainersWithLifecycleEvents(HOST2, 0);
+    const ids = rows.map((r) => r.containerId).sort();
+    assert.deepEqual(ids, [CONTAINER, 'aaaaaaaaaaaa'].sort());
+  });
+
+  await t.test('getContainersWithLifecycleEvents excludes a container whose only events are non-lifecycle', () => {
+    db.insertEvent(event('exec_create', 7000, { containerId: 'bbbbbbbbbbbb', containerName: 'sidecar' }));
+    db.insertEvent(event('oom', 7500, { containerId: 'bbbbbbbbbbbb', containerName: 'sidecar' }));
+    const rows = db.getContainersWithLifecycleEvents(HOST2, 6500);
+    assert.ok(!rows.some((r) => r.containerId === 'bbbbbbbbbbbb'), 'a container with no classifiable event in the window must not appear');
+  });
+
+  await t.test('getContainersWithLifecycleEvents resolves the name from the most recent event, not an arbitrary row', () => {
+    db.insertEvent(event('start', 8000, { containerId: 'cccccccccccc', containerName: 'old-name' }));
+    db.insertEvent(event('die', 9000, { containerId: 'cccccccccccc', containerName: 'new-name' }));
+    const rows = db.getContainersWithLifecycleEvents(HOST2, 8000);
+    const row = rows.find((r) => r.containerId === 'cccccccccccc');
+    assert.equal(row.containerName, 'new-name');
+  });
+});
+
+test('host_reachability transitions and seed', async (t) => {
+  const HOST3 = 'db-test-reachability-host';
+
+  await t.test('a fresh host has no seed and no transitions', () => {
+    assert.equal(db.getHostReachabilitySeed(HOST3, 1000), null);
+    assert.deepEqual(db.getHostReachabilityTransitions(HOST3, 0), []);
+  });
+
+  await t.test('insert round-trips as a boolean, and the seed resolves before the window', () => {
+    db.insertHostReachability(HOST3, 1000, false);
+    db.insertHostReachability(HOST3, 2000, true);
+    assert.equal(db.getHostReachabilitySeed(HOST3, 1500), false);
+    assert.equal(db.getHostReachabilitySeed(HOST3, 2500), true);
+    const rows = db.getHostReachabilityTransitions(HOST3, 0);
+    assert.deepEqual(
+      rows.map((r) => r.reachable),
+      [false, true]
+    );
+    assert.equal(typeof rows[0].reachable, 'boolean', 'reachable must come back as a real boolean, not 0/1');
+  });
+});
+
 // clearAlerts is a soft delete, and the reason is the last subtest here: the alerts table is also
 // alerts.js's cooldown store (getLastAlertFireTs), so a hard delete re-arms every rule on the host
 // and a still-breaching one re-fires - webhook included - on the next 5s poll.
@@ -426,6 +515,9 @@ const CLEARED_AT_EXEMPT = {
   lastAlertFire: 'alerts.js cooldown - clearing the Activity tab must not re-arm a rule mid-cooldown',
   countRestartsSince: 'what the container did, not what the tab shows - clearing must not reset crash-loop detection',
   countRestartsByContainerSince: 'same as countRestartsSince, for the whole-host restart column',
+  getContainerLifecycleEvents: 'same as countRestartsSince - the uptime rollup answers what the container actually did',
+  getContainerLifecycleSeed: 'same as getContainerLifecycleEvents, for the single event that seeds the window',
+  getContainersWithLifecycleEvents: 'same as getContainerLifecycleEvents - lists containers by what they did, clear or not',
   markWebhookDelivered: 'single row by primary key; the id came from getPendingWebhookRetries, which already filters',
   markWebhookAttemptFailed: 'single row by primary key, same as markWebhookDelivered',
   pruneEvents: 'age-based retention delete - cleared rows are exactly what it has to reclaim',

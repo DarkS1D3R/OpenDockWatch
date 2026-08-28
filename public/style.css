@@ -611,6 +611,20 @@ body {
   font-weight: 600;
   user-select: none;
 }
+/* The batch Start/Stop/Restart row on a compose group's header - pushed to the far right so it
+   never collides with the chevron/name/count on the left, and its own click.stop keeps a button
+   press from also toggling the group collapsed. Normal weight/size since .group-header's own
+   font-weight: 600 would otherwise bleed into these buttons' labels. */
+.group-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  font-weight: normal;
+}
+.group-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
 .chevron {
   display: inline-block;
   transition: transform 0.1s ease;
@@ -2264,6 +2278,53 @@ button.log-pane-main-btn.active:hover {
 }
 .event-row.severity-ok .event-action {
   color: var(--ok);
+}
+/* The Uptime report's own table - deliberately not table.containers, whose nth-child widths are
+   tuned for List view's fixed Name/Image/Status/CPU/Memory/Ports/Actions layout and would apply
+   the wrong width to every column here. auto layout lets the numeric columns size to their content
+   instead. */
+.uptime-host-summary {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+.uptime-search-wrap {
+  max-width: 320px;
+  margin-bottom: 10px;
+}
+.uptime-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 22px 4px 8px;
+  font-size: 12px;
+  width: 100%;
+}
+table.uptime-table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.uptime-table th,
+table.uptime-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+table.uptime-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+table.uptime-table tr:last-child td {
+  border-bottom: none;
+}
+.uptime-removed-row {
+  opacity: 0.7;
 }
 .alert-row-main {
   display: flex;

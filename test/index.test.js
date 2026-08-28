@@ -34,6 +34,7 @@ const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
+const docker = require('../server/docker');
 const metricsCollector = require('../server/metricsCollector');
 
 test.after(() => {
@@ -437,6 +438,146 @@ test('container action validation', async (t) => {
   });
 });
 
+// docker.listContainers/getTopologyMeta/containerAction are mocked via the module object rather
+// than the request/response boundary - the route reads them that way specifically so this doesn't
+// need a real docker daemon (see the comment on `const docker = require('./docker')` in index.js).
+// dependsOnEdges itself is left real: it's pure, and a fake ordering-relevant label is easier to
+// trust than a fake edge list built by hand.
+test('POST /hosts/:hostId/compose/:project/:action - compose group batch actions', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const API = 'apiapiapiapi';
+  const DB = 'dbdbdbdbdbdb';
+  const CACHE = 'cachecachecac';
+
+  // api depends on both db and cache; db and cache don't depend on anything - a small diamond-free
+  // fan-in, enough to prove db+cache batch together ahead of api without a deep chain.
+  const GROUP_CONTAINERS = [
+    { id: API, name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+    { id: DB, name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+    { id: CACHE, name: 'shop-cache', composeProject: 'shop', composeService: 'cache' },
+    { id: 'unrelatedunrel', name: 'other-thing', composeProject: 'other', composeService: 'thing' },
+  ];
+
+  function mockGroup(t2, { containerAction } = {}) {
+    t2.mock.method(docker, 'listContainers', async () => GROUP_CONTAINERS);
+    t2.mock.method(docker, 'getTopologyMeta', async () => ({
+      dependsOnRaw: `${API}\tdb:service_started:true,cache:service_started:true`,
+    }));
+    if (containerAction) t2.mock.method(docker, 'containerAction', containerAction);
+  }
+
+  await t.test('404s for a project no current container belongs to', async (t2) => {
+    mockGroup(t2, { containerAction: async () => {} });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/nonexistent-project/start`);
+    assert.equal(res.status, 404);
+  });
+
+  await t.test('400s on an unsupported action, same gate as the single-container route', async (t2) => {
+    mockGroup(t2, { containerAction: async () => {} });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/shop/pause`);
+    assert.equal(res.status, 400);
+  });
+
+  await t.test('starts dependencies before the container that depends on them, and never touches another project', async (t2) => {
+    const calls = [];
+    mockGroup(t2, {
+      containerAction: async (host, id) => {
+        calls.push(id);
+      },
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/shop/start`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.project, 'shop');
+    assert.equal(res.body.results.length, 3, "the other project's container must not be included");
+    assert.ok(!calls.includes('unrelatedunrel'));
+
+    const apiIndex = calls.indexOf(API);
+    const dbIndex = calls.indexOf(DB);
+    const cacheIndex = calls.indexOf(CACHE);
+    assert.ok(dbIndex < apiIndex && cacheIndex < apiIndex, `db and cache must both start before api: ${calls}`);
+  });
+
+  await t.test('stop reverses the order - the dependent stops before what it depends on', async (t2) => {
+    const calls = [];
+    mockGroup(t2, {
+      containerAction: async (host, id) => {
+        calls.push(id);
+      },
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await admin.post(`/api/hosts/${hostId}/compose/shop/stop`);
+    const apiIndex = calls.indexOf(API);
+    const dbIndex = calls.indexOf(DB);
+    assert.ok(apiIndex < dbIndex, `api must stop before db on the way down: ${calls}`);
+  });
+
+  await t.test('one container failing does not stop the rest, and is reported per-container', async (t2) => {
+    mockGroup(t2, {
+      containerAction: async (host, id) => {
+        if (id === DB) throw Object.assign(new Error('boom'), { stderr: 'Error: no such container' });
+      },
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/shop/start`);
+    assert.equal(res.status, 200, 'a partial failure is still a completed batch, not a route error');
+    const byId = Object.fromEntries(res.body.results.map((r) => [r.containerId, r]));
+    assert.equal(byId[DB].ok, false);
+    assert.match(byId[DB].error, /no such container/);
+    assert.equal(byId[CACHE].ok, true);
+    assert.equal(byId[API].ok, true, 'api still ran even though its dependency db failed');
+  });
+
+  await t.test('each container action writes its own audit_log row, same as a single-container action', async (t2) => {
+    mockGroup(t2, { containerAction: async () => {} });
+    const before = db.client.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'restart'").get().n;
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await admin.post(`/api/hosts/${hostId}/compose/shop/restart`);
+    const after = db.client.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'restart'").get().n;
+    assert.equal(after - before, 3, 'expected one audit_log row per container in the group');
+  });
+
+  await t.test('a level with more containers than the concurrency cap runs in bounded batches, not all at once', async (t2) => {
+    // Six independent containers (no depends_on edges), all landing in one level - proves the route
+    // itself caps concurrency rather than relying on docker.js's own MAX_CONCURRENT semaphore, which
+    // this mock never touches.
+    const MANY = Array.from({ length: 6 }, (_, i) => ({
+      id: `many${i}`,
+      name: `many-${i}`,
+      composeProject: 'shop',
+      composeService: `svc${i}`,
+    }));
+    t2.mock.method(docker, 'listContainers', async () => MANY);
+    t2.mock.method(docker, 'getTopologyMeta', async () => ({ dependsOnRaw: '' }));
+    let active = 0;
+    let maxActive = 0;
+    t2.mock.method(docker, 'containerAction', async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active--;
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/shop/start`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.results.length, 6);
+    assert.ok(maxActive <= 4, `expected at most 4 concurrent actions, saw ${maxActive}`);
+  });
+
+  await t.test('a viewer cannot trigger a group action', async (t2) => {
+    mockGroup(t2, { containerAction: async () => {} });
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const res = await viewer.post(`/api/hosts/${hostId}/compose/shop/start`);
+    assert.equal(res.status, 403);
+  });
+
+  await t.test('it needs a session', async () => {
+    assert.equal((await request(app).post(`/api/hosts/${hostId}/compose/shop/start`)).status, 401);
+  });
+});
+
 // A request that never answers is worse than one that fails: over HTTP/1.1 a browser has about
 // six connections per origin, and this app permanently holds some of them open for its SSE
 // streams - so requests that hang until Node's 300s default eventually leave the tab unable to
@@ -527,6 +668,21 @@ test('requestTimeout', async (t) => {
     assert.equal(res.status, 200);
     assert.equal(cleared, true);
     assert.match(res.text, /data: line/);
+  });
+
+  await t.test('leaves the compose-group route alone too - it sizes its own timeout for multiple sequential levels', async () => {
+    let handlerRan = false;
+    const testApp = express();
+    testApp.use(requestTimeout(20));
+    testApp.post('/api/hosts/h/compose/shop/start', (req, r) => {
+      setTimeout(() => {
+        handlerRan = true;
+        r.json({ ok: true });
+      }, 60);
+    });
+    const res = await request(testApp).post('/api/hosts/h/compose/shop/start');
+    assert.equal(res.status, 200, 'the blanket timeout must not have fired for this path');
+    assert.equal(handlerRan, true);
   });
 });
 
@@ -791,6 +947,82 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
 
   await t.test('it needs a session', async () => {
     assert.equal((await request(app).get(`/api/hosts/${hostId}/dashboard`)).status, 401);
+  });
+});
+
+// Pure db/computation like /events beside it - reconstructed from durable history, not sampled, so
+// this seeds events/host_reachability rows directly rather than mocking anything docker-shaped.
+test('GET /hosts/:hostId/uptime', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const CONTAINER = 'uptimeaaaaaa';
+  const REMOVED = 'uptimebbbbbb';
+  const now = Date.now();
+  const DAY = 86_400_000;
+
+  const SNAPSHOT = {
+    reachable: true,
+    statsTs: now,
+    containers: [{ id: CONTAINER, name: 'web', state: 'running', health: null, image: 'nginx', composeProject: 'shop' }],
+  };
+  t.beforeEach((t2) => t2.mock.method(metricsCollector, 'getSnapshot', () => SNAPSHOT));
+
+  // A restart two days ago (inside the default 30d window) so the live container has something
+  // other than a flat 100% to report, plus one row for a container that no longer exists at all -
+  // covering getContainersWithLifecycleEvents pulling in a container the snapshot doesn't have.
+  db.insertEvent({ hostId, containerId: CONTAINER, containerName: 'web', action: 'die', ts: now - 2 * DAY, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: CONTAINER, containerName: 'web', action: 'start', ts: now - 2 * DAY + 60_000, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: REMOVED, containerName: 'gone', action: 'start', ts: now - 3 * DAY, rawJson: '{}' });
+  db.insertEvent({ hostId, containerId: REMOVED, containerName: 'gone', action: 'die', ts: now - 1 * DAY, rawJson: '{}' });
+  db.insertHostReachability(hostId, now - 4 * DAY, false);
+  db.insertHostReachability(hostId, now - 4 * DAY + 3_600_000, true);
+
+  await t.test('reports both the host and every container that did something in the window', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/uptime`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.days, 30);
+    assert.ok(
+      res.body.host.upPercent > 0 && res.body.host.upPercent < 100,
+      `expected a partial host outage to show: ${res.body.host.upPercent}`
+    );
+
+    const ids = res.body.containers.map((c) => c.id).sort();
+    assert.deepEqual(ids, [CONTAINER, REMOVED].sort());
+
+    const live = res.body.containers.find((c) => c.id === CONTAINER);
+    assert.equal(live.removed, false);
+    assert.equal(live.composeProject, 'shop');
+    assert.equal(live.restartCount, 1);
+    // Up the whole accounted window except the 60s between the seeded die and start - not a flat
+    // 100%, which is the point of seeding a restart rather than just a bare 'start'.
+    assert.ok(live.upPercent > 99 && live.upPercent < 100, `expected the seeded 60s restart gap to show: ${live.upPercent}`);
+    assert.ok(live.downMs > 0 && live.downMs < 120_000, `expected ~60s of down time from the seeded restart: ${live.downMs}`);
+
+    const removed = res.body.containers.find((c) => c.id === REMOVED);
+    assert.equal(removed.removed, true);
+    assert.equal(removed.composeProject, null);
+    assert.ok(removed.downMs > 0, 'a container with no live anchor that ended on a die event should show down time, not unknown');
+  });
+
+  await t.test('days is clamped to the documented max rather than accepting an arbitrary window', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await agent.get(`/api/hosts/${hostId}/uptime?days=99999`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.days, 90);
+  });
+
+  await t.test('a viewer can read it - no state changes here, same as /events', async () => {
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${hostId}/uptime`)).status, 200);
+  });
+
+  await t.test('an unknown host 404s', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/uptime`)).status, 404);
+  });
+
+  await t.test('it needs a session', async () => {
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/uptime`)).status, 401);
   });
 });
 

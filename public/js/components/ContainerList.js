@@ -12,10 +12,11 @@ export default {
     stats: { type: Object, default: () => ({}) },
     metricsView: { type: Object, default: () => ({}) },
     actionInFlight: { type: Object, default: () => ({}) },
+    groupActionInFlight: { type: Object, default: () => ({}) },
     selectedContainerId: { type: String, default: null },
     isAdmin: { type: Boolean, default: false },
   },
-  emits: ['select', 'action', 'open-logs', 'open-metrics'],
+  emits: ['select', 'action', 'group-action', 'open-logs', 'open-metrics'],
   data() {
     return {
       collapsedGroups: {},
@@ -34,6 +35,11 @@ export default {
     },
   },
   methods: {
+    // "Ungrouped" is the synthetic bucket for standalone containers (see app.js's
+    // groupedContainers) - there is no compose project behind it to batch-act on.
+    isRealGroup(name) {
+      return name !== 'Ungrouped';
+    },
     toggleGroup(name) {
       this.collapsedGroups = { ...this.collapsedGroups, [name]: !this.collapsedGroups[name] };
     },
@@ -75,6 +81,11 @@ export default {
         <div class="group-header" @click="toggleGroup(groupName)">
           <span class="chevron" :class="{open: !collapsedGroups[groupName]}">&#9656;</span>
           {{ groupName }} <span class="muted">({{ items.length }})</span>
+          <div v-if="isAdmin && isRealGroup(groupName)" class="group-actions" @click.stop title="Batch action for every container in this compose project">
+            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'start')">Start all</button>
+            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'stop')">Stop all</button>
+            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'restart')">Restart all</button>
+          </div>
         </div>
         <table v-show="!collapsedGroups[groupName]" class="containers">
           <thead>

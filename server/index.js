@@ -16,7 +16,6 @@ const {
   checkHost,
   testHostConnection,
   listContainers,
-  containerAction,
   streamLogs,
   downloadLogs,
   getStats,
@@ -30,8 +29,16 @@ const {
   ALLOWED_ACTIONS,
   CONTAINER_ACTION_TIMEOUT_MS,
   DISK_USAGE_TIMEOUT_MS,
+  MAX_QUEUE_WAIT_MS,
 } = require('./docker');
+// The module object, not a destructured reference, for the two calls the compose-group route below
+// makes - a destructured binding is a plain copy of the function value at require time, so
+// test/index.test.js mocking docker.listContainers/getTopologyMeta afterwards would never reach it.
+// Same reasoning as statsWatcher.js's docker require - see server/CLAUDE.md.
+const docker = require('./docker');
 const db = require('./db');
+const { computeContainerUptime, computeHostUptime } = require('./uptime');
+const { orderGroupLevels, mapLimit } = require('./composeGroup');
 const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
@@ -54,7 +61,7 @@ const SSE_HEARTBEAT_MS = 30_000;
 
 // Longer than any docker call this can be waiting on (CONTAINER_ACTION_TIMEOUT_MS, the longest,
 // is 30s) plus the queue wait in docker.js's run(), so a request only hits this once the call
-// behind it has stopped being merely slow.
+// behind it has stopped being merely slow. The compose-group route is exempt - see it below.
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 50_000;
 
 const MAX_ROW_LIMIT = 1000;
@@ -122,29 +129,36 @@ function requireHostQuery(req, res, next) {
 // any request at all. So: answer, always, even 504. SSE routes are exempt by path suffix.
 const STREAMING_PATH_RE = /\/(logs|logs\/download|events\/stream)$/;
 
+// The compose-group route runs its levels sequentially, each up to CONTAINER_ACTION_TIMEOUT_MS,
+// so REQUEST_TIMEOUT_MS's single-docker-call budget doesn't hold for it - it sizes its own timeout
+// with armResponseTimeout instead of the blanket one below. See the route and server/CLAUDE.md.
+const COMPOSE_GROUP_PATH_RE = /\/compose\/[^/]+\/[^/]+$/;
+
+// Wraps res.json so a late real response after the timer fires is dropped instead of throwing
+// ERR_HTTP_HEADERS_SENT (the 504 already went out through the captured original), and clears the
+// timer on finish/close. Shared by the blanket per-route timeout below and the compose-group route.
+function armResponseTimeout(req, res, ms) {
+  let timedOut = false;
+  const sendJson = res.json.bind(res);
+  res.json = (body) => (timedOut ? res : sendJson(body));
+
+  const timer = setTimeout(() => {
+    if (res.headersSent || res.writableEnded) return;
+    timedOut = true;
+    logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
+    res.status(504);
+    sendJson({ error: 'timed out waiting for the docker daemon' });
+  }, ms);
+
+  const clear = () => clearTimeout(timer);
+  res.on('finish', clear);
+  res.on('close', clear);
+}
+
 function requestTimeout(ms) {
   return (req, res, next) => {
-    if (STREAMING_PATH_RE.test(req.path)) return next();
-
-    let timedOut = false;
-
-    // The handler is still running when the 504 goes out and will eventually send its own real
-    // response, which would throw ERR_HTTP_HEADERS_SENT and destroy an already-answered
-    // connection - dropping the late write is the fix. The 504 goes out through the captured original.
-    const sendJson = res.json.bind(res);
-    res.json = (body) => (timedOut ? res : sendJson(body));
-
-    const timer = setTimeout(() => {
-      if (res.headersSent || res.writableEnded) return;
-      timedOut = true;
-      logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
-      res.status(504);
-      sendJson({ error: 'timed out waiting for the docker daemon' });
-    }, ms);
-
-    const clear = () => clearTimeout(timer);
-    res.on('finish', clear);
-    res.on('close', clear);
+    if (STREAMING_PATH_RE.test(req.path) || COMPOSE_GROUP_PATH_RE.test(req.path)) return next();
+    armResponseTimeout(req, res, ms);
     next();
   };
 }
@@ -715,6 +729,62 @@ api.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
   res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
 });
 
+const UPTIME_DAYS_DEFAULT = 30;
+const UPTIME_DAYS_MAX = 90;
+
+// Reconstructed entirely from durable history already retained for other reasons (events,
+// host_reachability) - no new sampling, no new retention window. See server/uptime.js. A container
+// currently unreachable or removed still gets a row if it has any lifecycle event in the window
+// (see getContainersWithLifecycleEvents); one that has never done anything gets 100% from the live
+// snapshot alone. Pure db/computation like /events and /metrics/history beside it - no docker call,
+// so no try/catch needed here either.
+api.get('/hosts/:hostId/uptime', requireHost, (req, res) => {
+  const hostId = req.params.hostId;
+  const days = intParam(req.query.days, UPTIME_DAYS_DEFAULT, UPTIME_DAYS_MAX) || UPTIME_DAYS_DEFAULT;
+  const until = Date.now();
+  const since = until - days * 86_400_000;
+
+  const snapshot = metricsCollector.getSnapshot(hostId);
+  const host = computeHostUptime({
+    transitions: db.getHostReachabilityTransitions(hostId, since),
+    since,
+    until,
+    seedReachable: db.getHostReachabilitySeed(hostId, since),
+    liveReachable: snapshot ? snapshot.reachable : null,
+  });
+
+  // Union of what's live right now and whatever had a lifecycle event in the window - a container
+  // that crashed badly enough to get replaced under a new id is exactly the one worth surfacing,
+  // and it would otherwise silently drop out the moment it stops existing.
+  const liveById = new Map(((snapshot && snapshot.containers) || []).map((c) => [c.id, c]));
+  const containerIds = new Map(liveById);
+  for (const row of db.getContainersWithLifecycleEvents(hostId, since)) {
+    if (!containerIds.has(row.containerId)) containerIds.set(row.containerId, { id: row.containerId, name: row.containerName });
+  }
+
+  const restartCounts = db.getRestartCountsByContainer(hostId, since);
+  const containers = [...containerIds.values()].map((c) => {
+    const live = liveById.get(c.id);
+    const uptime = computeContainerUptime({
+      events: db.getContainerLifecycleEvents(hostId, c.id, since),
+      since,
+      until,
+      seedAction: db.getContainerLifecycleSeed(hostId, c.id, since),
+      liveState: live ? { running: live.state === 'running', health: live.health } : null,
+    });
+    return {
+      id: c.id,
+      name: c.name,
+      composeProject: live ? live.composeProject : null,
+      removed: !live,
+      restartCount: restartCounts.get(c.id) || 0,
+      ...uptime,
+    };
+  });
+
+  res.json({ days, since, until, host, containers });
+});
+
 api.get('/hosts/:hostId/events', requireHost, (req, res) => {
   const sinceTs = intParam(req.query.since, 0);
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
@@ -816,7 +886,7 @@ api.delete('/alerts', requireAdmin, requireHostQuery, (req, res) => {
 // settings below, but general enough (no secrets, affects every role) that the read isn't
 // admin-gated: /session already hands it to every authenticated user regardless of role, since a
 // viewer's landing tab should match the configured default too, not just an admin's.
-const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity']);
+const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity', 'uptime']);
 const DEFAULT_VIEW_KEY = 'defaultView';
 const FALLBACK_VIEW = 'list';
 
@@ -1124,6 +1194,52 @@ api.delete('/settings/container-rules/:id', requireAdmin, (req, res) => {
   res.json(db.getContainerAlertRules());
 });
 
+// Shared by the single-container route below and the compose-group route further down, so a group
+// action writes exactly the same audit_log/log-line pair a single one does rather than a lighter
+// copy - alerts.js's manual-stop/manual-start suppression (countManualStopsSince/StartsSince) reads
+// audit_log by ts, so a group stop that skipped it would read every container in the group as an
+// unexpected crash the moment its die event arrived. Never throws: an action failing is a normal,
+// reportable outcome here, not an exceptional one - the group route needs to keep going past one
+// container's failure, and the single-container route below turns a false ok back into dockerError.
+async function performContainerAction(host, containerId, action, { username, containerName }) {
+  const logFields = { user: username, host: host.id, container: containerName || containerId };
+  const startedAt = Date.now();
+
+  // Written before containerAction runs, not after it resolves - the daemon can emit the
+  // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
+  // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
+  const auditId = db.insertAuditLog({
+    ts: Date.now(),
+    username: username || null,
+    hostId: host.id,
+    containerId,
+    containerName: containerName || null,
+    action,
+    result: 'pending',
+    error: null,
+  });
+
+  // Paired with the completion line below rather than logging only on success: `docker stop` can
+  // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
+  // a pressed button left nothing in the log at all - only a 'pending' audit row.
+  logger.info(`container.${action}.requested`, logFields);
+
+  try {
+    // Module object, not the destructured containerAction above - mockable for the same reason
+    // docker.listContainers/getTopologyMeta are, and metricsCollector.pollHost's own docker calls
+    // already go through the module object for the identical reason. See server/CLAUDE.md.
+    await docker.containerAction(host, containerId, action);
+    db.updateAuditLogResult(auditId, 'ok', null);
+    logger.info(`container.${action}`, { ...logFields, tookMs: Date.now() - startedAt });
+    return { ok: true };
+  } catch (err) {
+    const detail = err.stderr || err.message;
+    db.updateAuditLogResult(auditId, 'error', detail);
+    logger.error(`container.${action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
+    return { ok: false, error: detail };
+  }
+}
+
 api.post(
   '/hosts/:hostId/containers/:id/:action',
   requireAdmin,
@@ -1134,41 +1250,78 @@ api.post(
     const host = req.odwHost;
     const snapshot = metricsCollector.getSnapshot(req.params.hostId);
     const container = (snapshot?.containers || []).find((c) => c.id === req.params.id);
-    const logFields = { user: req.session.username, host: req.params.hostId, container: container ? container.name : req.params.id };
-    const startedAt = Date.now();
-
-    // Written before containerAction runs, not after it resolves - the daemon can emit the
-    // die/start event before this CLI call returns (a slow-to-stop container). alerts.js's
-    // manual-stop suppression looks this row up by ts, so it must already exist or a fast event races it.
-    const auditId = db.insertAuditLog({
-      ts: Date.now(),
-      username: req.session.username || null,
-      hostId: req.params.hostId,
-      containerId: req.params.id,
+    const result = await performContainerAction(host, req.params.id, req.params.action, {
+      username: req.session.username,
       containerName: container ? container.name : null,
-      action: req.params.action,
-      result: 'pending',
-      error: null,
     });
-
-    // Paired with the completion line below rather than logging only on success: `docker stop` can
-    // sit through its full 10s SIGTERM grace (longer against a wedged daemon), and until it returned
-    // a pressed button left nothing in the log at all - only a 'pending' audit row.
-    logger.info(`container.${req.params.action}.requested`, logFields);
-
-    try {
-      await containerAction(host, req.params.id, req.params.action);
-      db.updateAuditLogResult(auditId, 'ok', null);
-      logger.info(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt });
-      res.json({ ok: true });
-    } catch (err) {
-      const detail = err.stderr || err.message;
-      db.updateAuditLogResult(auditId, 'error', detail);
-      logger.error(`container.${req.params.action}`, { ...logFields, tookMs: Date.now() - startedAt, error: detail });
-      dockerError(res, err);
-    }
+    if (result.ok) return res.json({ ok: true });
+    dockerError(res, { stderr: result.error });
   }
 );
+
+// Group actions are deliberately batch start/stop/restart, not real `docker compose up`/`down`/
+// `pull` - those need the compose YAML itself (to know images/build context), which this app never
+// has: it only ever talks to the docker CLI/socket, identifying a group purely from the
+// com.docker.compose.project label, the same way Flow view does. That works identically for a
+// remote SSH host, where there is no local copy of the file to hand to `docker compose` anyway.
+// See server/CLAUDE.md.
+
+// Caps how many containers within one level run at once - leaves most of docker.js's
+// MAX_CONCURRENT slots free for other hosts' polls and other viewers' requests. See mapLimit
+// in composeGroup.js and server/CLAUDE.md.
+const COMPOSE_LEVEL_CONCURRENCY = 4;
+
+api.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, requireContainerAction, async (req, res) => {
+  const host = req.odwHost;
+  const { project } = req.params;
+  const action = req.params.action;
+
+  let containers;
+  try {
+    containers = await docker.listContainers(host);
+  } catch (err) {
+    return dockerError(res, err);
+  }
+  const groupContainers = containers.filter((c) => c.composeProject === project);
+  if (!groupContainers.length) return res.status(404).json({ error: 'no such compose project on this host' });
+
+  // Ordering is a nicety on top of a correct-either-way action, not a precondition for it - a
+  // depends_on label that fails to parse (or the docker call behind it failing outright) falls
+  // back to one unordered level rather than failing the whole group action.
+  let edges = [];
+  try {
+    const meta = await docker.getTopologyMeta(host, containers);
+    edges = docker.dependsOnEdges(containers, meta.dependsOnRaw);
+  } catch (err) {
+    logger.warn('compose_group.order.failed', { host: host.id, project, error: err.message });
+  }
+
+  const byId = new Map(groupContainers.map((c) => [c.id, c]));
+  const levels = orderGroupLevels(
+    groupContainers.map((c) => c.id),
+    edges,
+    action
+  );
+
+  // Levels run sequentially and each level now runs in batches of COMPOSE_LEVEL_CONCURRENCY (below),
+  // so this route is exempt from the blanket REQUEST_TIMEOUT_MS (COMPOSE_GROUP_PATH_RE) and sizes
+  // its own instead, worst-case batch count times a batch's worst-case time.
+  const totalBatches = levels.reduce((sum, level) => sum + Math.ceil(level.length / COMPOSE_LEVEL_CONCURRENCY), 0);
+  const timeoutMs = Math.max(REQUEST_TIMEOUT_MS, totalBatches * (CONTAINER_ACTION_TIMEOUT_MS + MAX_QUEUE_WAIT_MS));
+  armResponseTimeout(req, res, timeoutMs);
+
+  const results = [];
+  for (const level of levels) {
+    const settled = await mapLimit(level, COMPOSE_LEVEL_CONCURRENCY, async (id) => {
+      const c = byId.get(id);
+      const outcome = await performContainerAction(host, id, action, { username: req.session.username, containerName: c.name });
+      return { containerId: id, containerName: c.name, ...outcome };
+    });
+    results.push(...settled);
+  }
+
+  res.json({ project, action, results });
+});
 
 api.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {
   const host = req.odwHost;

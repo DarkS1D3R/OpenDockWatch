@@ -30,6 +30,7 @@ function mockDb(t, overrides = {}) {
     markWebhookAttemptFailed: () => {},
     getPendingWebhookRetries: () => [],
     getContainerAlertRules: () => [],
+    insertHostReachability: () => {},
   };
   for (const [name, impl] of Object.entries({ ...defaults, ...overrides })) {
     t.mock.method(db, name, impl);
@@ -170,6 +171,30 @@ test('handleHostReachability', async (t) => {
     const fired = captureFired(t);
     alerts.handleHostReachability('h', 'Host', true, false);
     assert.equal(fired.length, 0);
+  });
+
+  await t.test('records a down transition in host_reachability', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (hostId, ts, reachable) => rows.push({ hostId, ts, reachable }) });
+    alerts.handleHostReachability('h', 'Host', false, true);
+    assert.equal(rows.length, 1);
+    assert.deepEqual({ hostId: rows[0].hostId, reachable: rows[0].reachable }, { hostId: 'h', reachable: false });
+  });
+
+  await t.test('records an up transition in host_reachability', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (hostId, ts, reachable) => rows.push({ hostId, ts, reachable }) });
+    alerts.handleHostReachability('h', 'Host', true, false);
+    assert.equal(rows.length, 1);
+    assert.deepEqual({ hostId: rows[0].hostId, reachable: rows[0].reachable }, { hostId: 'h', reachable: true });
+  });
+
+  await t.test('writes nothing when the reachability state does not actually change', () => {
+    const rows = [];
+    mockDb(t, { insertHostReachability: (...args) => rows.push(args) });
+    alerts.handleHostReachability('h', 'Host', false, false);
+    alerts.handleHostReachability('h', 'Host', true, true);
+    assert.equal(rows.length, 0);
   });
 });
 
@@ -430,6 +455,47 @@ test('retryFailedWebhooks', async (t) => {
 
     await assert.doesNotReject(() => alerts.retryFailedWebhooks());
     assert.deepEqual(failed, [8]);
+  });
+
+  await t.test('a sweep still in flight is skipped rather than re-delivering the same batch', async (t) => {
+    let getPendingCalls = 0;
+    const delivered = [];
+    mockDb(t, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      getPendingWebhookRetries: () => {
+        getPendingCalls += 1;
+        return [
+          {
+            id: 9,
+            ts: Date.now(),
+            host_id: 'h',
+            container_id: 'c',
+            container_name: 'web',
+            rule: 'container_cpu',
+            severity: 'warning',
+            message: 'boom',
+            webhook_attempts: 0,
+          },
+        ];
+      },
+      markWebhookDelivered: (id) => delivered.push(id),
+    });
+    const originalFetch = global.fetch;
+    let resolveFetch;
+    global.fetch = () => new Promise((resolve) => (resolveFetch = resolve));
+    t.after(() => (global.fetch = originalFetch));
+    const warned = [];
+    t.mock.method(logger, 'warn', (event) => warned.push(event));
+
+    const first = alerts.retryFailedWebhooks();
+    await Promise.resolve(); // let the first sweep reach its still-pending fetch()
+    await alerts.retryFailedWebhooks(); // second tick fires while the first is still delivering
+    resolveFetch({ ok: true });
+    await first;
+
+    assert.equal(getPendingCalls, 1);
+    assert.deepEqual(delivered, [9]);
+    assert.ok(warned.includes('alert.webhook.retry_sweep_overlapped'));
   });
 });
 

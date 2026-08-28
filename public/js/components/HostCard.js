@@ -1,7 +1,7 @@
 import { formatGB } from '../format.js';
 import { apiGetDiskUsageImages, apiGetMetricsHistory } from '../api.js';
 import { resolveHostMemoryDisplay } from '../lib/hostMemory.js';
-import { POLL_MS, HISTORY_RANGE_SLOTS, HOST_METRICS_HISTORY_LEN } from '../constants.js';
+import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS, HOST_METRICS_HISTORY_LEN } from '../constants.js';
 import SparkTile from './SparkTile.js';
 
 // 'live' is the root's rolling window (the metricsHistory prop, refreshed every poll); the other
@@ -92,6 +92,11 @@ export default {
     // draws in the right-hand part of the chart instead of stretching to fill it.
     slotCount() {
       return HISTORY_RANGE_SLOTS[this.range] || HOST_METRICS_HISTORY_LEN;
+    },
+    // 0 for 'live': that series is the root's rolling poll buffer, not bucketed history, so it
+    // has no empty buckets to place around and keeps padSlots' plain right-alignment.
+    bucketMs() {
+      return HISTORY_RANGE_BUCKET_MS[this.range] || 0;
     },
     rangeEmpty() {
       return this.range !== 'live' && !this.rangeLoading && !this.rangeError && !this.activeHistory.length;
@@ -241,6 +246,7 @@ export default {
           :format-value="fmtPercent"
           :sample-times="sampleTimes"
           :slot-count="slotCount"
+          :bucket-ms="bucketMs"
           :hover-index="hoverIndex"
           :detailed="fullscreen"
           @hover="hoverIndex = $event"
@@ -262,6 +268,7 @@ export default {
           :format-value="fmtGB"
           :sample-times="sampleTimes"
           :slot-count="slotCount"
+          :bucket-ms="bucketMs"
           :hover-index="hoverIndex"
           :detailed="fullscreen"
           @hover="hoverIndex = $event"

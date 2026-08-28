@@ -1,4 +1,4 @@
-import { POLL_MS, HISTORY_RANGE_SLOTS } from '../constants.js';
+import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS } from '../constants.js';
 import { formatBytes, formatRate } from '../format.js';
 import { apiGetMetricsHistory } from '../api.js';
 import SparkTile from './SparkTile.js';
@@ -34,6 +34,9 @@ export default {
   computed: {
     slotCount() {
       return HISTORY_RANGE_SLOTS[this.range];
+    },
+    bucketMs() {
+      return HISTORY_RANGE_BUCKET_MS[this.range];
     },
     sampleTimes() {
       return this.rows.map((r) => r.bucket);
@@ -158,6 +161,7 @@ export default {
               :format-value="fmtPercent"
               :sample-times="sampleTimes"
               :slot-count="slotCount"
+              :bucket-ms="bucketMs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -170,6 +174,7 @@ export default {
               :format-value="fmtBytes"
               :sample-times="sampleTimes"
               :slot-count="slotCount"
+              :bucket-ms="bucketMs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -185,6 +190,7 @@ export default {
               :format-value="fmtRate"
               :sample-times="sampleTimes"
               :slot-count="slotCount"
+              :bucket-ms="bucketMs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -200,6 +206,7 @@ export default {
               :format-value="fmtRate"
               :sample-times="sampleTimes"
               :slot-count="slotCount"
+              :bucket-ms="bucketMs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"

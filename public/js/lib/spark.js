@@ -64,3 +64,33 @@ export function axisTickIndices(slots, count) {
   }
   return indices;
 }
+
+// Places bucketed samples at their real position in the window instead of padSlots' count-based
+// left-pad, which silently treats a missing bucket as "history hadn't started yet": the server's
+// GROUP BY emits no row for a bucket with no samples, so a collector outage shrank the left pad
+// and squashed the hole. Falls back to padSlots for an unbucketed series. See public/CLAUDE.md.
+export function alignSlots(samples, sampleTimes, slotCount, bucketMs) {
+  if (!bucketMs || !samples.length || !sampleTimes || sampleTimes.length !== samples.length) {
+    return padSlots(samples, slotCount);
+  }
+  // The newest bucket holds the right edge, exactly as padSlots put the newest sample there - so
+  // the window is anchored to the data, not to a clock this pure function would have to read.
+  const anchor = sampleTimes[sampleTimes.length - 1];
+  if (!Number.isFinite(anchor)) return padSlots(samples, slotCount);
+  const slots = Array(slotCount).fill(null);
+  for (let i = 0; i < samples.length; i++) {
+    const ts = sampleTimes[i];
+    if (!Number.isFinite(ts)) continue;
+    const idx = slotCount - 1 - Math.round((anchor - ts) / bucketMs);
+    if (idx >= 0 && idx < slotCount) slots[idx] = samples[i];
+  }
+  return slots;
+}
+
+// The time axis alignSlots implies: every slot gets a timestamp, including the ones no sample
+// landed in. Ticks then sit at even intervals labelled with the time actually under them, rather
+// than being spaced by array index over gap-collapsed data.
+export function slotTimes(anchorTs, slotCount, bucketMs) {
+  if (!bucketMs || !Number.isFinite(anchorTs)) return [];
+  return Array.from({ length: slotCount }, (_, i) => anchorTs - (slotCount - 1 - i) * bucketMs);
+}

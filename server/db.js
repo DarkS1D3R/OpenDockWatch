@@ -43,6 +43,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_host_metrics_lookup ON host_metrics (host_id, ts);
 
+  -- One row per reachable<->unreachable transition (both directions), written by
+  -- alerts.handleHostReachability. host_unreachable in the alerts table only ever records the down
+  -- side, so there was nowhere durable to answer "was this host reachable at time T" - this backs
+  -- the uptime rollup in server/uptime.js the same way events already backs the container side.
+  CREATE TABLE IF NOT EXISTS host_reachability (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    reachable INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_host_reachability_lookup ON host_reachability (host_id, ts);
+
   CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host_id TEXT NOT NULL,
@@ -219,6 +231,38 @@ const stmts = {
     WHERE host_id = ? AND ts >= ? AND action IN ('start', 'restart')
     GROUP BY container_id
   `),
+  // Same cleared_at exemption as the two restart counters above, and the same reason: an uptime
+  // rollup answers what the container actually did, not what the Activity tab currently shows.
+  // Filtered to exactly the actions server/uptime.js's classifyContainerAction knows how to read -
+  // everything else (oom, exec_create, rename, resize, top, attach, ...) fires but changes neither
+  // running state nor health, so leaving it out of the query means the state-machine walk never has
+  // to recognise and skip an "ignore this one" row.
+  getContainerLifecycleEvents: db.prepare(`
+    SELECT ts, action FROM events
+    WHERE host_id = ? AND container_id = ? AND ts >= ?
+      AND (action IN ('create', 'start', 'restart', 'unpause', 'die', 'stop', 'kill', 'pause', 'destroy') OR action GLOB 'health_status:*')
+    ORDER BY ts ASC
+  `),
+  // The single most recent qualifying event before the window - what was true when the window
+  // started. GLOB, not LIKE, for the health_status prefix match: LIKE's '_' wildcard would also
+  // match any other single character in that position, which happens to be harmless here but is
+  // the wrong operator to reach for on a pattern that isn't meant to have wildcards in it.
+  getContainerLifecycleSeed: db.prepare(`
+    SELECT action FROM events
+    WHERE host_id = ? AND container_id = ? AND ts < ?
+      AND (action IN ('create', 'start', 'restart', 'unpause', 'die', 'stop', 'kill', 'pause', 'destroy') OR action GLOB 'health_status:*')
+    ORDER BY ts DESC LIMIT 1
+  `),
+  // Backs the uptime route's container list for a container the live snapshot no longer has - one
+  // that was removed, or recreated under a new id, during the window. Same cleared_at exemption
+  // and action filter as getContainerLifecycleEvents/-Seed above; see server/CLAUDE.md for why
+  // MAX(ts) is a real aggregate rather than just referenced.
+  getContainersWithLifecycleEvents: db.prepare(`
+    SELECT container_id AS containerId, container_name AS containerName, MAX(ts) AS ts FROM events
+    WHERE host_id = ? AND ts >= ? AND container_id IS NOT NULL
+      AND (action IN ('create', 'start', 'restart', 'unpause', 'die', 'stop', 'kill', 'pause', 'destroy') OR action GLOB 'health_status:*')
+    GROUP BY container_id
+  `),
   countOpenAlertsByContainer: db.prepare(`
     SELECT container_id AS containerId, COUNT(*) AS n FROM alerts
     WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL
@@ -235,11 +279,15 @@ const stmts = {
     SELECT COUNT(*) AS n FROM audit_log
     WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
   `),
+  insertHostReachability: db.prepare(`INSERT INTO host_reachability (host_id, ts, reachable) VALUES (?, ?, ?)`),
+  getHostReachabilityTransitions: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? AND ts >= ? ORDER BY ts ASC`),
+  getHostReachabilitySeed: db.prepare(`SELECT reachable FROM host_reachability WHERE host_id = ? AND ts < ? ORDER BY ts DESC LIMIT 1`),
   pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
   pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
+  pruneHostReachability: db.prepare(`DELETE FROM host_reachability WHERE ts < ?`),
   clearEventsByHost: db.prepare(`UPDATE events SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
   clearAlertsByHost: db.prepare(`UPDATE alerts SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
   getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
@@ -436,6 +484,39 @@ function getRestartCountsByContainer(hostId, sinceTs) {
   return new Map(rows.map((r) => [r.containerId, r.n]));
 }
 
+// The two reads server/uptime.js's computeContainerUptime is built for: every state-relevant event
+// in the window, plus the single event just before it needed to know what state the window opened
+// in. See getContainerLifecycleEvents/-Seed above for why the query is scoped to exactly the
+// actions that mean something to that state machine.
+function getContainerLifecycleEvents(hostId, containerId, sinceTs) {
+  return stmts.getContainerLifecycleEvents.all(hostId, containerId, sinceTs);
+}
+
+function getContainerLifecycleSeed(hostId, containerId, beforeTs) {
+  const row = stmts.getContainerLifecycleSeed.get(hostId, containerId, beforeTs);
+  return row ? row.action : null;
+}
+
+function getContainersWithLifecycleEvents(hostId, sinceTs) {
+  return stmts.getContainersWithLifecycleEvents.all(hostId, sinceTs);
+}
+
+// Written by alerts.handleHostReachability on both directions of a reachability transition - see
+// server/CLAUDE.md and server/uptime.js's computeHostUptime, which this backs the same way
+// getContainerLifecycleEvents backs the container side.
+function insertHostReachability(hostId, ts, reachable) {
+  stmts.insertHostReachability.run(hostId, ts, reachable ? 1 : 0);
+}
+
+function getHostReachabilityTransitions(hostId, sinceTs) {
+  return stmts.getHostReachabilityTransitions.all(hostId, sinceTs).map((r) => ({ ts: r.ts, reachable: !!r.reachable }));
+}
+
+function getHostReachabilitySeed(hostId, beforeTs) {
+  const row = stmts.getHostReachabilitySeed.get(hostId, beforeTs);
+  return row ? !!row.reachable : null;
+}
+
 function countManualStopsSince(hostId, containerId, sinceTs) {
   return stmts.countManualStopsSince.get(hostId, containerId, sinceTs).n;
 }
@@ -589,6 +670,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
     events: stmts.pruneEvents.run(now - eventsRetentionMs).changes,
     auditLog: stmts.pruneAuditLog.run(now - auditRetentionMs).changes,
     alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
+    hostReachability: stmts.pruneHostReachability.run(now - eventsRetentionMs).changes,
   }));
 }
 
@@ -612,6 +694,12 @@ module.exports = {
   getLastAlertFireTs,
   countRestartsSince,
   getRestartCountsByContainer,
+  getContainerLifecycleEvents,
+  getContainerLifecycleSeed,
+  getContainersWithLifecycleEvents,
+  insertHostReachability,
+  getHostReachabilityTransitions,
+  getHostReachabilitySeed,
   countManualStopsSince,
   countManualStartsSince,
   getEvents,

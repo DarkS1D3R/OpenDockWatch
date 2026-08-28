@@ -9,6 +9,7 @@ import ContainerList from './components/ContainerList.js';
 import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
+import UptimeReport from './components/UptimeReport.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import {
@@ -24,6 +25,7 @@ import {
   apiAckAlert,
   apiAckAllAlerts,
   apiClearAlerts,
+  apiComposeGroupAction,
   reportClientError,
 } from './api.js';
 
@@ -85,6 +87,7 @@ const app = createApp({
     ContainerMetricsModal,
     FlowView,
     LogsView,
+    UptimeReport,
   },
   data() {
     return {
@@ -101,8 +104,9 @@ const app = createApp({
       pollInFlight: false,
       pollFailures: 0,
       actionInFlight: {},
+      groupActionInFlight: {},
 
-      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' - reset to the configured default once the session loads, see mounted()
+      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -415,7 +419,7 @@ const app = createApp({
       // The bottom Log Viewer belongs to List/Flow (via the detail panel's button). Closing it
       // on the way into a view that can't open it releases its connection - logViewerOpen is a
       // v-if, so this unmounts and stops the stream. See detailPanelVisible for the budget.
-      if (v === 'logs' || v === 'activity') this.closeLogViewer();
+      if (v === 'logs' || v === 'activity' || v === 'uptime') this.closeLogViewer();
       if (v === 'flow') await this.fetchTopology();
     },
     async fetchContainers({ fresh = false } = {}) {
@@ -462,6 +466,28 @@ const app = createApp({
         const next = { ...this.actionInFlight };
         delete next[container.id];
         this.actionInFlight = next;
+      }
+    },
+    // groupName here is the compose project itself, not the display bucket - ContainerList already
+    // withholds this event for the synthetic "Ungrouped" bucket, since there's no real project to
+    // batch-act on there. Per-container results (some containers in a group can fail while others
+    // succeed - see server/composeGroup.js) are summarized into containersError rather than each
+    // getting its own row, since this button covers everything in the project at once.
+    async doGroupAction(groupName, action) {
+      this.groupActionInFlight = { ...this.groupActionInFlight, [groupName]: action };
+      try {
+        const { results } = await apiComposeGroupAction(this.selectedHostId, groupName, action);
+        await this.fetchContainers({ fresh: true });
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length) {
+          this.containersError = `${action} on ${groupName}: ${failed.map((r) => `${r.containerName || r.containerId} (${r.error})`).join(', ')}`;
+        }
+      } catch (err) {
+        this.containersError = `${action} on ${groupName} failed: ${err.message}`;
+      } finally {
+        const next = { ...this.groupActionInFlight };
+        delete next[groupName];
+        this.groupActionInFlight = next;
       }
     },
     selectContainerById(id) {
@@ -543,6 +569,7 @@ const app = createApp({
           <button :class="{active: view==='activity'}" @click="setView('activity')">
             Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}</span>
           </button>
+          <button :class="{active: view==='uptime'}" @click="setView('uptime')">Uptime</button>
         </div>
         <div class="view-toggle">
           <button :class="{active: stateFilter==='all'}" @click="stateFilter='all'">All</button>
@@ -557,7 +584,7 @@ const app = createApp({
       <p v-if="containersError" class="error">{{ containersError }}</p>
 
       <host-card
-        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity'"
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity' && view !== 'uptime'"
         :host-info="hostInfo"
         :host-name="currentHostName"
         :host-id="selectedHostId"
@@ -576,10 +603,12 @@ const app = createApp({
               :stats="stats"
               :metrics-view="containerMetricsView"
               :action-in-flight="actionInFlight"
+              :group-action-in-flight="groupActionInFlight"
               :selected-container-id="selectedContainerId"
               :is-admin="isAdmin"
               @select="selectContainerById"
               @action="doAction"
+              @group-action="doGroupAction"
               @open-logs="openLogsFor"
               @open-metrics="openMetrics"
             ></container-list>
@@ -612,6 +641,8 @@ const app = createApp({
             @ack-all="ackAllAlertsAction"
             @clear-alerts="clearAlertsAction"
           ></activity-view>
+
+          <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
         </div>
 
         <container-detail

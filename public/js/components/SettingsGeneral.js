@@ -6,6 +6,7 @@ const VIEWS = [
   { value: 'flow', label: 'Flow' },
   { value: 'logs', label: 'Logs' },
   { value: 'activity', label: 'Activity' },
+  { value: 'uptime', label: 'Uptime' },
 ];
 
 // The Settings panel's General tab: currently just the default landing tab, env-default +

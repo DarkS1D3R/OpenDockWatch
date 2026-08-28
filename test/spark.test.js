@@ -138,3 +138,60 @@ test('axisTickIndices', async (t) => {
     assert.deepEqual(spark.axisTickIndices([null, null, null], 4), []);
   });
 });
+
+test('alignSlots', async (t) => {
+  const B = 1000;
+
+  await t.test('anchors the newest bucket on the right edge', () => {
+    assert.deepEqual(spark.alignSlots([1, 2, 3], [1000, 2000, 3000], 5, B), [null, null, 1, 2, 3]);
+  });
+
+  await t.test('leaves a real hole where the server omitted empty buckets', () => {
+    // The whole point: 3 rows spanning 5 buckets must not be drawn as 3 contiguous ones.
+    assert.deepEqual(spark.alignSlots([1, 2, 3], [1000, 4000, 5000], 5, B), [1, null, null, 2, 3]);
+  });
+
+  await t.test('a series covering the full window leaves no left pad', () => {
+    assert.deepEqual(spark.alignSlots([1, 2, 3], [1000, 2000, 3000], 3, B), [1, 2, 3]);
+  });
+
+  await t.test('drops samples that fall before the window', () => {
+    assert.deepEqual(spark.alignSlots([1, 2, 3], [1000, 2000, 3000], 2, B), [2, 3]);
+  });
+
+  await t.test('falls back to padSlots without a bucket width', () => {
+    assert.deepEqual(spark.alignSlots([1, 2], [1000, 4000], 4, 0), [null, null, 1, 2]);
+  });
+
+  await t.test('falls back to padSlots when times do not line up 1:1 with samples', () => {
+    assert.deepEqual(spark.alignSlots([1, 2], [1000], 4, B), [null, null, 1, 2]);
+    assert.deepEqual(spark.alignSlots([], [], 3, B), [null, null, null]);
+  });
+
+  await t.test('skips a non-finite timestamp rather than placing it at NaN', () => {
+    assert.deepEqual(spark.alignSlots([1, 2, 3], [null, 2000, 3000], 3, B), [null, 2, 3]);
+  });
+
+  await t.test('places nulls in the series like any other value', () => {
+    assert.deepEqual(spark.alignSlots([1, null, 3], [1000, 2000, 3000], 3, B), [1, null, 3]);
+  });
+});
+
+test('slotTimes', async (t) => {
+  await t.test('walks back from the anchor one bucket per slot', () => {
+    assert.deepEqual(spark.slotTimes(3000, 3, 1000), [1000, 2000, 3000]);
+  });
+
+  await t.test('returns nothing without a bucket width or a usable anchor', () => {
+    assert.deepEqual(spark.slotTimes(3000, 3, 0), []);
+    assert.deepEqual(spark.slotTimes(null, 3, 1000), []);
+  });
+
+  await t.test('gives every slot a time, so axis ticks land on gaps too', () => {
+    const times = spark.slotTimes(5000, 5, 1000);
+    const slots = spark.alignSlots([1, 2], [1000, 5000], 5, 1000);
+    assert.equal(times.length, slots.length);
+    assert.equal(times[2], 3000); // a slot with no sample still knows when it was
+    assert.equal(slots[2], null);
+  });
+});

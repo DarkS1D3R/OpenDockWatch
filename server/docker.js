@@ -791,6 +791,7 @@ module.exports = {
   statsRowToSample,
   parseStatsLine,
   getTopology,
+  getTopologyMeta,
   getHostInfo,
   getDiskUsage,
   getDiskUsageImages,
@@ -822,4 +823,5 @@ module.exports = {
   ALLOWED_ACTIONS,
   DISK_USAGE_TIMEOUT_MS,
   CONTAINER_ACTION_TIMEOUT_MS,
+  MAX_QUEUE_WAIT_MS,
 };
