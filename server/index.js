@@ -29,6 +29,7 @@ const {
   ALLOWED_ACTIONS,
   CONTAINER_ACTION_TIMEOUT_MS,
   DISK_USAGE_TIMEOUT_MS,
+  MAX_QUEUE_WAIT_MS,
 } = require('./docker');
 // The module object, not a destructured reference, for the two calls the compose-group route below
 // makes - a destructured binding is a plain copy of the function value at require time, so
@@ -37,7 +38,7 @@ const {
 const docker = require('./docker');
 const db = require('./db');
 const { computeContainerUptime, computeHostUptime } = require('./uptime');
-const { orderGroupLevels } = require('./composeGroup');
+const { orderGroupLevels, mapLimit } = require('./composeGroup');
 const { HISTORY_RANGES } = require('./historyRanges');
 const logger = require('./logger');
 const alerts = require('./alerts');
@@ -60,7 +61,7 @@ const SSE_HEARTBEAT_MS = 30_000;
 
 // Longer than any docker call this can be waiting on (CONTAINER_ACTION_TIMEOUT_MS, the longest,
 // is 30s) plus the queue wait in docker.js's run(), so a request only hits this once the call
-// behind it has stopped being merely slow.
+// behind it has stopped being merely slow. The compose-group route is exempt - see it below.
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 50_000;
 
 const MAX_ROW_LIMIT = 1000;
@@ -128,29 +129,36 @@ function requireHostQuery(req, res, next) {
 // any request at all. So: answer, always, even 504. SSE routes are exempt by path suffix.
 const STREAMING_PATH_RE = /\/(logs|logs\/download|events\/stream)$/;
 
+// The compose-group route runs its levels sequentially, each up to CONTAINER_ACTION_TIMEOUT_MS,
+// so REQUEST_TIMEOUT_MS's single-docker-call budget doesn't hold for it - it sizes its own timeout
+// with armResponseTimeout instead of the blanket one below. See the route and server/CLAUDE.md.
+const COMPOSE_GROUP_PATH_RE = /\/compose\/[^/]+\/[^/]+$/;
+
+// Wraps res.json so a late real response after the timer fires is dropped instead of throwing
+// ERR_HTTP_HEADERS_SENT (the 504 already went out through the captured original), and clears the
+// timer on finish/close. Shared by the blanket per-route timeout below and the compose-group route.
+function armResponseTimeout(req, res, ms) {
+  let timedOut = false;
+  const sendJson = res.json.bind(res);
+  res.json = (body) => (timedOut ? res : sendJson(body));
+
+  const timer = setTimeout(() => {
+    if (res.headersSent || res.writableEnded) return;
+    timedOut = true;
+    logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
+    res.status(504);
+    sendJson({ error: 'timed out waiting for the docker daemon' });
+  }, ms);
+
+  const clear = () => clearTimeout(timer);
+  res.on('finish', clear);
+  res.on('close', clear);
+}
+
 function requestTimeout(ms) {
   return (req, res, next) => {
-    if (STREAMING_PATH_RE.test(req.path)) return next();
-
-    let timedOut = false;
-
-    // The handler is still running when the 504 goes out and will eventually send its own real
-    // response, which would throw ERR_HTTP_HEADERS_SENT and destroy an already-answered
-    // connection - dropping the late write is the fix. The 504 goes out through the captured original.
-    const sendJson = res.json.bind(res);
-    res.json = (body) => (timedOut ? res : sendJson(body));
-
-    const timer = setTimeout(() => {
-      if (res.headersSent || res.writableEnded) return;
-      timedOut = true;
-      logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
-      res.status(504);
-      sendJson({ error: 'timed out waiting for the docker daemon' });
-    }, ms);
-
-    const clear = () => clearTimeout(timer);
-    res.on('finish', clear);
-    res.on('close', clear);
+    if (STREAMING_PATH_RE.test(req.path) || COMPOSE_GROUP_PATH_RE.test(req.path)) return next();
+    armResponseTimeout(req, res, ms);
     next();
   };
 }
@@ -1257,6 +1265,12 @@ api.post(
 // com.docker.compose.project label, the same way Flow view does. That works identically for a
 // remote SSH host, where there is no local copy of the file to hand to `docker compose` anyway.
 // See server/CLAUDE.md.
+
+// Caps how many containers within one level run at once - leaves most of docker.js's
+// MAX_CONCURRENT slots free for other hosts' polls and other viewers' requests. See mapLimit
+// in composeGroup.js and server/CLAUDE.md.
+const COMPOSE_LEVEL_CONCURRENCY = 4;
+
 api.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, requireContainerAction, async (req, res) => {
   const host = req.odwHost;
   const { project } = req.params;
@@ -1289,15 +1303,20 @@ api.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, r
     action
   );
 
+  // Levels run sequentially and each level now runs in batches of COMPOSE_LEVEL_CONCURRENCY (below),
+  // so this route is exempt from the blanket REQUEST_TIMEOUT_MS (COMPOSE_GROUP_PATH_RE) and sizes
+  // its own instead, worst-case batch count times a batch's worst-case time.
+  const totalBatches = levels.reduce((sum, level) => sum + Math.ceil(level.length / COMPOSE_LEVEL_CONCURRENCY), 0);
+  const timeoutMs = Math.max(REQUEST_TIMEOUT_MS, totalBatches * (CONTAINER_ACTION_TIMEOUT_MS + MAX_QUEUE_WAIT_MS));
+  armResponseTimeout(req, res, timeoutMs);
+
   const results = [];
   for (const level of levels) {
-    const settled = await Promise.all(
-      level.map(async (id) => {
-        const c = byId.get(id);
-        const outcome = await performContainerAction(host, id, action, { username: req.session.username, containerName: c.name });
-        return { containerId: id, containerName: c.name, ...outcome };
-      })
-    );
+    const settled = await mapLimit(level, COMPOSE_LEVEL_CONCURRENCY, async (id) => {
+      const c = byId.get(id);
+      const outcome = await performContainerAction(host, id, action, { username: req.session.username, containerName: c.name });
+      return { containerId: id, containerName: c.name, ...outcome };
+    });
     results.push(...settled);
   }
 

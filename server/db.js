@@ -254,12 +254,13 @@ const stmts = {
     ORDER BY ts DESC LIMIT 1
   `),
   // Backs the uptime route's container list for a container the live snapshot no longer has - one
-  // that was removed, or recreated under a new id, during the window. Without this a container is
-  // only in the report while it happens to still exist, which drops exactly the ones most worth
-  // showing (whatever crashed badly enough to get replaced). Same cleared_at exemption as above.
+  // that was removed, or recreated under a new id, during the window. Same cleared_at exemption
+  // and action filter as getContainerLifecycleEvents/-Seed above; see server/CLAUDE.md for why
+  // MAX(ts) is a real aggregate rather than just referenced.
   getContainersWithLifecycleEvents: db.prepare(`
-    SELECT container_id AS containerId, container_name AS containerName FROM events
+    SELECT container_id AS containerId, container_name AS containerName, MAX(ts) AS ts FROM events
     WHERE host_id = ? AND ts >= ? AND container_id IS NOT NULL
+      AND (action IN ('create', 'start', 'restart', 'unpause', 'die', 'stop', 'kill', 'pause', 'destroy') OR action GLOB 'health_status:*')
     GROUP BY container_id
   `),
   countOpenAlertsByContainer: db.prepare(`

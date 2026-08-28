@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { orderGroupLevels } = require('../server/composeGroup');
+const { orderGroupLevels, mapLimit } = require('../server/composeGroup');
 
 test('orderGroupLevels', async (t) => {
   await t.test('no edges - everything is independent and lands in one level', () => {
@@ -61,5 +61,45 @@ test('orderGroupLevels', async (t) => {
 
   await t.test('empty input returns no levels', () => {
     assert.deepEqual(orderGroupLevels([], [], 'start'), []);
+  });
+});
+
+test('mapLimit', async (t) => {
+  await t.test('never runs more than `limit` at once', async () => {
+    let active = 0;
+    let maxActive = 0;
+    await mapLimit([1, 2, 3, 4, 5, 6], 2, async (n) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      return n;
+    });
+    assert.equal(maxActive, 2);
+  });
+
+  await t.test('results stay in input order regardless of completion order', async () => {
+    const delays = [30, 10, 20, 0];
+    const results = await mapLimit(delays, 2, async (ms, i) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return i;
+    });
+    assert.deepEqual(results, [0, 1, 2, 3]);
+  });
+
+  await t.test('a limit larger than the input still runs everything exactly once', async () => {
+    const results = await mapLimit(['a', 'b', 'c'], 10, async (s) => s.toUpperCase());
+    assert.deepEqual(results, ['A', 'B', 'C']);
+  });
+
+  await t.test('empty input resolves to an empty array without calling fn', async () => {
+    let calls = 0;
+    const results = await mapLimit([], 4, async () => calls++);
+    assert.deepEqual(results, []);
+    assert.equal(calls, 0);
+  });
+
+  await t.test('a rejection propagates out rather than being swallowed', async () => {
+    await assert.rejects(() => mapLimit([1, 2, 3], 2, async (n) => (n === 2 ? Promise.reject(new Error('boom')) : n)), /boom/);
   });
 });

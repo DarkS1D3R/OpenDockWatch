@@ -3,7 +3,7 @@
 // whatever order `docker ps` happens to list them in. Pure and exported so it's unit-tested without
 // a database or a docker daemon - server/index.js's compose-group route supplies the depends_on
 // edges (via docker.js's dependsOnEdges, already computed for the Flow view and cached) and runs
-// each returned level with Promise.all before moving to the next.
+// each returned level through mapLimit (below) before moving to the next.
 
 // Kahn's algorithm in levels rather than a flat topological order: two containers with no ordering
 // relationship between them (the common case - most services in a compose file don't depend on
@@ -35,4 +35,21 @@ function orderGroupLevels(containerIds, edges, action) {
   return action === 'stop' ? levels.slice().reverse() : levels;
 }
 
-module.exports = { orderGroupLevels };
+// A level's containers used to run via Promise.all - unbounded, so a level with many independent
+// containers claimed every one of docker.js's MAX_CONCURRENT slots for up to
+// CONTAINER_ACTION_TIMEOUT_MS each, starving every other host's poll and every other viewer's
+// request behind the same queue. Runs at most `limit` of `fn` at once instead. See server/CLAUDE.md.
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+module.exports = { orderGroupLevels, mapLimit };

@@ -539,6 +539,33 @@ test('POST /hosts/:hostId/compose/:project/:action - compose group batch actions
     assert.equal(after - before, 3, 'expected one audit_log row per container in the group');
   });
 
+  await t.test('a level with more containers than the concurrency cap runs in bounded batches, not all at once', async (t2) => {
+    // Six independent containers (no depends_on edges), all landing in one level - proves the route
+    // itself caps concurrency rather than relying on docker.js's own MAX_CONCURRENT semaphore, which
+    // this mock never touches.
+    const MANY = Array.from({ length: 6 }, (_, i) => ({
+      id: `many${i}`,
+      name: `many-${i}`,
+      composeProject: 'shop',
+      composeService: `svc${i}`,
+    }));
+    t2.mock.method(docker, 'listContainers', async () => MANY);
+    t2.mock.method(docker, 'getTopologyMeta', async () => ({ dependsOnRaw: '' }));
+    let active = 0;
+    let maxActive = 0;
+    t2.mock.method(docker, 'containerAction', async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active--;
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/compose/shop/start`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.results.length, 6);
+    assert.ok(maxActive <= 4, `expected at most 4 concurrent actions, saw ${maxActive}`);
+  });
+
   await t.test('a viewer cannot trigger a group action', async (t2) => {
     mockGroup(t2, { containerAction: async () => {} });
     const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
@@ -641,6 +668,21 @@ test('requestTimeout', async (t) => {
     assert.equal(res.status, 200);
     assert.equal(cleared, true);
     assert.match(res.text, /data: line/);
+  });
+
+  await t.test('leaves the compose-group route alone too - it sizes its own timeout for multiple sequential levels', async () => {
+    let handlerRan = false;
+    const testApp = express();
+    testApp.use(requestTimeout(20));
+    testApp.post('/api/hosts/h/compose/shop/start', (req, r) => {
+      setTimeout(() => {
+        handlerRan = true;
+        r.json({ ok: true });
+      }, 60);
+    });
+    const res = await request(testApp).post('/api/hosts/h/compose/shop/start');
+    assert.equal(res.status, 200, 'the blanket timeout must not have fired for this path');
+    assert.equal(handlerRan, true);
   });
 });
 

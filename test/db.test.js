@@ -195,6 +195,21 @@ test('getContainerLifecycleEvents / getContainerLifecycleSeed', async (t) => {
     const ids = rows.map((r) => r.containerId).sort();
     assert.deepEqual(ids, [CONTAINER, 'aaaaaaaaaaaa'].sort());
   });
+
+  await t.test('getContainersWithLifecycleEvents excludes a container whose only events are non-lifecycle', () => {
+    db.insertEvent(event('exec_create', 7000, { containerId: 'bbbbbbbbbbbb', containerName: 'sidecar' }));
+    db.insertEvent(event('oom', 7500, { containerId: 'bbbbbbbbbbbb', containerName: 'sidecar' }));
+    const rows = db.getContainersWithLifecycleEvents(HOST2, 6500);
+    assert.ok(!rows.some((r) => r.containerId === 'bbbbbbbbbbbb'), 'a container with no classifiable event in the window must not appear');
+  });
+
+  await t.test('getContainersWithLifecycleEvents resolves the name from the most recent event, not an arbitrary row', () => {
+    db.insertEvent(event('start', 8000, { containerId: 'cccccccccccc', containerName: 'old-name' }));
+    db.insertEvent(event('die', 9000, { containerId: 'cccccccccccc', containerName: 'new-name' }));
+    const rows = db.getContainersWithLifecycleEvents(HOST2, 8000);
+    const row = rows.find((r) => r.containerId === 'cccccccccccc');
+    assert.equal(row.containerName, 'new-name');
+  });
 });
 
 test('host_reachability transitions and seed', async (t) => {
