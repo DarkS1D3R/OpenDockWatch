@@ -163,6 +163,45 @@ test('pollHost reachability', async (t) => {
   });
 });
 
+// A cold start (process restart, or a host just added) has no in-memory prev to read wasReachable
+// from. Defaulting that to true unconditionally used to swallow the recovery transition whenever
+// the process restarted while a host was down and it came back before the next poll - the outage
+// closed in host_reachability, then never reopened, so computeHostUptime read the whole thing as up.
+test('pollHost wasReachable on a cold start', async (t) => {
+  const containers = [{ id: 'aaa', name: 'web', state: 'running', alertsDisabled: false, composeProject: null }];
+  const stats = { aaa: { cpuPerc: '1.0%', memUsage: '10MiB / 1GiB', memPerc: '1.0%' } };
+
+  function stub(t2, hostId) {
+    const reach = [];
+    t2.mock.method(docker, 'listContainers', () => Promise.resolve(containers));
+    t2.mock.method(docker, 'getStats', () => Promise.resolve(stats));
+    t2.mock.method(docker, 'getHostInfo', () => Promise.resolve({ ncpu: 4, memTotalBytes: 1e9 }));
+    t2.mock.method(statsWatcher, 'getSamples', () => null);
+    t2.mock.method(alerts, 'handleHostReachability', (id, name, reachable, wasReachable) => reach.push([reachable, wasReachable]));
+    t2.mock.method(alerts, 'handleSample', () => {});
+    t2.mock.method(alerts, 'handleHostSample', () => {});
+    t2.mock.method(alerts, 'retainContainers', () => {});
+    t2.mock.method(db, 'insertMetrics', () => {});
+    t2.after(() => metricsCollector.getAllSnapshots().delete(hostId));
+    return reach;
+  }
+
+  await t.test('with no stored history at all, a cold start still assumes reachable', async (t2) => {
+    const HOST = { id: 'cold-start-fresh-host' };
+    const reach = stub(t2, HOST.id);
+    await metricsCollector.pollHost(HOST);
+    assert.deepEqual(reach, [[true, true]], 'nothing stored to disagree with, so this must not report a spurious recovery');
+  });
+
+  await t.test('a restart mid-outage reads the last stored transition instead of defaulting to reachable', async (t2) => {
+    const HOST = { id: 'cold-start-outage-host' };
+    db.insertHostReachability(HOST.id, Date.now() - 1000, false);
+    const reach = stub(t2, HOST.id);
+    await metricsCollector.pollHost(HOST);
+    assert.deepEqual(reach, [[true, false]], 'the recovery must be reported, not swallowed by defaulting wasReachable to true');
+  });
+});
+
 test('pollHost probe gate', async (t) => {
   const HOST = { id: 'gate' };
 

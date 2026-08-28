@@ -111,7 +111,10 @@ function markUnreachable(snapshot, host, wasReachable) {
 
 async function pollHost(host) {
   const prev = snapshots.get(host.id);
-  const wasReachable = prev ? prev.reachable : true;
+  // No in-memory prev on a cold start (process restart, or a host just added) - defaulting to true
+  // there silently swallowed the recovery transition whenever the process restarted mid-outage, so
+  // fall back to the last stored transition instead. See server/CLAUDE.md.
+  const wasReachable = prev ? prev.reachable : (db.getHostReachabilitySeed(host.id, Date.now()) ?? true);
 
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
   // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
