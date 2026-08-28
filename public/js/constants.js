@@ -25,3 +25,12 @@ export const HISTORY_RANGE_SLOTS = {
   '24h': 288, // 24h / 5m
   '7d': 336, // 7d / 30m
 };
+
+// The bucket width behind each of those slot counts, mirrored from the same HISTORY_RANGES and
+// enforced by the same test. Needed client-side because the server emits no row for an empty
+// bucket, so a returned series can only be placed in its window by timestamp - see alignSlots.
+export const HISTORY_RANGE_BUCKET_MS = {
+  '1h': 15_000,
+  '24h': 5 * 60_000,
+  '7d': 30 * 60_000,
+};

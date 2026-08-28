@@ -1,5 +1,5 @@
 import { HOST_METRICS_HISTORY_LEN } from '../constants.js';
-import { padSlots, sparkPaths, hoverPoints, axisTickIndices } from '../lib/spark.js';
+import { padSlots, alignSlots, slotTimes, sparkPaths, hoverPoints, axisTickIndices } from '../lib/spark.js';
 
 const AXIS_TICK_COUNT = 4;
 const AXIS_TICK_COUNT_DETAILED = 8;
@@ -33,6 +33,10 @@ export default {
     // than the window draws in the right-hand part of the chart instead of stretching across it.
     // The host card's live window and the modal's 1h/24h/7d ranges have different bucket counts.
     slotCount: { type: Number, default: HOST_METRICS_HISTORY_LEN },
+    // Bucket width of a persisted history range, so samples can be placed in the window by
+    // timestamp rather than by array index - the server omits empty buckets entirely, so a
+    // collector outage otherwise reads as a shorter series. 0 for an unbucketed live buffer.
+    bucketMs: { type: Number, default: 0 },
     detailed: { type: Boolean, default: false }, // finer grid + more axis ticks, for a chart with real height to spend
   },
   emits: ['hover', 'leave'],
@@ -40,14 +44,28 @@ export default {
     secondaryAvailable() {
       return !!this.secondarySamples;
     },
+    // Both series come from the same history rows, so one sampleTimes array places both.
+    bucketed() {
+      return this.bucketMs > 0 && this.samples.length > 0 && this.sampleTimes.length === this.samples.length;
+    },
+    anchorTs() {
+      return this.bucketed ? this.sampleTimes[this.sampleTimes.length - 1] : null;
+    },
     chartSlots() {
-      return padSlots(this.samples, this.slotCount);
+      return alignSlots(this.samples, this.sampleTimes, this.slotCount, this.bucketMs);
     },
     secondaryChartSlots() {
-      return padSlots(this.secondarySamples || [], this.slotCount);
+      return alignSlots(this.secondarySamples || [], this.sampleTimes, this.slotCount, this.bucketMs);
     },
+    // A bucketed range has a time for every slot, empty ones included, so the axis is the real
+    // window rather than only the parts a sample landed in.
     timeSlots() {
-      return padSlots(this.sampleTimes, this.slotCount);
+      return this.bucketed ? slotTimes(this.anchorTs, this.slotCount, this.bucketMs) : padSlots(this.sampleTimes, this.slotCount);
+    },
+    // Past a day, a bare HH:MM tick is ambiguous - a 7d axis otherwise reads "08:30 AM" several
+    // times over with nothing saying which day is which.
+    axisSpansDays() {
+      return this.bucketed && this.bucketMs * this.slotCount > 86_400_000;
     },
     // Nulls are ordinary here - a padded slot before the series starts, or an I/O bucket whose
     // rate couldn't be derived (see metricsHistory.js) - and Math.max would turn one into NaN and
@@ -151,7 +169,9 @@ export default {
       this.$emit('leave');
     },
     formatTime(ts) {
-      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const d = new Date(ts);
+      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return this.axisSpansDays ? `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}` : time;
     },
   },
   template: `

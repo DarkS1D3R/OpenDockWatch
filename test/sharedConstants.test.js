@@ -23,3 +23,13 @@ test('history range slots stay derived from HISTORY_RANGES', async () => {
     assert.equal(slots, sinceMs / bucketMs, `${key}: HISTORY_RANGE_SLOTS should be sinceMs/bucketMs`);
   }
 });
+
+// A drifting bucket width here doesn't throw - alignSlots just places every sample at the wrong
+// slot, which reads as a plausible-looking chart, so the pair is asserted rather than eyeballed.
+test('history range bucket widths stay identical to HISTORY_RANGES', async () => {
+  const { HISTORY_RANGE_BUCKET_MS } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'constants.js')));
+  assert.deepEqual(Object.keys(HISTORY_RANGE_BUCKET_MS).sort(), Object.keys(HISTORY_RANGES).sort());
+  for (const [key, bucketMs] of Object.entries(HISTORY_RANGE_BUCKET_MS)) {
+    assert.equal(bucketMs, HISTORY_RANGES[key].bucketMs, `${key}: HISTORY_RANGE_BUCKET_MS should match HISTORY_RANGES`);
+  }
+});
