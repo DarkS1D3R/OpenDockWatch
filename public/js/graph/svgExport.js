@@ -257,7 +257,7 @@ const PILL_ICON_TEXT_SHIFT = 8;
 // Tree mode's project/network/mount pills, matching CY_STYLE's node.proj/.net/.mount(-bind|-volume).
 // Mount labels already carry \n for wrapped paths, split into one <tspan> per line. The box is
 // always exactly n.height (dagre spaced siblings by it); line spacing shrinks to fit instead of the box growing.
-function svgPillNode(n, { border, text, bg }) {
+function svgPillNode(n, { border, text, bg, fontSize = 10 }) {
   const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
@@ -272,7 +272,7 @@ function svgPillNode(n, { border, text, bg }) {
     `<g opacity="${n.faded ? 0.15 : 1}">` +
     `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
     svgPillIcon(n.kind, x1, n.y) +
-    `<text x="${textX}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
+    `<text x="${textX}" text-anchor="middle" font-size="${fontSize}" fill="${text}">${tspans}</text>` +
     `</g>`
   );
 }
@@ -286,7 +286,7 @@ function svgNode(n) {
     case 'group-expanded':
       return svgGroupBox(n);
     case 'proj':
-      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027' });
+      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027', fontSize: 11 });
     case 'net':
       return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
     case 'mount-bind':

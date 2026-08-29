@@ -276,6 +276,35 @@ test('buildTreeElements', async (t) => {
     assert.equal(netNode.data.id, `net:${longName}`);
   });
 
+  await t.test('wraps a long compose project name onto multiple lines rather than overflowing the pill', () => {
+    const longProject = 'wcore-solutions-bm-server-staging';
+    const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
+    const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');
+    assert.ok(projNode.data.label.includes('\n'), 'expected the long project name to be wrapped onto multiple lines');
+    assert.ok(
+      projNode.data.label.split('\n').every((line) => line.length <= 14),
+      'expected every wrapped line to stay under the max line length'
+    );
+    assert.equal(projNode.data.label.replace(/\n/g, ''), longProject);
+    // The id must keep the unwrapped name - edges and FlowView's pillSelection are keyed by it.
+    assert.equal(projNode.data.id, `proj:${longProject}`);
+  });
+
+  await t.test('a wrapped project name still matches the edges pointing at its pill', () => {
+    const longProject = 'wcore-solutions-bm-server-staging';
+    const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
+    const els = elements.buildTreeElements(nodes, null);
+    const projNode = els.find((el) => el.classes === 'proj');
+    const projEdge = els.find((el) => el.classes === 'edge-tree-proj');
+    assert.equal(projEdge.data.source, projNode.data.id);
+  });
+
+  await t.test('leaves a short compose project name on a single line, unwrapped', () => {
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [] }];
+    const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');
+    assert.equal(projNode.data.label, 'shop');
+  });
+
   await t.test('shortens an anonymous-volume label but keeps the full source as the stable id', () => {
     const anonId = 'a'.repeat(64);
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: anonId, kind: 'volume-anon' }] }];

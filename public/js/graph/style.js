@@ -203,11 +203,14 @@ export const CY_STYLE = [
     },
   },
   {
-    // Tree mode only - project/network/mount pills are plain (non-compound) nodes, fixed-size
-    // with a centered label, unlike node.group's padding-around-children. A darker blue than
-    // node.net's border (not node.stopped's gray) so a project reads as a grouping, not a state.
+    // Tree mode only - project/network/mount pills are plain (non-compound) nodes with a centered
+    // label, unlike node.group's padding-around-children. A darker blue than node.net's border
+    // (not node.stopped's gray) so a project reads as a grouping, not a state.
     selector: 'node.proj',
     style: {
+      // A long compose project name overflowed this pill exactly as long network names once
+      // overflowed node.net - wrap + height: 'label' grows the box instead (see wrapPillLabel).
+      // padding 10px keeps a one-line pill at the 30px height this used to be pinned to.
       'background-color': '#1d2027',
       'border-width': 1,
       'border-color': '#2d5fa8',
@@ -216,9 +219,12 @@ export const CY_STYLE = [
       color: '#e4e6eb',
       'text-valign': 'center',
       'text-halign': 'center',
+      'text-wrap': 'wrap',
+      'text-max-width': 105,
       'text-margin-x': 8,
       width: 140,
-      height: 30,
+      height: 'label',
+      padding: '10px',
       shape: 'round-rectangle',
       'background-image': PROJ_ICON_URI,
       'background-width': 12,
