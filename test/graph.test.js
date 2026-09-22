@@ -278,7 +278,7 @@ test('buildTreeElements', async (t) => {
   });
 
   await t.test('wraps a long compose project name onto multiple lines rather than overflowing the pill', () => {
-    const longProject = 'wcore-solutions-bm-server-staging';
+    const longProject = 'acme-corp-billing-service-staging';
     const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
     const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');
     assert.ok(projNode.data.label.includes('\n'), 'expected the long project name to be wrapped onto multiple lines');
@@ -292,7 +292,7 @@ test('buildTreeElements', async (t) => {
   });
 
   await t.test('a wrapped project name still matches the edges pointing at its pill', () => {
-    const longProject = 'wcore-solutions-bm-server-staging';
+    const longProject = 'acme-corp-billing-service-staging';
     const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
     const els = elements.buildTreeElements(nodes, null);
     const projNode = els.find((el) => el.classes === 'proj');
@@ -315,7 +315,7 @@ test('buildTreeElements', async (t) => {
   });
 
   await t.test('wraps a long bind-mount path onto multiple lines at path-separator boundaries', () => {
-    const longPath = '/mnt/c/Projects/bm-server/application/target/bm-server-files/bm-server-1.0.0-SNAPSHOT.jar';
+    const longPath = '/mnt/c/Projects/billing-api/application/target/billing-api-files/billing-api-1.0.0-SNAPSHOT.jar';
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: longPath, kind: 'bind' }] }];
     const mountNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-bind');
     assert.ok(mountNode.data.label.includes('\n'), 'expected the long path to be wrapped onto multiple lines');
@@ -615,6 +615,15 @@ test('renderSvg', async (t) => {
     assert.ok(!svg.includes('>Pg</text>'));
   });
 
+  await t.test('a tile mark draws a rounded square with the glyph full-bleed, not a circle', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'OD', bg: '#1d2027', fg: '#4f8cff', logo: 'opendockwatch' } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    assert.match(svg, /<rect x="[\d.]+" y="[\d.]+" width="17" height="17" rx="[\d.]+" fill="#1d2027"\/>/);
+    assert.ok(svg.includes(`scale(${17 / 24})" fill="#4f8cff" d="${logos.LOGOS.opendockwatch.path}"`));
+    assert.ok(!svg.includes('r="8.5" fill="#1d2027"'));
+  });
+
   await t.test('a text badge still draws its text', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
     assert.ok(svg.includes('>W</text>'));
@@ -689,6 +698,15 @@ test('containerNodeTpl', async (t) => {
       const html = graph.containerNodeTpl(containerTplFixture({ compact, icon }));
       assert.ok(html.includes('class="svc-logo"'), `compact=${compact}`);
       assert.ok(html.includes('title="PostgreSQL"'), `compact=${compact}`);
+      assert.ok(!html.includes('svc-tile'), `compact=${compact}`);
+    }
+  });
+
+  await t.test('a tile mark gets the svc-tile class in both modes', () => {
+    const icon = { text: 'OD', bg: '#1d2027', fg: '#4f8cff', logo: 'opendockwatch' };
+    for (const compact of [false, true]) {
+      const html = graph.containerNodeTpl(containerTplFixture({ compact, icon }));
+      assert.ok(html.includes('class="cy-node-icon svc-tile"'), `compact=${compact}`);
     }
   });
 });

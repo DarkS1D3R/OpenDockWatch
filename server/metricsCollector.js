@@ -198,6 +198,9 @@ async function pollHost(host) {
     // to refetch. Spread onto a copy: `info` is the object every poll inside the TTL shares.
     const hostInfo = { ...info, ...containerCounts(containers) };
     snapshot.hostInfo = hostInfo;
+    // Not awaited: an inspect only when the container set changed, and a missing hint only costs a
+    // badge its runtime logo for one poll - never worth delaying or failing the poll over.
+    docker.refreshIconHints(host, containers).catch(() => {});
 
     const ts = Date.now();
     snapshot.statsTs = ts;

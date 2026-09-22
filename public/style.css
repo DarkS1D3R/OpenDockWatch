@@ -938,6 +938,17 @@ table.containers td:nth-child(7) {
   width: 15px;
   height: 15px;
 }
+/* A mark that draws its own rounded-square frame (OpenDockWatch's) fills the whole badge instead of
+   sitting in a circle. 28% matches logo.svg's corner radius; the ring would double its frame. */
+.cy-node-icon.svc-tile,
+.svc-badge.svc-tile {
+  border-radius: 28%;
+  box-shadow: none;
+}
+.svc-tile .svc-logo {
+  width: 100%;
+  height: 100%;
+}
 .cy-node-name {
   position: absolute;
   top: 24.5px;

@@ -93,6 +93,7 @@ test('pollHost reachability', async (t) => {
     t2.mock.method(docker, 'listContainers', list === false ? fail('list') : ok('list', containers));
     t2.mock.method(docker, 'getStats', stat === false ? fail('stats') : ok('stats', stats));
     t2.mock.method(docker, 'getHostInfo', info === false ? fail('info') : ok('info', { ncpu: 4, memTotalBytes: 1e9 }));
+    t2.mock.method(docker, 'refreshIconHints', () => Promise.resolve());
     t2.mock.method(docker, 'checkHost', () => {
       calls.push('probe');
       return Promise.resolve(probe);
@@ -176,6 +177,7 @@ test('pollHost wasReachable on a cold start', async (t) => {
     t2.mock.method(docker, 'listContainers', () => Promise.resolve(containers));
     t2.mock.method(docker, 'getStats', () => Promise.resolve(stats));
     t2.mock.method(docker, 'getHostInfo', () => Promise.resolve({ ncpu: 4, memTotalBytes: 1e9 }));
+    t2.mock.method(docker, 'refreshIconHints', () => Promise.resolve());
     t2.mock.method(statsWatcher, 'getSamples', () => null);
     t2.mock.method(alerts, 'handleHostReachability', (id, name, reachable, wasReachable) => reach.push([reachable, wasReachable]));
     t2.mock.method(alerts, 'handleSample', () => {});

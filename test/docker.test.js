@@ -11,6 +11,8 @@ const {
   customDependsOnEdges,
   parseMountsList,
   splitCombinedTopologyPs,
+  runtimeHintFromEnv,
+  parseIconHints,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
@@ -596,5 +598,54 @@ test('containerCounts', async (t) => {
   await t.test('null/undefined counts as zero rather than throwing', () => {
     assert.deepEqual(containerCounts(null), { containers: 0, containersRunning: 0 });
     assert.deepEqual(containerCounts(undefined), { containers: 0, containersRunning: 0 });
+  });
+});
+
+test('runtimeHintFromEnv', async (t) => {
+  // A typical custom Spring image: built FROM eclipse-temurin (inherits JAVA_HOME/JAVA_VERSION), run with
+  // SPRING_* config. The framework has to win over the language it runs on.
+  await t.test('a Spring app on a Temurin base is Spring, not Java', () => {
+    const env = ['PATH=/opt/java/openjdk/bin:/usr/bin', 'JAVA_HOME=/opt/java/openjdk', 'JAVA_VERSION=jdk-25', 'SPRING_PROFILES_ACTIVE=dev'];
+    assert.equal(runtimeHintFromEnv(env), 'springboot');
+  });
+
+  await t.test('a Temurin base with no Spring config is Java', () => {
+    assert.equal(runtimeHintFromEnv(['JAVA_HOME=/opt/java/openjdk', 'JAVA_VERSION=jdk-25']), 'openjdk');
+  });
+
+  await t.test('official runtime images are recognised by the version var they set', () => {
+    assert.equal(runtimeHintFromEnv(['NODE_VERSION=24.1.0']), 'nodedotjs');
+    assert.equal(runtimeHintFromEnv(['PYTHON_VERSION=3.13.0']), 'python');
+    assert.equal(runtimeHintFromEnv(['ASPNETCORE_URLS=http://+:8080']), 'dotnet');
+  });
+
+  // Matching is on names only: a value that merely mentions a runtime must not count.
+  await t.test('values are never matched, only names', () => {
+    assert.equal(runtimeHintFromEnv(['NOTES=uses SPRING_ and JAVA_HOME', 'DB_URL=jdbc:postgresql://db']), null);
+  });
+
+  await t.test('no env, or an unrecognised one, is no hint', () => {
+    assert.equal(runtimeHintFromEnv(undefined), null);
+    assert.equal(runtimeHintFromEnv(['POSTGRES_PASSWORD=secret']), null);
+  });
+});
+
+test('parseIconHints', async (t) => {
+  await t.test('keys hints by 12-char short id and skips containers with none', () => {
+    const raw = [
+      `${'a'.repeat(64)}\t["JAVA_HOME=/x","SPRING_PROFILES_ACTIVE=dev"]`,
+      `${'b'.repeat(64)}\t["POSTGRES_PASSWORD=secret"]`,
+      `${'c'.repeat(64)}\tnull`,
+    ].join('\n');
+    const hints = parseIconHints(raw);
+    assert.equal(hints.get('a'.repeat(12)), 'springboot');
+    assert.equal(hints.has('b'.repeat(12)), false);
+    assert.equal(hints.has('c'.repeat(12)), false);
+  });
+
+  await t.test('a malformed line is skipped rather than failing the batch', () => {
+    const hints = parseIconHints(`${'a'.repeat(12)}\tnot json\n${'d'.repeat(12)}\t["NODE_VERSION=24"]`);
+    assert.equal(hints.get('d'.repeat(12)), 'nodedotjs');
+    assert.equal(hints.size, 1);
   });
 });

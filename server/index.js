@@ -590,7 +590,11 @@ async function containersFor(host, { fresh = false } = {}) {
   const restartCounts = restartCountsFor(host.id, fresh ? null : snapshot && snapshot.statsTs);
   // The snapshot's container objects are the collector's own and get read on every poll - copy
   // rather than annotating them in place with a field only this response wants.
-  return containers.map((c) => ({ ...c, restartCount1h: restartCounts.get(c.id) || 0 }));
+  return containers.map((c) => ({
+    ...c,
+    restartCount1h: restartCounts.get(c.id) || 0,
+    iconHint: docker.iconHintFor(host.id, c.id),
+  }));
 }
 
 // Prefer metricsCollector's snapshot: it's the only place NET/DISK rate data lives, and it's at

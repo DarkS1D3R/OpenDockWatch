@@ -41,8 +41,10 @@ export function stateEmoji(state, health) {
 // (colours come from there); no `logo` keeps a text badge on `bg`. Ordering rules: public/CLAUDE.md.
 export const SERVICE_BADGES = [
   [/opendockwatch/, { text: 'OD', logo: 'opendockwatch' }],
+  // pgAdmin has no Simple Icons glyph of its own, and its real logo is the Postgres elephant - so it
+  // borrows that on its own green, which keeps it distinct from the database it administers.
+  [/pgadmin/, { text: 'PA', logo: 'postgresql', bg: '#6d9f3d' }],
   // No Simple Icons glyph for these - text badges.
-  [/pgadmin/, { text: 'PA', bg: '#6d9f3d' }],
   [/dozzle/, { text: 'Dz', bg: '#1e88e5' }],
   [/valkey/, { text: 'Vk', bg: '#6983ff' }],
   [/activemq/, { text: 'Mq', bg: '#a2122e' }],
@@ -154,38 +156,57 @@ export const SERVICE_BADGES = [
 // table above is ~100 regexes. Results are frozen since every caller for a key shares one object.
 const iconCache = new Map();
 
-export function iconFor(image, composeService) {
-  const key = `${image || ''} ${composeService || ''}`;
+// override is the container's `opendockwatch.icon` label and beats everything; hint is the server's
+// runtime guess from env var names (docker.js RUNTIME_ENV_HINTS), used only when no pattern above
+// matched - an image name is a statement about the container, an inherited JAVA_HOME is a guess.
+export function iconFor(image, composeService, override, hint) {
+  const key = [image, composeService, override, hint].map((v) => v || '').join('\u0000');
   let icon = iconCache.get(key);
   if (!icon) {
-    icon = Object.freeze(resolveIcon(key.toLowerCase(), image, composeService));
+    icon = Object.freeze(resolveIcon(image, composeService, override, hint));
     iconCache.set(key, icon);
   }
   return icon;
 }
 
-function resolveIcon(haystack, image, composeService) {
+function resolveIcon(image, composeService, override, hint) {
+  if (override && LOGOS[override]) return logoIcon(override);
+  const haystack = `${image || ''} ${composeService || ''}`.toLowerCase();
   for (const [pattern, badge] of SERVICE_BADGES) {
     if (!pattern.test(haystack)) continue;
     if (!badge.logo) return { text: badge.text, bg: badge.bg };
-    const logo = LOGOS[badge.logo];
-    return { text: badge.text, bg: logo.bg, fg: logo.fg, logo: badge.logo };
+    return logoIcon(badge.logo, badge);
   }
+  if (hint && LOGOS[hint]) return logoIcon(hint);
   const initial = (composeService || image || '?').trim().charAt(0).toUpperCase() || '?';
   return { text: initial, bg: ACCENT };
+}
+
+// A badge entry may re-colour a borrowed glyph (pgAdmin wears the Postgres elephant on its own green).
+function logoIcon(slug, badge = {}) {
+  const logo = LOGOS[slug];
+  const text = badge.text || logo.title.slice(0, 2);
+  return { text, bg: badge.bg || logo.bg, fg: badge.fg || logo.fg, logo: slug };
 }
 
 // A badge's inner markup - the logo glyph, else the text escaped (the fallback initial comes from a
 // docker/compose name). Shared by the flow-view templates and the List view; svgExport.js has its own.
 export function badgeInnerHtml(icon) {
   const logo = icon.logo && LOGOS[icon.logo];
-  if (logo) return `<svg class="svc-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="${logo.fg}" d="${logo.path}"/></svg>`;
+  if (logo)
+    return `<svg class="svc-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="${icon.fg || logo.fg}" d="${logo.path}"/></svg>`;
   return escapeHtml(icon.text);
 }
 
 // Product name for a logo badge's hover title; '' for the text fallback.
 export function badgeTitle(icon) {
   return (icon.logo && LOGOS[icon.logo]?.title) || '';
+}
+
+// True for a mark that draws its own rounded-square frame (our own logo) - rendered as a full-bleed
+// tile via .svc-tile rather than a glyph inside the usual circle.
+export function badgeIsTile(icon) {
+  return Boolean(icon.logo && LOGOS[icon.logo]?.tile);
 }
 
 // Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by

@@ -36,6 +36,10 @@ CI (`.github/workflows/ci.yml`) runs `npm run lint && npm run format:check && np
 
 A comment block attached to a function/method (or a magic number/config constant next to one) is capped at 3 lines. If the full rationale doesn't fit, keep the 3-line version terse and load-bearing, and put the rest in whichever of `server/CLAUDE.md` or `public/CLAUDE.md` covers that code instead of letting it spread across the codebase - those two files are the canonical home for the "why" behind most non-obvious decisions in this repo, so a comment can point there rather than repeat it.
 
+## Example names in tests and docs
+
+Test fixtures, code comments, and docs (`README.md`, the CLAUDE.md files) use generic example names — `myorg/billing-api`, `acme-corp-*`, `shop`, `web` — never the maintainer's own projects, clients, hostnames or paths, even when a real deployment is what prompted the change. This is a public repo; describe the _shape_ of the case ("a custom image built `FROM eclipse-temurin` with `SPRING_*` env") rather than whose it was.
+
 ## Two eslint environments
 
 `eslint.config.js`: `server/**`, `scripts/**`, `test/**` are CommonJS/Node; `public/js/**` is an ES module/browser environment. Keep new files in the right bucket.

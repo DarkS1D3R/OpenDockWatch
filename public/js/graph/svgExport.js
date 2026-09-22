@@ -168,6 +168,25 @@ function svgAlertBadge(x, y, count) {
   return `<circle cx="${x + 6}" cy="${y + 6}" r="6" fill="${ALERT_BADGE_COLOR}"/><text x="${x + 6}" y="${y + 9}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
 }
 
+// The 17px service badge at (x, y), mirroring .cy-node-icon: a 24-unit logo glyph scaled to 11px in
+// a circle, a .svc-tile mark (carries its own frame) full-bleed in a 28%-rounded square, else text.
+function svgBadge(x, y, icon) {
+  const logo = icon.logo && LOGOS[icon.logo];
+  if (logo && logo.tile) {
+    return (
+      `<rect x="${x}" y="${y}" width="17" height="17" rx="${17 * 0.28}" fill="${icon.bg}"/>` +
+      `<path transform="translate(${x}, ${y}) scale(${17 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`
+    );
+  }
+  const circle = `<circle cx="${x + 8.5}" cy="${y + 8.5}" r="8.5" fill="${icon.bg}"/>`;
+  if (logo)
+    return circle + `<path transform="translate(${x + 3}, ${y + 3}) scale(${11 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
+  return (
+    circle +
+    `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(icon.text)}</text>`
+  );
+}
+
 // Mirrors the .cy-node-box HTML template's layout (public/style.css:491-618): state icon top
 // right, service badge + name, CPU/RAM bar rows, NET/DISK text, port/alert badges.
 function svgContainerNode(n) {
@@ -190,16 +209,7 @@ function svgContainerNode(n) {
   svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"${dash}/>`;
   if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${d.emoji}</g>`;
   if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
-  if (d.icon) {
-    svg += `<circle cx="${x1 + 14.5}" cy="${y1 + 24.5}" r="8.5" fill="${d.icon.bg}"/>`;
-    const logo = d.icon.logo && LOGOS[d.icon.logo];
-    if (logo) {
-      // 24-unit glyph scaled to 11px, matching .svc-logo in the live badge.
-      svg += `<path transform="translate(${x1 + 9}, ${y1 + 19}) scale(${11 / 24})" fill="${logo.fg}" d="${logo.path}"/>`;
-    } else {
-      svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
-    }
-  }
+  if (d.icon) svg += svgBadge(x1 + 6, y1 + 16, d.icon);
   svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
   // Fixed offsets from FULL_LEAF_HEIGHT (single-port-line box height), not n.height - n.height
   // grows to fit a wrapped port list, and that extra room must land below this cluster, not

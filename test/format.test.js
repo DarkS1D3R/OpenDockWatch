@@ -67,8 +67,36 @@ test('iconFor', async (t) => {
   });
 
   await t.test('software with no Simple Icons glyph keeps a text badge', () => {
-    assert.deepEqual(format.iconFor('dpage/pgadmin4:latest', undefined), { text: 'PA', bg: '#6d9f3d' });
     assert.deepEqual(format.iconFor('amir20/dozzle:latest', undefined), { text: 'Dz', bg: '#1e88e5' });
+  });
+
+  // pgAdmin's own logo is the elephant; its green is what tells it apart from the database.
+  await t.test('pgAdmin borrows the Postgres glyph on its own green', () => {
+    const icon = format.iconFor('dpage/pgadmin4:latest', undefined);
+    assert.equal(icon.logo, 'postgresql');
+    assert.equal(icon.bg, '#6d9f3d');
+    assert.notEqual(icon.bg, format.iconFor('postgres:17', undefined).bg);
+    assert.ok(format.badgeInnerHtml(icon).includes(`fill="${icon.fg}"`));
+  });
+
+  // A custom `myorg/billing-api` FROM eclipse-temurin with SPRING_* env - the name says nothing.
+  await t.test('a runtime hint fills in when no pattern matches the name', () => {
+    assert.equal(format.iconFor('myorg/billing-api:latest', 'api', null, 'springboot').logo, 'springboot');
+    assert.equal(format.iconFor('myorg/billing-api:latest', 'api', null, null).logo, undefined);
+  });
+
+  await t.test('a name pattern beats the runtime hint', () => {
+    // An inherited JAVA_HOME says less about a container than its image name does.
+    assert.equal(format.iconFor('postgres:17', undefined, null, 'openjdk').logo, 'postgresql');
+  });
+
+  await t.test('an opendockwatch.icon label beats both, and an unknown slug is ignored', () => {
+    assert.equal(format.iconFor('postgres:17', undefined, 'springboot', 'openjdk').logo, 'springboot');
+    assert.equal(format.iconFor('postgres:17', undefined, 'not-a-logo', null).logo, 'postgresql');
+  });
+
+  await t.test('override and hint are part of the memo key', () => {
+    assert.notEqual(format.iconFor('app:1', 'app', null, 'python').logo, format.iconFor('app:1', 'app', null, 'php').logo);
   });
 
   // Each pair is an image a looser or earlier pattern would claim, and the logo it must get.

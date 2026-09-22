@@ -84,7 +84,7 @@ function containerNodeEl(n, selectedId, parent) {
     name: n.name,
     emoji: stateEmoji(n.state, n.health),
     status: n.status || '',
-    icon: iconFor(n.image, n.composeService),
+    icon: iconFor(n.image, n.composeService, n.iconOverride, n.iconHint),
     cpuPerc: n.cpuPerc,
     memPerc: n.memPerc,
     netIO: formatRatePair(n.netRxRate, n.netTxRate),
