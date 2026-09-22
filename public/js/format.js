@@ -1,4 +1,5 @@
 import { ACCENT, MUTED, STATE_COLORS } from './theme.js';
+import { LOGOS } from './lib/logos.js';
 
 // Values from theme.js, but the *mapping* lives here: docker's health axis says "healthy", the
 // state axis says "running", and they are one colour. Declared up here rather than beside
@@ -35,38 +36,156 @@ export function stateEmoji(state, health) {
   return ICON_STOPPED;
 }
 
-// Keyword -> badge lookup, checked in order against "<image> <composeService>" (lowercase).
-// First match wins, so more specific keywords are listed before generic ones.
-const SERVICE_BADGES = [
+// Keyword -> badge lookup, checked in order against "<image> <composeService>" (lowercase); first
+// match wins, so specific before generic and base-OS images last. `logo` names a lib/logos.js glyph
+// (colours come from there); no `logo` keeps a text badge on `bg`. Ordering rules: public/CLAUDE.md.
+export const SERVICE_BADGES = [
+  [/opendockwatch/, { text: 'OD', logo: 'opendockwatch' }],
+  // No Simple Icons glyph for these - text badges.
   [/pgadmin/, { text: 'PA', bg: '#6d9f3d' }],
-  [/postgres|postgis/, { text: 'Pg', bg: '#336791' }],
-  [/mariadb/, { text: 'Ma', bg: '#c0765a' }],
-  [/mysql/, { text: 'My', bg: '#4479a1' }],
-  [/mongo/, { text: 'Mo', bg: '#47a248' }],
-  [/redis/, { text: 'Re', bg: '#d82c20' }],
-  [/rabbitmq/, { text: 'Rb', bg: '#ff6600' }],
+  [/dozzle/, { text: 'Dz', bg: '#1e88e5' }],
+  [/valkey/, { text: 'Vk', bg: '#6983ff' }],
   [/activemq/, { text: 'Mq', bg: '#a2122e' }],
   [/camel/, { text: 'Cm', bg: '#d04437' }],
-  [/nginx/, { text: 'Nx', bg: '#269639' }],
-  [/traefik/, { text: 'Tf', bg: '#24a1c1' }],
-  [/grafana/, { text: 'Gf', bg: '#f46800' }],
-  [/prometheus/, { text: 'Pr', bg: '#e6522c' }],
-  [/elasticsearch/, { text: 'Es', bg: '#005571' }],
-  [/kibana/, { text: 'Kb', bg: '#005571' }],
-  [/spring/, { text: 'Sp', bg: '#6db33f' }],
-  [/openjdk|temurin|corretto|zulu|\bjdk\b|\bjre\b/, { text: 'Jv', bg: '#f89820' }],
-  [/node/, { text: 'Nd', bg: '#339933' }],
-  [/python/, { text: 'Py', bg: '#3776ab' }],
-  [/httpd|apache/, { text: 'Ap', bg: '#d22128' }],
+  [/haproxy/, { text: 'Hp', bg: '#106da9' }],
+  [/memcached/, { text: 'Mc', bg: '#268d7c' }],
+  [/mosquitto/, { text: 'Mt', bg: '#3c5280' }],
+  [/zookeeper/, { text: 'Zk', bg: '#8e6a3c' }],
+  [/\bloki\b/, { text: 'Lk', bg: '#f46800' }],
+  [/cadvisor/, { text: 'cA', bg: '#326ce5' }],
+  // Databases and stores.
+  [/timescale/, { text: 'Ts', logo: 'timescale' }],
+  [/postgres|postgis/, { text: 'Pg', logo: 'postgresql' }],
+  [/mariadb/, { text: 'Ma', logo: 'mariadb' }],
+  [/phpmyadmin/, { text: 'PM', logo: 'phpmyadmin' }],
+  [/mysql/, { text: 'My', logo: 'mysql' }],
+  [/mongo/, { text: 'Mo', logo: 'mongodb' }],
+  [/redis/, { text: 'Re', logo: 'redis' }],
+  [/cassandra/, { text: 'Ca', logo: 'apachecassandra' }],
+  [/couchdb/, { text: 'Co', logo: 'apachecouchdb' }],
+  [/cockroach/, { text: 'Cr', logo: 'cockroachlabs' }],
+  [/clickhouse/, { text: 'CH', logo: 'clickhouse' }],
+  [/influx/, { text: 'If', logo: 'influxdb' }],
+  [/neo4j/, { text: 'N4', logo: 'neo4j' }],
+  [/minio/, { text: 'Mi', logo: 'minio' }],
+  [/\betcd\b/, { text: 'Et', logo: 'etcd' }],
+  [/adminer/, { text: 'Ad', logo: 'adminer' }],
+  // Messaging and search.
+  [/rabbitmq/, { text: 'Rb', logo: 'rabbitmq' }],
+  [/kafka/, { text: 'Kf', logo: 'apachekafka' }],
+  [/elasticsearch/, { text: 'Es', logo: 'elasticsearch' }],
+  [/kibana/, { text: 'Kb', logo: 'kibana' }],
+  [/logstash/, { text: 'Ls', logo: 'logstash' }],
+  [/opensearch/, { text: 'Os', logo: 'opensearch' }],
+  [/meilisearch/, { text: 'Me', logo: 'meilisearch' }],
+  [/\bsolr\b/, { text: 'So', logo: 'apachesolr' }],
+  [/temporalio/, { text: 'Tp', logo: 'temporal' }],
+  // Proxies, networking, auth.
+  [/nginx-proxy-manager|nginxproxymanager|jc21\//, { text: 'NP', logo: 'nginxproxymanager' }],
+  [/nginx/, { text: 'Nx', logo: 'nginx' }],
+  [/traefik/, { text: 'Tf', logo: 'traefikproxy' }],
+  [/caddy/, { text: 'Cd', logo: 'caddy' }],
+  [/envoy/, { text: 'Ev', logo: 'envoyproxy' }],
+  [/\bkong\b/, { text: 'Kg', logo: 'kong' }],
+  [/cloudflared/, { text: 'Cf', logo: 'cloudflare' }],
+  [/tailscale/, { text: 'Tc', logo: 'tailscale' }],
+  [/wireguard/, { text: 'Wg', logo: 'wireguard' }],
+  [/certbot|letsencrypt/, { text: 'Le', logo: 'letsencrypt' }],
+  [/pi-?hole/, { text: 'Ph', logo: 'pihole' }],
+  [/adguard/, { text: 'Ag', logo: 'adguard' }],
+  [/keycloak/, { text: 'Kc', logo: 'keycloak' }],
+  [/authelia/, { text: 'Al', logo: 'authelia' }],
+  [/authentik/, { text: 'Ak', logo: 'authentik' }],
+  [/vaultwarden/, { text: 'Vw', logo: 'vaultwarden' }],
+  [/bitwarden/, { text: 'Bw', logo: 'bitwarden' }],
+  [/\bvault\b/, { text: 'Vt', logo: 'vault' }],
+  [/consul/, { text: 'Cs', logo: 'consul' }],
+  // Observability.
+  [/grafana/, { text: 'Gf', logo: 'grafana' }],
+  [/prometheus|node-exporter|alertmanager|\bprom\//, { text: 'Pr', logo: 'prometheus' }],
+  [/jaeger/, { text: 'Jg', logo: 'jaeger' }],
+  [/otel|opentelemetry/, { text: 'OT', logo: 'opentelemetry' }],
+  [/uptime-?kuma/, { text: 'UK', logo: 'uptimekuma' }],
+  [/umami/, { text: 'Um', logo: 'umami' }],
+  [/metabase/, { text: 'Mb', logo: 'metabase' }],
+  // Dev tooling and container management.
+  [/portainer/, { text: 'Pt', logo: 'portainer' }],
+  [/watchtower/, { text: 'Wt', logo: 'watchtower' }],
+  [/gethomepage/, { text: 'Hm', logo: 'homepage' }],
+  [/jenkins/, { text: 'Jk', logo: 'jenkins' }],
+  [/gitlab/, { text: 'GL', logo: 'gitlab' }],
+  [/forgejo/, { text: 'Fj', logo: 'forgejo' }],
+  [/gitea/, { text: 'Gt', logo: 'gitea' }],
+  [/sonatype|nexus/, { text: 'Nx', logo: 'sonatype' }],
+  [/node-?red/, { text: 'NR', logo: 'nodered' }],
+  [/\bn8n\b/, { text: 'n8', logo: 'n8n' }],
+  // Self-hosted apps.
+  [/nextcloud/, { text: 'Nc', logo: 'nextcloud' }],
+  [/wordpress/, { text: 'Wp', logo: 'wordpress' }],
+  [/\bghost\b/, { text: 'Gh', logo: 'ghost' }],
+  [/mattermost/, { text: 'Mm', logo: 'mattermost' }],
+  [/rocket\.?chat/, { text: 'RC', logo: 'rocketdotchat' }],
+  [/jellyfin/, { text: 'Jf', logo: 'jellyfin' }],
+  [/plexinc|\bplex\b/, { text: 'Px', logo: 'plex' }],
+  [/immich/, { text: 'Im', logo: 'immich' }],
+  [/home-?assistant/, { text: 'HA', logo: 'homeassistant' }],
+  [/syncthing/, { text: 'St', logo: 'syncthing' }],
+  [/sonarr/, { text: 'Sn', logo: 'sonarr' }],
+  [/radarr/, { text: 'Rd', logo: 'radarr' }],
+  [/qbittorrent/, { text: 'qB', logo: 'qbittorrent' }],
+  // Runtimes and web servers.
+  [/tomcat/, { text: 'Tc', logo: 'apachetomcat' }],
+  [/spring/, { text: 'Sp', logo: 'springboot' }],
+  [/openjdk|temurin|corretto|zulu|\bjdk\b|\bjre\b/, { text: 'Jv', logo: 'openjdk' }],
+  [/(^|\/)node(:|@|\s|$)/, { text: 'Nd', logo: 'nodedotjs' }],
+  [/python/, { text: 'Py', logo: 'python' }],
+  [/\bphp\b/, { text: 'Ph', logo: 'php' }],
+  [/(^|\/)rust(:|@|\s|$)/, { text: 'Rs', logo: 'rust' }],
+  [/dotnet/, { text: '.N', logo: 'dotnet' }],
+  [/httpd|apache/, { text: 'Ap', logo: 'apache' }],
+  [/(^|\/)docker(:|@|\s|$)|\bdind\b/, { text: 'Dk', logo: 'docker' }],
+  // Base-OS images - last, since "postgres:17-alpine" carries an OS name in its tag.
+  [/(^|\/)alpine(:|@|\s|$)/, { text: 'Al', logo: 'alpinelinux' }],
+  [/(^|\/)ubuntu(:|@|\s|$)/, { text: 'Ub', logo: 'ubuntu' }],
+  [/(^|\/)debian(:|@|\s|$)/, { text: 'Db', logo: 'debian' }],
 ];
 
+// Memoised on the raw inputs: the List view calls this per row per render (every 5s poll) and the
+// table above is ~100 regexes. Results are frozen since every caller for a key shares one object.
+const iconCache = new Map();
+
 export function iconFor(image, composeService) {
-  const haystack = `${image || ''} ${composeService || ''}`.toLowerCase();
+  const key = `${image || ''} ${composeService || ''}`;
+  let icon = iconCache.get(key);
+  if (!icon) {
+    icon = Object.freeze(resolveIcon(key.toLowerCase(), image, composeService));
+    iconCache.set(key, icon);
+  }
+  return icon;
+}
+
+function resolveIcon(haystack, image, composeService) {
   for (const [pattern, badge] of SERVICE_BADGES) {
-    if (pattern.test(haystack)) return badge;
+    if (!pattern.test(haystack)) continue;
+    if (!badge.logo) return { text: badge.text, bg: badge.bg };
+    const logo = LOGOS[badge.logo];
+    return { text: badge.text, bg: logo.bg, fg: logo.fg, logo: badge.logo };
   }
   const initial = (composeService || image || '?').trim().charAt(0).toUpperCase() || '?';
   return { text: initial, bg: ACCENT };
+}
+
+// A badge's inner markup - the logo glyph, else the text escaped (the fallback initial comes from a
+// docker/compose name). Shared by the flow-view templates and the List view; svgExport.js has its own.
+export function badgeInnerHtml(icon) {
+  const logo = icon.logo && LOGOS[icon.logo];
+  if (logo) return `<svg class="svc-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="${logo.fg}" d="${logo.path}"/></svg>`;
+  return escapeHtml(icon.text);
+}
+
+// Product name for a logo badge's hover title; '' for the text fallback.
+export function badgeTitle(icon) {
+  return (icon.logo && LOGOS[icon.logo]?.title) || '';
 }
 
 // Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by

@@ -333,8 +333,29 @@ const PUBLIC_DIR = path.join(__dirname, '../public');
 // touching a single import: a relative `import './format.js'` resolves against the importing
 // module's own URL, so pointing index.html at /assets/v<version>/js/app.js pulls all 35 in under
 // the same prefix. A query string (?v=) could not do that - the imports would not carry it.
-const ASSET_PREFIX = `/assets/v${appVersion}`;
-app.use(ASSET_PREFIX, express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' }));
+//
+// The prefix carries a content hash as well as the version: a from-source rebuild between releases
+// keeps the version, and with it alone the browser served the previous build's CSS for a year.
+function hashPublicDir() {
+  const hash = crypto.createHash('sha256');
+  const walk = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else hash.update(path.relative(PUBLIC_DIR, full)).update(fs.readFileSync(full));
+    }
+  };
+  walk(PUBLIC_DIR);
+  return hash.digest('hex').slice(0, 10);
+}
+
+// Fixed at boot in production (the image's files can't change). Elsewhere sendPage re-hashes per
+// page load, since `npm run dev` doesn't restart on a public/ edit and a stale tag would pin it.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+let assetTag = `v${appVersion}-${hashPublicDir()}`;
+const pinnedAssets = express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' });
+app.use('/assets/:tag', (req, res, next) => (req.params.tag === assetTag ? pinnedAssets(req, res, next) : next()));
 
 // The bare mount stays for two reasons: anything referencing /assets/… directly rather than
 // through the HTML (app.js's template has the logo), and a browser still holding a cached
@@ -349,8 +370,9 @@ app.use('/assets', express.static(PUBLIC_DIR, { index: false, maxAge: '5m' }));
 // picks up edits - it is two small files, once per navigation, against the 44 requests this saves.
 function sendPage(res, file) {
   const html = fs.readFileSync(path.join(PUBLIC_DIR, file), 'utf8');
+  if (!IS_PRODUCTION) assetTag = `v${appVersion}-${hashPublicDir()}`;
   res.set('Cache-Control', 'no-cache');
-  res.type('html').send(html.replaceAll('/assets/', `${ASSET_PREFIX}/`));
+  res.type('html').send(html.replaceAll('/assets/', `/assets/${assetTag}/`));
 }
 
 app.get('/login', (req, res) => {

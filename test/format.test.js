@@ -8,9 +8,10 @@ const { pathToFileURL } = require('node:url');
 // once here and shared across every test below via the module cache. pathToFileURL rather than a
 // plain relative string: import()'s relative-specifier resolution expects forward slashes, so a
 // path.join'd path breaks on Windows where it comes out backslash-separated.
-let format;
+let format, logos;
 before(async () => {
   format = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'format.js')));
+  logos = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'lib', 'logos.js')));
 });
 
 test('stateEmoji', async (t) => {
@@ -56,12 +57,59 @@ test('stateEmoji', async (t) => {
 });
 
 test('iconFor', async (t) => {
-  await t.test('matches a known service keyword in the image name', () => {
-    assert.deepEqual(format.iconFor('postgres:17-alpine', undefined), { text: 'Pg', bg: '#336791' });
+  await t.test('matches a known service keyword in the image name, with the logo colours', () => {
+    const { bg, fg } = logos.LOGOS.postgresql;
+    assert.deepEqual(format.iconFor('postgres:17-alpine', undefined), { text: 'Pg', bg, fg, logo: 'postgresql' });
   });
 
   await t.test('also matches against composeService, not just image', () => {
-    assert.deepEqual(format.iconFor('myorg/custom-app:latest', 'redis-cache'), { text: 'Re', bg: '#d82c20' });
+    assert.equal(format.iconFor('myorg/custom-app:latest', 'redis-cache').logo, 'redis');
+  });
+
+  await t.test('software with no Simple Icons glyph keeps a text badge', () => {
+    assert.deepEqual(format.iconFor('dpage/pgadmin4:latest', undefined), { text: 'PA', bg: '#6d9f3d' });
+    assert.deepEqual(format.iconFor('amir20/dozzle:latest', undefined), { text: 'Dz', bg: '#1e88e5' });
+  });
+
+  // Each pair is an image a looser or earlier pattern would claim, and the logo it must get.
+  await t.test('specific entries win over the generic ones that would also match', () => {
+    const cases = [
+      ['postgres:17-alpine', 'postgresql'], // not the alpine base-OS entry
+      ['node:24-alpine', 'nodedotjs'],
+      ['prom/node-exporter:latest', 'prometheus'], // not node
+      ['nodered/node-red:latest', 'nodered'],
+      ['vaultwarden/server:latest', 'vaultwarden'], // not \bvault\b
+      ['hashicorp/vault:1.17', 'vault'],
+      ['apache/kafka:3.8', 'apachekafka'], // not apache
+      ['httpd:2.4', 'apache'],
+      ['jc21/nginx-proxy-manager:latest', 'nginxproxymanager'], // not nginx
+      ['wordpress:php8.3-apache', 'wordpress'],
+      ['timescale/timescaledb:latest-pg16', 'timescale'], // not postgres
+      ['alpine:3.20', 'alpinelinux'],
+      ['opendockwatch:local', 'opendockwatch'], // a from-source build
+      ['darks1d3r/opendockwatch:2.7.0', 'opendockwatch'],
+    ];
+    for (const [image, logo] of cases) assert.equal(format.iconFor(image, undefined).logo, logo, image);
+  });
+
+  await t.test('a short keyword does not match inside a longer word', () => {
+    assert.equal(format.iconFor('myorg/complex-service:1', undefined).logo, undefined); // \bplex\b
+    assert.equal(format.iconFor('myorg/nodeapp:1', undefined).logo, undefined); // node image only
+  });
+
+  await t.test('every logo a badge names exists, and every bundled logo is used by a badge', () => {
+    const named = new Set(format.SERVICE_BADGES.map(([, b]) => b.logo).filter(Boolean));
+    const bundled = new Set(Object.keys(logos.LOGOS));
+    assert.deepEqual(
+      [...named].filter((s) => !bundled.has(s)),
+      [],
+      'add these to scripts/build-logos.js and re-run it'
+    );
+    assert.deepEqual(
+      [...bundled].filter((s) => !named.has(s)),
+      [],
+      'bundled but unused - drop them from scripts/build-logos.js'
+    );
   });
 
   await t.test('falls back to the composeService initial when nothing matches', () => {
@@ -69,11 +117,28 @@ test('iconFor', async (t) => {
   });
 
   await t.test('falls back to the image initial when there is no composeService', () => {
-    assert.deepEqual(format.iconFor('Zookeeper:latest', undefined), { text: 'Z', bg: '#4f8cff' });
+    assert.deepEqual(format.iconFor('Quartz:latest', undefined), { text: 'Q', bg: '#4f8cff' });
   });
 
   await t.test('falls back to "?" when both are empty', () => {
     assert.deepEqual(format.iconFor('', ''), { text: '?', bg: '#4f8cff' });
+  });
+});
+
+test('badgeInnerHtml / badgeTitle', async (t) => {
+  await t.test('a logo badge renders the glyph path in its fg colour, titled with the product name', () => {
+    const icon = format.iconFor('redis:7', undefined);
+    const html = format.badgeInnerHtml(icon);
+    assert.ok(html.startsWith('<svg class="svc-logo"'));
+    assert.ok(html.includes(`fill="${logos.LOGOS.redis.fg}" d="${logos.LOGOS.redis.path}"`));
+    assert.equal(format.badgeTitle(icon), 'Redis');
+  });
+
+  // The fallback initial comes from a compose service name, which docker doesn't charset-restrict.
+  await t.test('a text badge is escaped and has no title', () => {
+    const icon = format.iconFor('myorg/app:1', '<svc');
+    assert.equal(format.badgeInnerHtml(icon), '&lt;');
+    assert.equal(format.badgeTitle(icon), '');
   });
 });
 

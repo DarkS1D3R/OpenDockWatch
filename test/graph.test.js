@@ -14,7 +14,7 @@ const { pathToFileURL } = require('node:url');
 // importing it here to reach just those two is safe. pathToFileURL rather than a plain relative
 // string: import()'s relative-specifier resolution expects forward slashes, so a path.join'd path
 // breaks on Windows where it comes out backslash-separated.
-let elements, svgExport, theme, graph;
+let elements, svgExport, theme, graph, logos;
 before(async () => {
   const graphDir = path.join(__dirname, '..', 'public', 'js', 'graph');
   elements = await import(pathToFileURL(path.join(graphDir, 'elements.js')));
@@ -24,6 +24,7 @@ before(async () => {
   // is the one failure those assertions look like they exist to catch. See test/theme.test.js.
   theme = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'theme.js')));
   graph = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'graph.js')));
+  logos = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'lib', 'logos.js')));
 });
 
 test('aggregateGroups', async (t) => {
@@ -603,6 +604,21 @@ test('renderSvg', async (t) => {
     assert.match(svg, /^<svg/);
     assert.match(svg, /<\/svg>$/);
   });
+
+  // The export is a standalone file, so a logo has to be drawn as path data, not referenced.
+  await t.test('a logo badge draws the glyph path in its fg colour instead of the text', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'Pg', bg: '#4169E1', fg: '#ffffff', logo: 'postgresql' } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    const path = logos.LOGOS.postgresql.path;
+    assert.ok(svg.includes(`fill="#ffffff" d="${path}"`));
+    assert.ok(!svg.includes('>Pg</text>'));
+  });
+
+  await t.test('a text badge still draws its text', () => {
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
+    assert.ok(svg.includes('>W</text>'));
+  });
 });
 
 function containerTplFixture(overrides = {}) {
@@ -665,6 +681,15 @@ test('containerNodeTpl', async (t) => {
   await t.test('a plain name renders unchanged', () => {
     const html = graph.containerNodeTpl(containerTplFixture({ name: 'web-api' }));
     assert.ok(html.includes('<span class="cy-node-name">web-api</span>'));
+  });
+
+  await t.test('a logo badge renders the glyph in both full and compact modes', () => {
+    const icon = { text: 'Pg', bg: '#4169E1', fg: '#ffffff', logo: 'postgresql' };
+    for (const compact of [false, true]) {
+      const html = graph.containerNodeTpl(containerTplFixture({ compact, icon }));
+      assert.ok(html.includes('class="svc-logo"'), `compact=${compact}`);
+      assert.ok(html.includes('title="PostgreSQL"'), `compact=${compact}`);
+    }
   });
 });
 

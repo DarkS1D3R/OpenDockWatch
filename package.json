@@ -25,7 +25,8 @@
     "test": "node scripts/check-syntax.js && node --test --test-force-exit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "build:logos": "node scripts/build-logos.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -43,6 +44,7 @@
     "globals": "^17.7.0",
     "playwright": "^1.62.0",
     "prettier": "^3.9.4",
+    "simple-icons": "^16.32.0",
     "supertest": "^7.2.2"
   }
 }

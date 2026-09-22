@@ -1,4 +1,5 @@
 import { healthColor } from '../format.js';
+import { LOGOS } from '../lib/logos.js';
 import { STATE_COLORS, SELECTED } from '../theme.js';
 import {
   NODE_WIDTH,
@@ -191,7 +192,13 @@ function svgContainerNode(n) {
   if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
   if (d.icon) {
     svg += `<circle cx="${x1 + 14.5}" cy="${y1 + 24.5}" r="8.5" fill="${d.icon.bg}"/>`;
-    svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
+    const logo = d.icon.logo && LOGOS[d.icon.logo];
+    if (logo) {
+      // 24-unit glyph scaled to 11px, matching .svc-logo in the live badge.
+      svg += `<path transform="translate(${x1 + 9}, ${y1 + 19}) scale(${11 / 24})" fill="${logo.fg}" d="${logo.path}"/>`;
+    } else {
+      svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
+    }
   }
   svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
   // Fixed offsets from FULL_LEAF_HEIGHT (single-port-line box height), not n.height - n.height
