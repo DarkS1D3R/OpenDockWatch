@@ -41,11 +41,11 @@ export function stateEmoji(state, health) {
 // (colours come from there); no `logo` keeps a text badge on `bg`. Ordering rules: public/CLAUDE.md.
 export const SERVICE_BADGES = [
   [/opendockwatch/, { text: 'OD', logo: 'opendockwatch' }],
-  // pgAdmin has no Simple Icons glyph of its own, and its real logo is the Postgres elephant - so it
-  // borrows that on its own green, which keeps it distinct from the database it administers.
-  [/pgadmin/, { text: 'PA', logo: 'postgresql', bg: '#6d9f3d' }],
+  // pgAdmin's logo is white "pg" on a blue rounded square - no Simple Icons glyph, but a text tile
+  // is the logo, so it's drawn as one rather than as a lettered circle.
+  [/pgadmin/, { text: 'pg', bg: '#336791', tile: true }],
   // No Simple Icons glyph for these - text badges.
-  [/dozzle/, { text: 'Dz', bg: '#1e88e5' }],
+  [/dozzle/, { text: 'Dz', bg: '#fcc419', fg: '#1d2027' }], // yellow needs dark text
   [/valkey/, { text: 'Vk', bg: '#6983ff' }],
   [/activemq/, { text: 'Mq', bg: '#a2122e' }],
   [/camel/, { text: 'Cm', bg: '#d04437' }],
@@ -174,12 +174,20 @@ function resolveIcon(image, composeService, override, hint) {
   const haystack = `${image || ''} ${composeService || ''}`.toLowerCase();
   for (const [pattern, badge] of SERVICE_BADGES) {
     if (!pattern.test(haystack)) continue;
-    if (!badge.logo) return { text: badge.text, bg: badge.bg };
+    if (!badge.logo) return textIcon(badge);
     return logoIcon(badge.logo, badge);
   }
   if (hint && LOGOS[hint]) return logoIcon(hint);
   const initial = (composeService || image || '?').trim().charAt(0).toUpperCase() || '?';
   return { text: initial, bg: ACCENT };
+}
+
+// Only the fields a text badge actually set, so an unset fg/tile doesn't appear as an undefined key.
+function textIcon(badge) {
+  const icon = { text: badge.text, bg: badge.bg };
+  if (badge.fg) icon.fg = badge.fg;
+  if (badge.tile) icon.tile = true;
+  return icon;
 }
 
 // A badge entry may re-colour a borrowed glyph (pgAdmin wears the Postgres elephant on its own green).
@@ -195,7 +203,8 @@ export function badgeInnerHtml(icon) {
   const logo = icon.logo && LOGOS[icon.logo];
   if (logo)
     return `<svg class="svc-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="${icon.fg || logo.fg}" d="${logo.path}"/></svg>`;
-  return escapeHtml(icon.text);
+  // Text colour is set per badge only when it isn't the stylesheet's white (a yellow badge needs dark).
+  return icon.fg ? `<span style="color:${icon.fg}">${escapeHtml(icon.text)}</span>` : escapeHtml(icon.text);
 }
 
 // Product name for a logo badge's hover title; '' for the text fallback.
@@ -203,10 +212,10 @@ export function badgeTitle(icon) {
   return (icon.logo && LOGOS[icon.logo]?.title) || '';
 }
 
-// True for a mark that draws its own rounded-square frame (our own logo) - rendered as a full-bleed
-// tile via .svc-tile rather than a glyph inside the usual circle.
+// True for a badge whose real logo is itself a rounded square - our own mark, or a text tile like
+// pgAdmin's "pg" - rendered full-bleed via .svc-tile rather than inside the usual circle.
 export function badgeIsTile(icon) {
-  return Boolean(icon.logo && LOGOS[icon.logo]?.tile);
+  return Boolean(icon.tile || (icon.logo && LOGOS[icon.logo]?.tile));
 }
 
 // Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by

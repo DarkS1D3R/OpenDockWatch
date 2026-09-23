@@ -172,10 +172,12 @@ function svgAlertBadge(x, y, count) {
 // a circle, a .svc-tile mark (carries its own frame) full-bleed in a 28%-rounded square, else text.
 function svgBadge(x, y, icon) {
   const logo = icon.logo && LOGOS[icon.logo];
-  if (logo && logo.tile) {
+  if (icon.tile || (logo && logo.tile)) {
+    const tile = `<rect x="${x}" y="${y}" width="17" height="17" rx="${17 * 0.28}" fill="${icon.bg}"/>`;
+    if (logo) return tile + `<path transform="translate(${x}, ${y}) scale(${17 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
     return (
-      `<rect x="${x}" y="${y}" width="17" height="17" rx="${17 * 0.28}" fill="${icon.bg}"/>` +
-      `<path transform="translate(${x}, ${y}) scale(${17 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`
+      tile +
+      `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="9" font-weight="700" fill="${icon.fg || '#fff'}">${svgEscape(icon.text)}</text>`
     );
   }
   const circle = `<circle cx="${x + 8.5}" cy="${y + 8.5}" r="8.5" fill="${icon.bg}"/>`;
@@ -183,7 +185,7 @@ function svgBadge(x, y, icon) {
     return circle + `<path transform="translate(${x + 3}, ${y + 3}) scale(${11 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
   return (
     circle +
-    `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(icon.text)}</text>`
+    `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="8" font-weight="600" fill="${icon.fg || '#fff'}">${svgEscape(icon.text)}</text>`
   );
 }
 

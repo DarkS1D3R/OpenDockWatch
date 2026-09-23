@@ -67,16 +67,19 @@ test('iconFor', async (t) => {
   });
 
   await t.test('software with no Simple Icons glyph keeps a text badge', () => {
-    assert.deepEqual(format.iconFor('amir20/dozzle:latest', undefined), { text: 'Dz', bg: '#1e88e5' });
+    assert.deepEqual(format.iconFor('amir20/dozzle:latest', undefined), { text: 'Dz', bg: '#fcc419', fg: '#1d2027' });
   });
 
-  // pgAdmin's own logo is the elephant; its green is what tells it apart from the database.
-  await t.test('pgAdmin borrows the Postgres glyph on its own green', () => {
+  // pgAdmin's logo is itself a text tile - white "pg" on a blue rounded square.
+  await t.test('pgAdmin is a "pg" text tile, not a glyph in a circle', () => {
     const icon = format.iconFor('dpage/pgadmin4:latest', undefined);
-    assert.equal(icon.logo, 'postgresql');
-    assert.equal(icon.bg, '#6d9f3d');
-    assert.notEqual(icon.bg, format.iconFor('postgres:17', undefined).bg);
-    assert.ok(format.badgeInnerHtml(icon).includes(`fill="${icon.fg}"`));
+    assert.deepEqual(icon, { text: 'pg', bg: '#336791', tile: true });
+    assert.equal(format.badgeIsTile(icon), true);
+    assert.equal(format.badgeInnerHtml(icon), 'pg');
+  });
+
+  await t.test('an ordinary text badge is not a tile', () => {
+    assert.equal(format.badgeIsTile(format.iconFor('amir20/dozzle:latest', undefined)), false);
   });
 
   // A custom `myorg/billing-api` FROM eclipse-temurin with SPRING_* env - the name says nothing.
@@ -443,5 +446,16 @@ test('highlightLine', async (t) => {
   // everywhere else on the line - the skip-and-advance behaviour above must not swallow it.
   await t.test('a genuine match is still highlighted around zero-width non-matches', () => {
     assert.equal(format.highlightLine('abc', 'b*', true), 'a<mark class="log-highlight">b</mark>c');
+  });
+});
+
+test('text badge colour', async (t) => {
+  // White on yellow is unreadable, so a text badge can carry its own text colour.
+  await t.test('a text badge with fg renders its text in that colour, escaped', () => {
+    assert.equal(format.badgeInnerHtml({ text: '<D', bg: '#fcc419', fg: '#1d2027' }), '<span style="color:#1d2027">&lt;D</span>');
+  });
+
+  await t.test('a text badge without fg stays bare text, inheriting the stylesheet white', () => {
+    assert.equal(format.badgeInnerHtml({ text: 'Vk', bg: '#6983ff' }), 'Vk');
   });
 });

@@ -624,6 +624,15 @@ test('renderSvg', async (t) => {
     assert.ok(!svg.includes('r="8.5" fill="#1d2027"'));
   });
 
+  await t.test('a text tile draws its text on a rounded square', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'pg', bg: '#336791', tile: true } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    assert.match(svg, /<rect x="[\d.]+" y="[\d.]+" width="17" height="17" rx="[\d.]+" fill="#336791"\/>/);
+    assert.ok(svg.includes('>pg</text>'));
+    assert.ok(!svg.includes('r="8.5" fill="#336791"'));
+  });
+
   await t.test('a text badge still draws its text', () => {
     const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
     assert.ok(svg.includes('>W</text>'));
