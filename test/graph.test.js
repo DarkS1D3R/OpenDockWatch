@@ -14,7 +14,7 @@ const { pathToFileURL } = require('node:url');
 // importing it here to reach just those two is safe. pathToFileURL rather than a plain relative
 // string: import()'s relative-specifier resolution expects forward slashes, so a path.join'd path
 // breaks on Windows where it comes out backslash-separated.
-let elements, svgExport, theme, graph;
+let elements, svgExport, theme, graph, logos;
 before(async () => {
   const graphDir = path.join(__dirname, '..', 'public', 'js', 'graph');
   elements = await import(pathToFileURL(path.join(graphDir, 'elements.js')));
@@ -24,6 +24,7 @@ before(async () => {
   // is the one failure those assertions look like they exist to catch. See test/theme.test.js.
   theme = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'theme.js')));
   graph = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'graph.js')));
+  logos = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'lib', 'logos.js')));
 });
 
 test('aggregateGroups', async (t) => {
@@ -276,6 +277,35 @@ test('buildTreeElements', async (t) => {
     assert.equal(netNode.data.id, `net:${longName}`);
   });
 
+  await t.test('wraps a long compose project name onto multiple lines rather than overflowing the pill', () => {
+    const longProject = 'acme-corp-billing-service-staging';
+    const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
+    const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');
+    assert.ok(projNode.data.label.includes('\n'), 'expected the long project name to be wrapped onto multiple lines');
+    assert.ok(
+      projNode.data.label.split('\n').every((line) => line.length <= 14),
+      'expected every wrapped line to stay under the max line length'
+    );
+    assert.equal(projNode.data.label.replace(/\n/g, ''), longProject);
+    // The id must keep the unwrapped name - edges and FlowView's pillSelection are keyed by it.
+    assert.equal(projNode.data.id, `proj:${longProject}`);
+  });
+
+  await t.test('a wrapped project name still matches the edges pointing at its pill', () => {
+    const longProject = 'acme-corp-billing-service-staging';
+    const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [], mounts: [] }];
+    const els = elements.buildTreeElements(nodes, null);
+    const projNode = els.find((el) => el.classes === 'proj');
+    const projEdge = els.find((el) => el.classes === 'edge-tree-proj');
+    assert.equal(projEdge.data.source, projNode.data.id);
+  });
+
+  await t.test('leaves a short compose project name on a single line, unwrapped', () => {
+    const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [] }];
+    const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');
+    assert.equal(projNode.data.label, 'shop');
+  });
+
   await t.test('shortens an anonymous-volume label but keeps the full source as the stable id', () => {
     const anonId = 'a'.repeat(64);
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: anonId, kind: 'volume-anon' }] }];
@@ -285,7 +315,7 @@ test('buildTreeElements', async (t) => {
   });
 
   await t.test('wraps a long bind-mount path onto multiple lines at path-separator boundaries', () => {
-    const longPath = '/mnt/c/Projects/bm-server/application/target/bm-server-files/bm-server-1.0.0-SNAPSHOT.jar';
+    const longPath = '/mnt/c/Projects/billing-api/application/target/billing-api-files/billing-api-1.0.0-SNAPSHOT.jar';
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [{ source: longPath, kind: 'bind' }] }];
     const mountNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'mount mount-bind');
     assert.ok(mountNode.data.label.includes('\n'), 'expected the long path to be wrapped onto multiple lines');
@@ -574,6 +604,39 @@ test('renderSvg', async (t) => {
     assert.match(svg, /^<svg/);
     assert.match(svg, /<\/svg>$/);
   });
+
+  // The export is a standalone file, so a logo has to be drawn as path data, not referenced.
+  await t.test('a logo badge draws the glyph path in its fg colour instead of the text', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'Pg', bg: '#4169E1', fg: '#ffffff', logo: 'postgresql' } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    const path = logos.LOGOS.postgresql.path;
+    assert.ok(svg.includes(`fill="#ffffff" d="${path}"`));
+    assert.ok(!svg.includes('>Pg</text>'));
+  });
+
+  await t.test('a tile mark draws a rounded square with the glyph full-bleed, not a circle', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'OD', bg: '#1d2027', fg: '#4f8cff', logo: 'opendockwatch' } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    assert.match(svg, /<rect x="[\d.]+" y="[\d.]+" width="17" height="17" rx="[\d.]+" fill="#1d2027"\/>/);
+    assert.ok(svg.includes(`scale(${17 / 24})" fill="#4f8cff" d="${logos.LOGOS.opendockwatch.path}"`));
+    assert.ok(!svg.includes('r="8.5" fill="#1d2027"'));
+  });
+
+  await t.test('a text tile draws its text on a rounded square', () => {
+    const node = svgContainerFixture();
+    node.data = { ...node.data, icon: { text: 'pg', bg: '#336791', tile: true } };
+    const svg = svgExport.renderSvg({ nodes: [node], edges: [] });
+    assert.match(svg, /<rect x="[\d.]+" y="[\d.]+" width="17" height="17" rx="[\d.]+" fill="#336791"\/>/);
+    assert.ok(svg.includes('>pg</text>'));
+    assert.ok(!svg.includes('r="8.5" fill="#336791"'));
+  });
+
+  await t.test('a text badge still draws its text', () => {
+    const svg = svgExport.renderSvg({ nodes: [svgContainerFixture()], edges: [] });
+    assert.ok(svg.includes('>W</text>'));
+  });
 });
 
 function containerTplFixture(overrides = {}) {
@@ -636,6 +699,24 @@ test('containerNodeTpl', async (t) => {
   await t.test('a plain name renders unchanged', () => {
     const html = graph.containerNodeTpl(containerTplFixture({ name: 'web-api' }));
     assert.ok(html.includes('<span class="cy-node-name">web-api</span>'));
+  });
+
+  await t.test('a logo badge renders the glyph in both full and compact modes', () => {
+    const icon = { text: 'Pg', bg: '#4169E1', fg: '#ffffff', logo: 'postgresql' };
+    for (const compact of [false, true]) {
+      const html = graph.containerNodeTpl(containerTplFixture({ compact, icon }));
+      assert.ok(html.includes('class="svc-logo"'), `compact=${compact}`);
+      assert.ok(html.includes('title="PostgreSQL"'), `compact=${compact}`);
+      assert.ok(!html.includes('svc-tile'), `compact=${compact}`);
+    }
+  });
+
+  await t.test('a tile mark gets the svc-tile class in both modes', () => {
+    const icon = { text: 'OD', bg: '#1d2027', fg: '#4f8cff', logo: 'opendockwatch' };
+    for (const compact of [false, true]) {
+      const html = graph.containerNodeTpl(containerTplFixture({ compact, icon }));
+      assert.ok(html.includes('class="cy-node-icon svc-tile"'), `compact=${compact}`);
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { healthColor, healthLabel, formatBytes } from '../format.js';
+import { healthColor, healthLabel, formatBytes, iconFor, badgeInnerHtml, badgeTitle, badgeIsTile } from '../format.js';
 import MiniSpark from './MiniSpark.js';
 
 // The List view: containers grouped by compose project, with mini sparklines and
@@ -69,6 +69,19 @@ export default {
     healthTitle(health) {
       return healthLabel(health);
     },
+    // Called three times per row per render, which is only affordable because iconFor is memoised.
+    badgeFor(c) {
+      return iconFor(c.image, c.composeService, c.iconOverride, c.iconHint);
+    },
+    badgeHtml(c) {
+      return badgeInnerHtml(this.badgeFor(c));
+    },
+    badgeLabel(c) {
+      return badgeTitle(this.badgeFor(c)) || null;
+    },
+    badgeTile(c) {
+      return badgeIsTile(this.badgeFor(c));
+    },
   },
   template: `
     <div>
@@ -107,7 +120,7 @@ export default {
               :class="{'row-selected': c.id === selectedContainerId}"
               @click="$emit('select', c.id)"
             >
-              <td>{{ c.name }}</td>
+              <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" v-html="badgeHtml(c)"></span>{{ c.name }}</td>
               <td class="muted">{{ c.image }}</td>
               <td>
                 <div class="status-cell">

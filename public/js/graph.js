@@ -1,4 +1,4 @@
-import { healthColor, escapeHtml } from './format.js';
+import { healthColor, escapeHtml, badgeInnerHtml, badgeTitle, badgeIsTile } from './format.js';
 import { containerFullHeight, clampPct, CONTAINER_STATE_CLASSES } from './graph/elements.js';
 import { CY_STYLE, CPU_COLOR, MEM_COLOR } from './graph/style.js';
 import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout.js';
@@ -218,7 +218,7 @@ export function containerNodeTpl(data) {
     return `
           <div class="cy-node-box cy-node-box-compact${data.faded ? ' faded' : ''}">
             <span class="cy-node-emoji">${data.emoji}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-icon${badgeIsTile(data.icon) ? ' svc-tile' : ''}" style="background:${data.icon.bg}" title="${escapeHtml(badgeTitle(data.icon))}">${badgeInnerHtml(data.icon)}</span>
             <span class="cy-node-name">${name}</span>
             ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
           </div>
@@ -228,7 +228,7 @@ export function containerNodeTpl(data) {
           <div class="cy-node-box${data.faded ? ' faded' : ''}" style="height:${containerFullHeight(data.portLines)}px">
             <span class="cy-node-emoji">${data.emoji}</span>
             <span class="cy-node-status">${status}</span>
-            <span class="cy-node-icon" style="background:${data.icon.bg}">${data.icon.text}</span>
+            <span class="cy-node-icon${badgeIsTile(data.icon) ? ' svc-tile' : ''}" style="background:${data.icon.bg}" title="${escapeHtml(badgeTitle(data.icon))}">${badgeInnerHtml(data.icon)}</span>
             <span class="cy-node-name">${name}</span>
             <div class="cy-node-metrics">
               <div class="cy-node-metric-row">

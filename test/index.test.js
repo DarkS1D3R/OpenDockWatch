@@ -1107,7 +1107,9 @@ test('DELETE /alerts and DELETE /hosts/:hostId/events clear stored rows', async 
 // forever under a version-pinned URL, and the HTML that points at them never is.
 test('asset caching', async (t) => {
   const { version } = require('../package.json');
-  const PREFIX = `/assets/v${version}`;
+  // Read off the page rather than rebuilt here: the prefix carries a content hash of public/.
+  const login = await request(app).get('/login');
+  const PREFIX = login.text.match(/href="(\/assets\/[^/]+)\/style\.css"/)[1];
 
   await t.test('a version-pinned asset is immutable and cacheable for a year', async () => {
     const res = await request(app).get(`${PREFIX}/js/app.js`);
@@ -1144,6 +1146,13 @@ test('asset caching', async (t) => {
 
   await t.test('a stale version prefix 404s rather than serving something', async () => {
     assert.equal((await request(app).get('/assets/v0.0.0-not-a-release/js/app.js')).status, 404);
+  });
+
+  // A from-source rebuild keeps the version, so a version-only URL is exactly what a browser from
+  // the previous build holds cached - it must not name the current files as immutable.
+  await t.test('the prefix is the version plus a content hash, and the version alone is not pinned', async () => {
+    assert.match(PREFIX, new RegExp(`^/assets/v${version.replace(/\./g, '\\.')}-[0-9a-f]{10}$`));
+    assert.equal((await request(app).get(`/assets/v${version}/style.css`)).status, 404);
   });
 
   // The HTML is the pointer to everything above. Serve a stale copy and the browser keeps loading

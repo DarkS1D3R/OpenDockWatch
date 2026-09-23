@@ -84,7 +84,7 @@ function containerNodeEl(n, selectedId, parent) {
     name: n.name,
     emoji: stateEmoji(n.state, n.health),
     status: n.status || '',
-    icon: iconFor(n.image, n.composeService),
+    icon: iconFor(n.image, n.composeService, n.iconOverride, n.iconHint),
     cpuPerc: n.cpuPerc,
     memPerc: n.memPerc,
     netIO: formatRatePair(n.netRxRate, n.netTxRate),
@@ -185,6 +185,9 @@ const MOUNT_LABEL_LINE_CHARS = 22;
 // Network pills are a narrower box than mount pills (120px vs 170px) - a shorter line length
 // keeps wrapped network names from overflowing them the same way long ones used to.
 const NET_LABEL_LINE_CHARS = 14;
+// Project pills are wider than network ones (140px vs 120px) but set 11px rather than 10px, so
+// they fit about the same number of characters per line.
+const PROJ_LABEL_LINE_CHARS = 14;
 
 // Cytoscape's text-wrap only auto-wraps at whitespace, and mount paths/volume/network names have
 // none - a long path is one unbreakable "word" that overflows the pill. Pre-splitting into
@@ -243,7 +246,9 @@ export function buildTreeElements(nodes, selectedId, { showNetworks = true, show
   }
 
   const els = [];
-  for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: g }, classes: 'proj' });
+  // proj:<id> keeps the unwrapped name, same as net:<name>/mount:<source> do - the id is what
+  // edges and pillSelection are keyed by, so it must not carry the label's line breaks.
+  for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: wrapPillLabel(g, PROJ_LABEL_LINE_CHARS) }, classes: 'proj' });
   for (const net of netNames) els.push({ data: { id: `net:${net}`, label: wrapPillLabel(net, NET_LABEL_LINE_CHARS) }, classes: 'net' });
   for (const [source, { kind, count }] of mountSources) {
     els.push({

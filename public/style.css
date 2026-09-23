@@ -909,6 +909,57 @@ table.containers td:nth-child(7) {
   color: #fff;
   line-height: 1;
 }
+.svc-logo {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+/* The List view's copy of .cy-node-icon, inline at the start of the Name cell rather than its own
+   column - a new column would renumber every measured nth-child width above. */
+.svc-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  /* Negative block margins so the larger badge doesn't make every row taller. */
+  margin: -4px 10px -4px 0;
+  border-radius: 50%;
+  vertical-align: middle;
+  /* A hairline ring so the near-black and dark-navy brands keep an edge on the dark panel. */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+  line-height: 1;
+}
+.svc-badge .svc-logo {
+  width: 15px;
+  height: 15px;
+}
+/* A mark that draws its own rounded-square frame (OpenDockWatch's) fills the whole badge instead of
+   sitting in a circle. 28% matches logo.svg's corner radius; the ring would double its frame. */
+.cy-node-icon.svc-tile,
+.svc-badge.svc-tile {
+  border-radius: 28%;
+  box-shadow: none;
+}
+.svc-tile .svc-logo {
+  width: 100%;
+  height: 100%;
+}
+/* A text tile (pgAdmin's "pg") is a wordmark, so it sets heavier and larger than a lettered circle. */
+.svc-badge.svc-tile {
+  font-size: 12px;
+}
+.cy-node-icon.svc-tile {
+  font-size: 9px;
+}
+.svc-tile {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
 .cy-node-name {
   position: absolute;
   top: 24.5px;

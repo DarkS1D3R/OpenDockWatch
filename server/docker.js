@@ -298,8 +298,64 @@ async function listContainers(host) {
         composeProject: labels['com.docker.compose.project'] || null,
         composeService: labels['com.docker.compose.service'] || null,
         alertsDisabled: labels['opendockwatch.alerts'] === 'off',
+        iconOverride: labels['opendockwatch.icon'] || null,
       };
     });
+}
+
+// Env var *names* that identify a container's runtime when its image name says nothing (a
+// `myorg/app:latest` built FROM eclipse-temurin). First match wins, so a framework beats the
+// language it runs on. The values are never read - they routinely hold database passwords.
+const RUNTIME_ENV_HINTS = [
+  [/^SPRING_/, 'springboot'],
+  [/^ASPNETCORE_|^DOTNET_VERSION$/, 'dotnet'],
+  [/^JAVA_HOME$|^JAVA_VERSION$/, 'openjdk'],
+  [/^NODE_VERSION$/, 'nodedotjs'],
+  [/^PYTHON_VERSION$/, 'python'],
+  [/^PHP_VERSION$/, 'php'],
+  [/^RUST_VERSION$/, 'rust'],
+];
+
+function runtimeHintFromEnv(env) {
+  const names = (env || []).map((kv) => String(kv).split('=', 1)[0]);
+  for (const [pattern, slug] of RUNTIME_ENV_HINTS) {
+    if (names.some((n) => pattern.test(n))) return slug;
+  }
+  return null;
+}
+
+// Pure half of refreshIconHints: one `<id>\t<json env>` line per container -> Map(shortId -> slug).
+// A malformed line is skipped rather than failing the batch; a missing hint only costs an icon.
+function parseIconHints(raw) {
+  const hints = new Map();
+  for (const line of (raw || '').split('\n')) {
+    const tab = line.indexOf('\t');
+    if (tab === -1) continue;
+    try {
+      const hint = runtimeHintFromEnv(JSON.parse(line.slice(tab + 1)));
+      if (hint) hints.set(line.slice(0, tab).trim().slice(0, 12), hint);
+    } catch {
+      // not JSON - skip
+    }
+  }
+  return hints;
+}
+
+// Env is fixed at container creation, so - like topologyMetaCache - the container-id set is the
+// cache key and a create/destroy refetches. Called by metricsCollector off the poll's critical
+// path; routes read it synchronously through iconHintFor, so no request ever waits on it.
+const iconHintsCache = new Map(); // hostId -> { signature, hints: Map(shortId -> slug) }
+
+async function refreshIconHints(host, containers) {
+  const ids = containers.map((c) => c.id).sort();
+  const signature = ids.join(',');
+  if (!ids.length || iconHintsCache.get(host.id)?.signature === signature) return;
+  const raw = await run([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids]);
+  iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
+}
+
+function iconHintFor(hostId, containerId) {
+  return iconHintsCache.get(hostId)?.hints.get(String(containerId).slice(0, 12)) || null;
 }
 
 // Forked from format.js's MEM_UNIT_BYTES (CJS/ESM can't share a module here) - kept identical by
@@ -602,6 +658,7 @@ async function getTopologyMeta(host, containers) {
 // daemon entirely.
 function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
+  iconHintsCache.delete(hostId);
   hostInfoCache.delete(hostId);
   lastCheckErrors.delete(hostId);
 }
@@ -626,6 +683,8 @@ async function getTopology(host, snapshot) {
       health: c.health,
       image: c.image,
       composeService: c.composeService,
+      iconOverride: c.iconOverride,
+      iconHint: iconHintFor(host.id, c.id),
       ports: c.ports,
       networks: c.networks,
       mounts: mountsById.get(c.id) || [],
@@ -792,6 +851,10 @@ module.exports = {
   parseStatsLine,
   getTopology,
   getTopologyMeta,
+  refreshIconHints,
+  iconHintFor,
+  parseIconHints,
+  runtimeHintFromEnv,
   getHostInfo,
   getDiskUsage,
   getDiskUsageImages,

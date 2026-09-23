@@ -1,4 +1,5 @@
 import { healthColor } from '../format.js';
+import { LOGOS } from '../lib/logos.js';
 import { STATE_COLORS, SELECTED } from '../theme.js';
 import {
   NODE_WIDTH,
@@ -167,6 +168,27 @@ function svgAlertBadge(x, y, count) {
   return `<circle cx="${x + 6}" cy="${y + 6}" r="6" fill="${ALERT_BADGE_COLOR}"/><text x="${x + 6}" y="${y + 9}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
 }
 
+// The 17px service badge at (x, y), mirroring .cy-node-icon: a 24-unit logo glyph scaled to 11px in
+// a circle, a .svc-tile mark (carries its own frame) full-bleed in a 28%-rounded square, else text.
+function svgBadge(x, y, icon) {
+  const logo = icon.logo && LOGOS[icon.logo];
+  if (icon.tile || (logo && logo.tile)) {
+    const tile = `<rect x="${x}" y="${y}" width="17" height="17" rx="${17 * 0.28}" fill="${icon.bg}"/>`;
+    if (logo) return tile + `<path transform="translate(${x}, ${y}) scale(${17 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
+    return (
+      tile +
+      `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="9" font-weight="700" fill="${icon.fg || '#fff'}">${svgEscape(icon.text)}</text>`
+    );
+  }
+  const circle = `<circle cx="${x + 8.5}" cy="${y + 8.5}" r="8.5" fill="${icon.bg}"/>`;
+  if (logo)
+    return circle + `<path transform="translate(${x + 3}, ${y + 3}) scale(${11 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
+  return (
+    circle +
+    `<text x="${x + 8.5}" y="${y + 11.5}" text-anchor="middle" font-size="8" font-weight="600" fill="${icon.fg || '#fff'}">${svgEscape(icon.text)}</text>`
+  );
+}
+
 // Mirrors the .cy-node-box HTML template's layout (public/style.css:491-618): state icon top
 // right, service badge + name, CPU/RAM bar rows, NET/DISK text, port/alert badges.
 function svgContainerNode(n) {
@@ -189,10 +211,7 @@ function svgContainerNode(n) {
   svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"${dash}/>`;
   if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${d.emoji}</g>`;
   if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
-  if (d.icon) {
-    svg += `<circle cx="${x1 + 14.5}" cy="${y1 + 24.5}" r="8.5" fill="${d.icon.bg}"/>`;
-    svg += `<text x="${x1 + 14.5}" y="${y1 + 27.5}" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">${svgEscape(d.icon.text)}</text>`;
-  }
+  if (d.icon) svg += svgBadge(x1 + 6, y1 + 16, d.icon);
   svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
   // Fixed offsets from FULL_LEAF_HEIGHT (single-port-line box height), not n.height - n.height
   // grows to fit a wrapped port list, and that extra room must land below this cluster, not
@@ -257,7 +276,7 @@ const PILL_ICON_TEXT_SHIFT = 8;
 // Tree mode's project/network/mount pills, matching CY_STYLE's node.proj/.net/.mount(-bind|-volume).
 // Mount labels already carry \n for wrapped paths, split into one <tspan> per line. The box is
 // always exactly n.height (dagre spaced siblings by it); line spacing shrinks to fit instead of the box growing.
-function svgPillNode(n, { border, text, bg }) {
+function svgPillNode(n, { border, text, bg, fontSize = 10 }) {
   const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
@@ -272,7 +291,7 @@ function svgPillNode(n, { border, text, bg }) {
     `<g opacity="${n.faded ? 0.15 : 1}">` +
     `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
     svgPillIcon(n.kind, x1, n.y) +
-    `<text x="${textX}" text-anchor="middle" font-size="10" fill="${text}">${tspans}</text>` +
+    `<text x="${textX}" text-anchor="middle" font-size="${fontSize}" fill="${text}">${tspans}</text>` +
     `</g>`
   );
 }
@@ -286,7 +305,7 @@ function svgNode(n) {
     case 'group-expanded':
       return svgGroupBox(n);
     case 'proj':
-      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027' });
+      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027', fontSize: 11 });
     case 'net':
       return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
     case 'mount-bind':

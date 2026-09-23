@@ -1,15 +1,25 @@
 FROM node:24-alpine AS deps
 
-# better-sqlite3 has no prebuilt musl binary for this arch/version, so it compiles from
-# source here; the toolchain stays in this stage and isn't copied into the final image.
-RUN apk add --no-cache python3 make g++
-
 WORKDIR /app
 # The lockfile comes along so this is `npm ci` rather than `npm install` - the image then gets
 # exactly the dependency tree CI linted and tested against, instead of whatever transitive
 # versions happen to resolve on the day the image is built.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# --ignore-scripts is what keeps this toolchain-free: better-sqlite3 ships a binding.gyp, so npm
+# fires an implicit `node-gyp rebuild` that needs python before it can even read the file and
+# discover it has nothing to build. No package in this tree declares an install script. CLAUDE.md.
+RUN npm ci --omit=dev --ignore-scripts
+
+# better-sqlite3 v13 is N-API and ships prebuilt binaries for all 8 of its platforms inside the
+# npm tarball, musl included - so nothing compiles here and no build toolchain is installed. The
+# seven this image can never load are ~20MB of dead weight; drop them. See CLAUDE.md.
+RUN case "$(uname -m)" in \
+      x86_64) keep='linuxmusl-x64' ;; \
+      aarch64) keep='linuxmusl-arm64' ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    find node_modules/better-sqlite3/prebuilds -name '*.node' ! -name "$keep.node" -delete && \
+    node -e "new (require('better-sqlite3'))(':memory:').close()"
 
 # The Docker CLI comes from Docker's own image rather than Alpine's docker-cli package. The CLI is
 # a Go binary, so image scanners attribute every Go standard-library CVE to it, and Alpine's build
