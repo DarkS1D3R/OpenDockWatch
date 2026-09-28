@@ -12,6 +12,7 @@ import LogsView from './components/LogsView.js';
 import UptimeReport from './components/UptimeReport.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
+import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -204,6 +205,9 @@ const app = createApp({
     },
   },
   async mounted() {
+    // Before session/host bootstrap, not after: this is a local rendering preference with nothing
+    // to do with auth, and applying it early means a log pane never paints in the old colors first.
+    applyLogTheme(loadLogTheme());
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     let session;
     try {
@@ -592,10 +596,15 @@ const app = createApp({
         :disk-usage="diskUsage"
         :disk-usage-error="diskUsageError"
         :with-detail="detailPanelVisible || settingsOpen"
+        :class="{ 'settings-open': settingsOpen }"
         v-model:fullscreen="hostCardFullscreen"
       ></host-card>
 
-      <div v-show="!logViewerFullscreen && !hostCardFullscreen" class="layout" :class="{ 'with-detail': detailPanelVisible || settingsOpen }">
+      <div
+        v-show="!logViewerFullscreen && !hostCardFullscreen"
+        class="layout"
+        :class="{ 'with-detail': detailPanelVisible || settingsOpen, 'settings-open': settingsOpen }"
+      >
         <div class="main">
           <div v-show="view === 'list'">
             <container-list

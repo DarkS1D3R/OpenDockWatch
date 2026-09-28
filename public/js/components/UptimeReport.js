@@ -12,7 +12,7 @@ export default {
   },
   data() {
     return {
-      days: 30,
+      days: 1,
       loading: false,
       error: null,
       report: null,

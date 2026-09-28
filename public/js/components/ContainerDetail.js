@@ -207,7 +207,7 @@ export default {
         </div>
         <div class="log-view-wrap">
           <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
-          <pre class="log-view detail-log" ref="previewLogView" @scroll="onScroll"><div v-for="line in previewLines" :key="line.id" v-html="line.baseHtml"></div></pre>
+          <pre class="log-view detail-log" ref="previewLogView" @scroll="onScroll"><div v-for="line in previewLines" :key="line.id" class="log-line" v-html="line.baseHtml"></div></pre>
           <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom" title="Scroll to bottom">&#8595; Bottom</button>
         </div>
       </div>

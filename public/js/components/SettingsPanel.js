@@ -3,21 +3,30 @@ import SettingsWebhook from './SettingsWebhook.js';
 import SettingsThresholds from './SettingsThresholds.js';
 import SettingsContainerRules from './SettingsContainerRules.js';
 import SettingsHosts from './SettingsHosts.js';
+import SettingsAppearance from './SettingsAppearance.js';
 
-// The Settings panel: a tab strip over five independent sections, each owning its own data/fetch
-// (General/Webhook/Thresholds/ContainerRules/Hosts - see those files). v-if, not v-show, per tab:
-// each child is a cheap admin-only GET-config panel with no stream to preserve across a switch, so
-// remounting fresh keeps data always-current (e.g. add a host, then flip to Container Rules and
-// see it in the dropdown) at the cost of one harmless refetch per tab click.
+// The Settings panel: a tab strip over six independent sections, each owning its own data/fetch
+// (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance - see those files). v-if, not v-show,
+// per tab: each child is a cheap admin-only GET-config panel with no stream to preserve across a
+// switch, so remounting fresh keeps data always-current (e.g. add a host, then flip to Container
+// Rules and see it in the dropdown) at the cost of one harmless refetch per tab click - Appearance
+// has no fetch at all (localStorage only), but stays v-if for the same reason as its neighbors.
 export default {
   name: 'SettingsPanel',
-  components: { SettingsGeneral, SettingsWebhook, SettingsThresholds, SettingsContainerRules, SettingsHosts },
+  components: {
+    SettingsGeneral,
+    SettingsWebhook,
+    SettingsThresholds,
+    SettingsContainerRules,
+    SettingsHosts,
+    SettingsAppearance,
+  },
   emits: ['close', 'hosts-changed'],
   data() {
     return { activeTab: 'general' };
   },
   template: `
-    <aside class="detail-panel">
+    <aside class="detail-panel settings-panel">
       <div class="detail-header">
         <strong>Settings</strong>
         <button @click="$emit('close')">✕</button>
@@ -28,6 +37,7 @@ export default {
         <button :class="{active: activeTab==='thresholds'}" @click="activeTab='thresholds'">Thresholds</button>
         <button :class="{active: activeTab==='container-rules'}" @click="activeTab='container-rules'">Container Rules</button>
         <button :class="{active: activeTab==='hosts'}" @click="activeTab='hosts'">Hosts</button>
+        <button :class="{active: activeTab==='appearance'}" @click="activeTab='appearance'">Appearance</button>
       </div>
       <div class="detail-body">
         <settings-general v-if="activeTab==='general'"></settings-general>
@@ -35,6 +45,7 @@ export default {
         <settings-thresholds v-if="activeTab==='thresholds'"></settings-thresholds>
         <settings-container-rules v-if="activeTab==='container-rules'"></settings-container-rules>
         <settings-hosts v-if="activeTab==='hosts'" @hosts-changed="$emit('hosts-changed')"></settings-hosts>
+        <settings-appearance v-if="activeTab==='appearance'"></settings-appearance>
       </div>
     </aside>
   `,
