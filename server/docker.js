@@ -298,9 +298,15 @@ async function listContainers(host) {
         composeProject: labels['com.docker.compose.project'] || null,
         composeService: labels['com.docker.compose.service'] || null,
         alertsDisabled: labels['opendockwatch.alerts'] === 'off',
-        iconOverride: labels['opendockwatch.icon'] || null,
+        iconOverride: iconOverrideFromLabel(labels['opendockwatch.icon']),
       };
     });
+}
+
+// Logo slugs are lowercase, and a label is typed by hand: `Redis` or ` redis ` should not be
+// silently ignored for a difference the user can't see the reason for.
+function iconOverrideFromLabel(value) {
+  return (value || '').trim().toLowerCase() || null;
 }
 
 // Env var *names* that identify a container's runtime when its image name says nothing (a
@@ -345,13 +351,23 @@ function parseIconHints(raw) {
 // cache key and a create/destroy refetches. Called by metricsCollector off the poll's critical
 // path; routes read it synchronously through iconHintFor, so no request ever waits on it.
 const iconHintsCache = new Map(); // hostId -> { signature, hints: Map(shortId -> slug) }
+const iconHintsInFlight = new Set(); // hostIds with an inspect still running
 
-async function refreshIconHints(host, containers) {
+// One inspect per host at a time: the caller doesn't await, so an inspect slower than the poll
+// interval would otherwise be re-spawned every poll, and an older one could land last and
+// overwrite a newer set's hints. A skipped set is picked up by the next poll. `exec` is for tests.
+async function refreshIconHints(host, containers, exec = run) {
   const ids = containers.map((c) => c.id).sort();
   const signature = ids.join(',');
   if (!ids.length || iconHintsCache.get(host.id)?.signature === signature) return;
-  const raw = await run([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids]);
-  iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
+  if (iconHintsInFlight.has(host.id)) return;
+  iconHintsInFlight.add(host.id);
+  try {
+    const raw = await exec([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids]);
+    iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
+  } finally {
+    iconHintsInFlight.delete(host.id);
+  }
 }
 
 function iconHintFor(hostId, containerId) {
@@ -852,6 +868,7 @@ module.exports = {
   getTopology,
   getTopologyMeta,
   refreshIconHints,
+  iconOverrideFromLabel,
   iconHintFor,
   parseIconHints,
   runtimeHintFromEnv,

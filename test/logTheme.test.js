@@ -44,6 +44,13 @@ test('normalizeLogTheme', async (t) => {
     assert.deepEqual(logTheme.normalizeLogTheme({ bg: '#111111', text: '#eeeeee' }), { bg: '#111111', text: '#eeeeee' });
   });
 
+  // <input type="color"> shows anything but lowercase #rrggbb as black, so the picker would disagree
+  // with the colour actually applied.
+  await t.test('short, alpha and upper-case hex are canonicalised to lowercase #rrggbb', () => {
+    assert.deepEqual(logTheme.normalizeLogTheme({ bg: '#FFF', text: '#0d0e11CC' }), { bg: '#ffffff', text: '#0d0e11' });
+    assert.deepEqual(logTheme.normalizeLogTheme({ bg: ' #1a2B ', text: '#ABCDEF' }), { bg: '#11aa22', text: '#abcdef' });
+  });
+
   await t.test('anything that is not an object falls back to the default entirely', () => {
     for (const raw of [null, undefined, 'nope', 42, true]) {
       assert.deepEqual(logTheme.normalizeLogTheme(raw), logTheme.DEFAULT_LOG_THEME, `${JSON.stringify(raw)} should fall back`);
@@ -90,7 +97,7 @@ test('loadLogTheme / saveLogTheme', async (t) => {
   await t.test('saveLogTheme returns the normalized value it actually persisted', () => {
     store.clear();
     const out = logTheme.saveLogTheme({ bg: '#123', text: 'nope' });
-    assert.deepEqual(out, { bg: '#123', text: logTheme.DEFAULT_LOG_THEME.text });
+    assert.deepEqual(out, { bg: '#112233', text: logTheme.DEFAULT_LOG_THEME.text });
     assert.deepEqual(logTheme.loadLogTheme(), out);
   });
 

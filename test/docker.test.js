@@ -13,6 +13,9 @@ const {
   splitCombinedTopologyPs,
   runtimeHintFromEnv,
   parseIconHints,
+  refreshIconHints,
+  iconHintFor,
+  iconOverrideFromLabel,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
@@ -627,6 +630,49 @@ test('runtimeHintFromEnv', async (t) => {
   await t.test('no env, or an unrecognised one, is no hint', () => {
     assert.equal(runtimeHintFromEnv(undefined), null);
     assert.equal(runtimeHintFromEnv(['POSTGRES_PASSWORD=secret']), null);
+  });
+});
+
+test('iconOverrideFromLabel', () => {
+  assert.equal(iconOverrideFromLabel('redis'), 'redis');
+  assert.equal(iconOverrideFromLabel(' Redis '), 'redis');
+  for (const absent of [undefined, null, '', '   ']) assert.equal(iconOverrideFromLabel(absent), null);
+});
+
+// metricsCollector fires this every poll without awaiting it, so overlap is the normal case on a slow host.
+test('refreshIconHints', async (t) => {
+  const line = (ch, env) => `${ch.repeat(64)}\t${JSON.stringify(env)}`;
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => ((resolve = res), (reject = rej)));
+    return { promise, resolve, reject };
+  };
+
+  await t.test('a second call while an inspect is running does not spawn another', async () => {
+    const host = { id: 'hint-overlap' };
+    const containers = [{ id: 'a'.repeat(12) }];
+    const pending = deferred();
+    let calls = 0;
+    const exec = () => (calls++, pending.promise);
+    const first = refreshIconHints(host, containers, exec);
+    await refreshIconHints(host, containers, exec);
+    await refreshIconHints(host, [{ id: 'b'.repeat(12) }], exec);
+    assert.equal(calls, 1);
+    pending.resolve(line('a', ['SPRING_PROFILES_ACTIVE=dev']));
+    await first;
+    assert.equal(iconHintFor(host.id, 'a'.repeat(12)), 'springboot');
+    // Cached for that id set now, so nothing further is spawned for it.
+    await refreshIconHints(host, containers, exec);
+    assert.equal(calls, 1);
+  });
+
+  await t.test('a failed inspect releases the guard so the next poll retries', async () => {
+    const host = { id: 'hint-retry' };
+    const containers = [{ id: 'c'.repeat(12) }];
+    await assert.rejects(refreshIconHints(host, containers, () => Promise.reject(new Error('No such container'))));
+    assert.equal(iconHintFor(host.id, 'c'.repeat(12)), null);
+    await refreshIconHints(host, containers, () => Promise.resolve(line('c', ['NODE_VERSION=24'])));
+    assert.equal(iconHintFor(host.id, 'c'.repeat(12)), 'nodedotjs');
   });
 });
 

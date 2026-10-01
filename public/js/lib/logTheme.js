@@ -33,9 +33,17 @@ export function isValidLogColor(value) {
 // than reaching applyLogTheme (and from there, the log body's actual color) unvalidated.
 export function normalizeLogTheme(raw) {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_LOG_THEME };
-  const bg = isValidLogColor(raw.bg) ? raw.bg.trim() : DEFAULT_LOG_THEME.bg;
-  const text = isValidLogColor(raw.text) ? raw.text.trim() : DEFAULT_LOG_THEME.text;
+  const bg = isValidLogColor(raw.bg) ? toRrggbb(raw.bg) : DEFAULT_LOG_THEME.bg;
+  const text = isValidLogColor(raw.text) ? toRrggbb(raw.text) : DEFAULT_LOG_THEME.text;
   return { bg, text };
+}
+
+// Canonical lowercase #rrggbb, alpha dropped: the only form <input type="color"> can show (it reads
+// anything else as black) and the form the preset buttons' active check compares against.
+function toRrggbb(value) {
+  let hex = value.trim().slice(1).toLowerCase();
+  if (hex.length < 6) hex = [...hex].map((c) => c + c).join('');
+  return `#${hex.slice(0, 6)}`;
 }
 
 export function loadLogTheme() {
@@ -59,8 +67,7 @@ export function saveLogTheme(theme) {
 // 'light' or 'dark' for a background, by WCAG relative luminance - 0.179 is where black and white
 // text contrast equally. Fixed-colour log text (ANSI spans) is tuned for dark and needs to know.
 export function logSchemeFor(bg) {
-  let hex = String(bg).trim().slice(1);
-  if (hex.length < 6) hex = [...hex].map((c) => c + c).join('');
+  const hex = toRrggbb(String(bg)).slice(1);
   const [r, g, b] = [0, 2, 4].map((i) => {
     const c = parseInt(hex.slice(i, i + 2), 16) / 255;
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
