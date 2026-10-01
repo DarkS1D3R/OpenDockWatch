@@ -248,11 +248,17 @@ export function buildTreeElements(nodes, selectedId, { showNetworks = true, show
   const els = [];
   // proj:<id> keeps the unwrapped name, same as net:<name>/mount:<source> do - the id is what
   // edges and pillSelection are keyed by, so it must not carry the label's line breaks.
-  for (const g of projectIds) els.push({ data: { id: `proj:${g}`, label: wrapPillLabel(g, PROJ_LABEL_LINE_CHARS) }, classes: 'proj' });
-  for (const net of netNames) els.push({ data: { id: `net:${net}`, label: wrapPillLabel(net, NET_LABEL_LINE_CHARS) }, classes: 'net' });
+  // `search` is the unwrapped name for applyFading's filter - a term spanning a line break in the
+  // wrapped label would otherwise not match.
+  for (const g of projectIds) {
+    els.push({ data: { id: `proj:${g}`, label: wrapPillLabel(g, PROJ_LABEL_LINE_CHARS), search: g }, classes: 'proj' });
+  }
+  for (const net of netNames) {
+    els.push({ data: { id: `net:${net}`, label: wrapPillLabel(net, NET_LABEL_LINE_CHARS), search: net }, classes: 'net' });
+  }
   for (const [source, { kind, count }] of mountSources) {
     els.push({
-      data: { id: `mount:${source}`, label: mountLabel(source, kind), kind, shared: count > 1 },
+      data: { id: `mount:${source}`, label: mountLabel(source, kind), search: source, kind, shared: count > 1 },
       classes: `mount ${kind === 'bind' ? 'mount-bind' : 'mount-volume'}`,
     });
   }

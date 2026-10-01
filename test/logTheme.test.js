@@ -19,6 +19,7 @@ globalThis.document = {
     style: {
       setProperty: (name, value) => setProperties.set(name, value),
     },
+    setAttribute: (name, value) => setProperties.set(name, value),
   },
 };
 
@@ -113,10 +114,27 @@ test('loadLogTheme / saveLogTheme', async (t) => {
   });
 });
 
+test('logSchemeFor', () => {
+  for (const p of logTheme.LOG_THEME_PRESETS) {
+    assert.equal(logTheme.logSchemeFor(p.bg), p.id === 'paper' ? 'light' : 'dark', p.id);
+  }
+  // The short and alpha hex forms isValidLogColor lets through must classify too.
+  assert.equal(logTheme.logSchemeFor('#fff'), 'light');
+  assert.equal(logTheme.logSchemeFor('#000f'), 'dark');
+  assert.equal(logTheme.logSchemeFor('#f5f5f0ff'), 'light');
+});
+
+test('applyLogTheme marks a light background so ANSI colours can be darkened', () => {
+  setProperties.clear();
+  logTheme.applyLogTheme({ bg: '#f5f5f0', text: '#1b1b1b' });
+  assert.equal(setProperties.get('data-log-scheme'), 'light');
+});
+
 test('applyLogTheme', () => {
   setProperties.clear();
   const out = logTheme.applyLogTheme({ bg: '#101010', text: '#f0f0f0' });
   assert.equal(setProperties.get('--log-bg'), '#101010');
   assert.equal(setProperties.get('--log-text'), '#f0f0f0');
+  assert.equal(setProperties.get('data-log-scheme'), 'dark');
   assert.deepEqual(out, { bg: '#101010', text: '#f0f0f0' });
 });

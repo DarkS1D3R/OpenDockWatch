@@ -98,6 +98,17 @@ test('iconFor', async (t) => {
     assert.equal(format.iconFor('postgres:17', undefined, 'not-a-logo', null).logo, 'postgresql');
   });
 
+  // The label is user-set, and LOGOS is a plain object: an inherited name is truthy but has no title.
+  await t.test('an override or hint naming an Object.prototype member is ignored rather than throwing', () => {
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      assert.equal(format.iconFor('postgres:17', undefined, name, null).logo, 'postgresql', name);
+      assert.deepEqual(format.iconFor('myorg/custom-app:latest', 'worker', null, name), { text: 'W', bg: '#4f8cff' }, name);
+      assert.equal(format.badgeTitle({ text: 'X', bg: '#000', logo: name }), '', name);
+      assert.equal(format.badgeIsTile({ text: 'X', bg: '#000', logo: name }), false, name);
+      assert.equal(format.badgeInnerHtml({ text: 'X', bg: '#000', logo: name }), 'X', name);
+    }
+  });
+
   await t.test('override and hint are part of the memo key', () => {
     assert.notEqual(format.iconFor('app:1', 'app', null, 'python').logo, format.iconFor('app:1', 'app', null, 'php').logo);
   });
@@ -126,6 +137,26 @@ test('iconFor', async (t) => {
   await t.test('a short keyword does not match inside a longer word', () => {
     assert.equal(format.iconFor('myorg/complex-service:1', undefined).logo, undefined); // \bplex\b
     assert.equal(format.iconFor('myorg/nodeapp:1', undefined).logo, undefined); // node image only
+    assert.equal(format.iconFor('myorg/hotel-booking:1', undefined).logo, undefined); // otel
+    assert.equal(format.iconFor('myorg/consulting-crm:1', undefined).logo, undefined); // consul
+    assert.equal(format.iconFor('myorg/springfield-api:1', undefined).logo, undefined); // spring
+    assert.equal(format.iconFor('myorg/mongoose-api:1', undefined).logo, undefined); // mongo
+  });
+
+  await t.test('the anchored keywords still match their real images and separator-joined names', () => {
+    const cases = [
+      ['otel/opentelemetry-collector-contrib:latest', 'opentelemetry'],
+      ['myorg/otel-collector:1', 'opentelemetry'],
+      ['myorg/otelcol:1', 'opentelemetry'],
+      ['hashicorp/consul:1.19', 'consul'],
+      ['myorg/app_consul:1', 'consul'],
+      ['mongo:8', 'mongodb'],
+      ['bitnami/mongodb:8', 'mongodb'],
+      ['mongo-express:latest', 'mongodb'],
+      ['myorg/spring-api:1', 'springboot'],
+      ['myorg/springboot-app:1', 'springboot'],
+    ];
+    for (const [image, logo] of cases) assert.equal(format.iconFor(image, undefined).logo, logo, image);
   });
 
   await t.test('every logo a badge names exists, and every bundled logo is used by a badge', () => {
@@ -404,9 +435,18 @@ test('highlightLine', async (t) => {
     assert.equal(format.highlightLine('hello world', '(unterminated', true), 'hello world');
   });
 
+  // The colour must not be an inline `color` - style.css darkens --ansi on a light log theme.
+  await t.test('a bold-only segment carries no colour class or property', () => {
+    assert.equal(format.highlightLine('\x1b[1mloud\x1b[0m', ''), '<span style="font-weight:700">loud</span>');
+    assert.equal(
+      format.highlightLine('\x1b[1;37mwhite\x1b[0m', ''),
+      '<span class="log-ansi" style="--ansi:#c9d1d9;font-weight:700">white</span>'
+    );
+  });
+
   await t.test('ANSI color and highlight compose in the same line', () => {
     const out = format.highlightLine('\x1b[34mfound error here\x1b[0m', 'error');
-    assert.equal(out, '<span style="color:#58a6ff">found <mark class="log-highlight">error</mark> here</span>');
+    assert.equal(out, '<span class="log-ansi" style="--ansi:#58a6ff">found <mark class="log-highlight">error</mark> here</span>');
   });
 
   await t.test('body text is HTML-escaped even when highlighted', () => {

@@ -113,11 +113,11 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
 
   const text = (filterText || '').trim().toLowerCase();
   if (text) {
-    // name covers containers (both modes); label covers tree mode's project/network/mount
-    // pills, which have no `name` field of their own.
+    // name covers containers (both modes); search covers tree mode's project/network/mount
+    // pills, which have no `name` field of their own - label is their line-wrapped display text.
     const matching = cy
       .nodes()
-      .filter((n) => !n.hasClass('group') && (n.data('name') || n.data('label') || '').toLowerCase().includes(text));
+      .filter((n) => !n.hasClass('group') && (n.data('name') || n.data('search') || n.data('label') || '').toLowerCase().includes(text));
     if (matching.length) {
       cy.nodes().not('.group').not(matching).addClass('faded');
       cy.edges().forEach((e) => {

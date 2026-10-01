@@ -1890,6 +1890,20 @@ table.containers td:nth-child(7) {
   margin-right: 8px;
   user-select: none;
 }
+/* Inside a themed log body the timestamp is derived from the theme pair - the fixed --muted grey is
+   tuned for the dark panel and drops to ~3:1 on a light log background. */
+.log-view .log-ts {
+  color: color-mix(in srgb, var(--log-text, var(--text)) 62%, var(--log-bg, #0d0e11));
+}
+/* ANSI-coloured log text (format.js's highlightLine). The palette is a dark-terminal one, so on a
+   light log background (data-log-scheme, set by lib/logTheme.js) each colour is darkened toward
+   black - ANSI white would otherwise be invisible on Paper. */
+.log-ansi {
+  color: var(--ansi);
+}
+:root[data-log-scheme='light'] .log-view .log-ansi {
+  color: color-mix(in srgb, var(--ansi) 45%, #000);
+}
 .hide-ts .log-ts {
   display: none;
 }

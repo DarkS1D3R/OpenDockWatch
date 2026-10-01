@@ -56,6 +56,18 @@ export function saveLogTheme(theme) {
   return normalized;
 }
 
+// 'light' or 'dark' for a background, by WCAG relative luminance - 0.179 is where black and white
+// text contrast equally. Fixed-colour log text (ANSI spans) is tuned for dark and needs to know.
+export function logSchemeFor(bg) {
+  let hex = String(bg).trim().slice(1);
+  if (hex.length < 6) hex = [...hex].map((c) => c + c).join('');
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.179 ? 'light' : 'dark';
+}
+
 // The one place the theme actually reaches the page: two custom properties on the root, which
 // style.css's .log-view (and its alternating-row stripe) read with the current defaults as a
 // fallback, so a page that hasn't called this yet still renders exactly as before this feature.
@@ -63,5 +75,6 @@ export function applyLogTheme(theme) {
   const normalized = normalizeLogTheme(theme);
   document.documentElement.style.setProperty('--log-bg', normalized.bg);
   document.documentElement.style.setProperty('--log-text', normalized.text);
+  document.documentElement.setAttribute('data-log-scheme', logSchemeFor(normalized.bg));
   return normalized;
 }

@@ -61,7 +61,7 @@ export const SERVICE_BADGES = [
   [/mariadb/, { text: 'Ma', logo: 'mariadb' }],
   [/phpmyadmin/, { text: 'PM', logo: 'phpmyadmin' }],
   [/mysql/, { text: 'My', logo: 'mysql' }],
-  [/mongo/, { text: 'Mo', logo: 'mongodb' }],
+  [/(?<![a-z])mongo(db)?(?![a-z])/, { text: 'Mo', logo: 'mongodb' }],
   [/redis/, { text: 'Re', logo: 'redis' }],
   [/cassandra/, { text: 'Ca', logo: 'apachecassandra' }],
   [/couchdb/, { text: 'Co', logo: 'apachecouchdb' }],
@@ -101,12 +101,12 @@ export const SERVICE_BADGES = [
   [/vaultwarden/, { text: 'Vw', logo: 'vaultwarden' }],
   [/bitwarden/, { text: 'Bw', logo: 'bitwarden' }],
   [/\bvault\b/, { text: 'Vt', logo: 'vault' }],
-  [/consul/, { text: 'Cs', logo: 'consul' }],
+  [/(?<![a-z])consul(?![a-z])/, { text: 'Cs', logo: 'consul' }],
   // Observability.
   [/grafana/, { text: 'Gf', logo: 'grafana' }],
   [/prometheus|node-exporter|alertmanager|\bprom\//, { text: 'Pr', logo: 'prometheus' }],
   [/jaeger/, { text: 'Jg', logo: 'jaeger' }],
-  [/otel|opentelemetry/, { text: 'OT', logo: 'opentelemetry' }],
+  [/(?<![a-z])otel(col)?(?![a-z])|opentelemetry/, { text: 'OT', logo: 'opentelemetry' }],
   [/uptime-?kuma/, { text: 'UK', logo: 'uptimekuma' }],
   [/umami/, { text: 'Um', logo: 'umami' }],
   [/metabase/, { text: 'Mb', logo: 'metabase' }],
@@ -137,7 +137,7 @@ export const SERVICE_BADGES = [
   [/qbittorrent/, { text: 'qB', logo: 'qbittorrent' }],
   // Runtimes and web servers.
   [/tomcat/, { text: 'Tc', logo: 'apachetomcat' }],
-  [/spring/, { text: 'Sp', logo: 'springboot' }],
+  [/(?<![a-z])spring(boot)?(?![a-z])/, { text: 'Sp', logo: 'springboot' }],
   [/openjdk|temurin|corretto|zulu|\bjdk\b|\bjre\b/, { text: 'Jv', logo: 'openjdk' }],
   [/(^|\/)node(:|@|\s|$)/, { text: 'Nd', logo: 'nodedotjs' }],
   [/python/, { text: 'Py', logo: 'python' }],
@@ -169,15 +169,21 @@ export function iconFor(image, composeService, override, hint) {
   return icon;
 }
 
+// Own-property lookup: override is a user-set label, and a bare LOGOS[slug] finds `constructor` and
+// friends on Object.prototype - truthy, but not a logo.
+function logoFor(slug) {
+  return slug && Object.hasOwn(LOGOS, slug) ? LOGOS[slug] : null;
+}
+
 function resolveIcon(image, composeService, override, hint) {
-  if (override && LOGOS[override]) return logoIcon(override);
+  if (logoFor(override)) return logoIcon(override);
   const haystack = `${image || ''} ${composeService || ''}`.toLowerCase();
   for (const [pattern, badge] of SERVICE_BADGES) {
     if (!pattern.test(haystack)) continue;
     if (!badge.logo) return textIcon(badge);
     return logoIcon(badge.logo, badge);
   }
-  if (hint && LOGOS[hint]) return logoIcon(hint);
+  if (logoFor(hint)) return logoIcon(hint);
   const initial = (composeService || image || '?').trim().charAt(0).toUpperCase() || '?';
   return { text: initial, bg: ACCENT };
 }
@@ -190,7 +196,7 @@ function textIcon(badge) {
   return icon;
 }
 
-// A badge entry may re-colour a borrowed glyph (pgAdmin wears the Postgres elephant on its own green).
+// A badge entry may re-colour a borrowed glyph by setting its own bg/fg over the logo's.
 function logoIcon(slug, badge = {}) {
   const logo = LOGOS[slug];
   const text = badge.text || logo.title.slice(0, 2);
@@ -200,7 +206,7 @@ function logoIcon(slug, badge = {}) {
 // A badge's inner markup - the logo glyph, else the text escaped (the fallback initial comes from a
 // docker/compose name). Shared by the flow-view templates and the List view; svgExport.js has its own.
 export function badgeInnerHtml(icon) {
-  const logo = icon.logo && LOGOS[icon.logo];
+  const logo = logoFor(icon.logo);
   if (logo)
     return `<svg class="svc-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="${icon.fg || logo.fg}" d="${logo.path}"/></svg>`;
   // Text colour is set per badge only when it isn't the stylesheet's white (a yellow badge needs dark).
@@ -209,13 +215,13 @@ export function badgeInnerHtml(icon) {
 
 // Product name for a logo badge's hover title; '' for the text fallback.
 export function badgeTitle(icon) {
-  return (icon.logo && LOGOS[icon.logo]?.title) || '';
+  return logoFor(icon.logo)?.title || '';
 }
 
 // True for a badge whose real logo is itself a rounded square - our own mark, or a text tile like
 // pgAdmin's "pg" - rendered full-bleed via .svc-tile rather than inside the usual circle.
 export function badgeIsTile(icon) {
-  return Boolean(icon.tile || (icon.logo && LOGOS[icon.logo]?.tile));
+  return Boolean(icon.tile || logoFor(icon.logo)?.tile);
 }
 
 // Forked from docker.js's BYTE_UNIT_MULT (CJS/ESM can't share a module here) - kept identical by
@@ -482,8 +488,11 @@ export function highlightLine(line, filterText, isRegex = false, matcher = undef
   const bodyHtml = parseAnsiSegments(rest)
     .map((seg) => {
       const html = escapeAndHighlight(seg.text, resolvedMatcher);
-      const style = [seg.color ? `color:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
-      return style ? `<span style="${style}">${html}</span>` : html;
+      // The colour rides a custom property, not `color` itself, so style.css's .log-ansi can darken
+      // it on a light log theme - an inline `color` would beat any stylesheet rule.
+      const style = [seg.color ? `--ansi:${seg.color}` : '', seg.bold ? 'font-weight:700' : ''].filter(Boolean).join(';');
+      if (!style) return html;
+      return `<span${seg.color ? ' class="log-ansi"' : ''} style="${style}">${html}</span>`;
     })
     .join('');
 

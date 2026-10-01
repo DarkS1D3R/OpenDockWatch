@@ -171,7 +171,7 @@ function svgAlertBadge(x, y, count) {
 // The 17px service badge at (x, y), mirroring .cy-node-icon: a 24-unit logo glyph scaled to 11px in
 // a circle, a .svc-tile mark (carries its own frame) full-bleed in a 28%-rounded square, else text.
 function svgBadge(x, y, icon) {
-  const logo = icon.logo && LOGOS[icon.logo];
+  const logo = icon.logo && Object.hasOwn(LOGOS, icon.logo) ? LOGOS[icon.logo] : null;
   if (icon.tile || (logo && logo.tile)) {
     const tile = `<rect x="${x}" y="${y}" width="17" height="17" rx="${17 * 0.28}" fill="${icon.bg}"/>`;
     if (logo) return tile + `<path transform="translate(${x}, ${y}) scale(${17 / 24})" fill="${icon.fg || logo.fg}" d="${logo.path}"/>`;
