@@ -340,8 +340,39 @@ test('detectLogLevel', async (t) => {
     assert.equal(format.detectLogLevel('trace: entering function'), 'debug');
   });
 
-  await t.test('error outranks info when a line matches both', () => {
-    assert.equal(format.detectLogLevel('info: retrying after error'), 'error');
+  // The tag comes before the message it describes, so the first level word is the line's level -
+  // ranking by severity filed every warn/info line that mentioned "error" under error.
+  await t.test('takes the first level word, so a message that mentions another level does not change it', () => {
+    assert.equal(format.detectLogLevel('info: retrying after error'), 'info');
+    assert.equal(format.detectLogLevel('2026-01-01T00:00:00.000000000Z WARN  [main] request failed with error 500'), 'warn');
+    assert.equal(format.detectLogLevel('[INFO] 0 errors, 2 warnings'), 'info');
+    assert.equal(format.detectLogLevel('DEBUG sending error report'), 'debug');
+    assert.equal(format.detectLogLevel('ERROR: could not warn the user'), 'error');
+  });
+
+  await t.test('reads an explicit level field before anything else, wherever it sits in the line', () => {
+    assert.equal(format.detectLogLevel('msg="request failed: error 500" level=warn'), 'warn');
+    assert.equal(format.detectLogLevel('{"msg":"fatal error handling retry","level":"info"}'), 'info');
+    assert.equal(format.detectLogLevel('severity: ERROR something happened'), 'error');
+    assert.equal(format.detectLogLevel("time=1 lvl='debug' msg='error budget low'"), 'debug');
+  });
+
+  await t.test('maps the wider level names a field can carry', () => {
+    assert.equal(format.detectLogLevel('level=err msg=x'), 'error');
+    assert.equal(format.detectLogLevel('level=critical msg=x'), 'error');
+    assert.equal(format.detectLogLevel('level=panic msg=x'), 'error');
+    assert.equal(format.detectLogLevel('level=notice msg=x'), 'info');
+  });
+
+  await t.test('ignores a level field with a value it does not know, and falls back to the words', () => {
+    assert.equal(format.detectLogLevel('level=7 WARN disk almost full'), 'warn');
+    assert.equal(format.detectLogLevel('level=unknown msg=ok'), null);
+  });
+
+  await t.test('does not match a level word inside a longer identifier', () => {
+    assert.equal(format.detectLogLevel('INFO ErrorHandler registered'), 'info');
+    assert.equal(format.detectLogLevel('com.example.error_handler started'), null);
+    assert.equal(format.detectLogLevel('loaded 3 errors from file'), null);
   });
 
   await t.test('returns null when nothing matches', () => {

@@ -323,9 +323,6 @@ export function eventSeverity(action) {
   return EVENT_SEVERITY[action] || null;
 }
 
-// Checked in order (most severe first) since a line can contain more than one of these words
-// incidentally - e.g. an info line mentioning "retrying after error" should still read as info
-// in ambiguous cases, but in practice explicit level tags (ERROR/WARN/...) dominate real logs.
 const LEVEL_PATTERNS = [
   ['error', /\b(error|fatal|severe)\b/i],
   ['warn', /\b(warn|warning)\b/i],
@@ -333,11 +330,45 @@ const LEVEL_PATTERNS = [
   ['debug', /\b(debug|trace|verbose)\b/i],
 ];
 
+// A level written as a field - `level=warn`, `"level":"warn"`, `severity: error` - names the line's own
+// level whatever order the other fields come in, so it is read before anything else. The values are
+// wider than the free-text words above (err, critical, panic) because here they are unambiguous.
+const LEVEL_FIELD_RE = /\b(?:level|lvl|loglevel|severity)["']?\s*[:=]\s*["']?([a-z]+)/i;
+const LEVEL_FIELD_VALUES = {
+  error: 'error',
+  err: 'error',
+  fatal: 'error',
+  severe: 'error',
+  critical: 'error',
+  crit: 'error',
+  panic: 'error',
+  warn: 'warn',
+  warning: 'warn',
+  info: 'info',
+  notice: 'info',
+  debug: 'debug',
+  trace: 'debug',
+  verbose: 'debug',
+};
+
+// The level a line was logged at, not every level it mentions. A message routinely talks about
+// other levels ("WARN ... retrying after error", "INFO ... 0 errors") and the tag is what the logger
+// wrote, so: an explicit level field first, then whichever level word comes *first* in the line,
+// since the tag precedes the message it describes. Ranking by severity instead, as this once did,
+// filed every warn or info line that so much as mentioned "error" under error.
 export function detectLogLevel(line) {
+  const field = LEVEL_FIELD_RE.exec(line);
+  if (field && LEVEL_FIELD_VALUES[field[1].toLowerCase()]) return LEVEL_FIELD_VALUES[field[1].toLowerCase()];
+  let best = null;
+  let bestIndex = Infinity;
   for (const [level, re] of LEVEL_PATTERNS) {
-    if (re.test(line)) return level;
+    const m = re.exec(line);
+    if (m && m.index < bestIndex) {
+      best = level;
+      bestIndex = m.index;
+    }
   }
-  return null;
+  return best;
 }
 
 export function escapeHtml(str) {
