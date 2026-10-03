@@ -105,6 +105,13 @@ export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
 }
 
+// `cursor` is `{ before }` or `{ after }`: a docker log timestamp, and the side of it to page towards.
+export async function apiGetLogHistory(hostId, id, cursor, limit) {
+  const [key, value] = Object.entries(cursor)[0];
+  const qs = `${key}=${encodeURIComponent(value)}&limit=${limit}`;
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/logs/history?${qs}`, { timeoutMs: 40_000 }));
+}
+
 export function downloadLogsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs/download?tail=${tail}`;
 }

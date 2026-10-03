@@ -22,6 +22,8 @@ const {
   maskEnvValues,
   containerCounts,
   dockerCommandError,
+  parseLogsBefore,
+  mergeLogsAfter,
   DISK_USAGE_TIMEOUT_MS,
 } = require('../server/docker');
 
@@ -693,5 +695,54 @@ test('parseIconHints', async (t) => {
     const hints = parseIconHints(`${'a'.repeat(12)}\tnot json\n${'d'.repeat(12)}\t["NODE_VERSION=24"]`);
     assert.equal(hints.get('d'.repeat(12)), 'nodedotjs');
     assert.equal(hints.size, 1);
+  });
+});
+
+test('parseLogsBefore', async (t) => {
+  const BEFORE = '2026-01-01T00:00:10.000000000Z';
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+
+  await t.test('drops the line at the cursor itself, since --until is inclusive', () => {
+    const { lines } = parseLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')].join('\n'), '', BEFORE);
+    assert.deepEqual(lines, [line(8, 'a'), line(9, 'b')]);
+  });
+
+  await t.test('reports the pre-filter total, so a full page is still recognisable as full', () => {
+    const { total } = parseLogsBefore([line(9, 'b'), line(10, 'c')].join('\n'), '', BEFORE);
+    assert.equal(total, 2);
+  });
+
+  await t.test('merges stderr back into the timeline instead of appending it', () => {
+    const { lines } = parseLogsBefore([line(1, 'out1'), line(5, 'out2')].join('\n'), line(3, 'err1'), BEFORE);
+    assert.deepEqual(lines, [line(1, 'out1'), line(3, 'err1'), line(5, 'out2')]);
+  });
+
+  await t.test('keeps equal-timestamp lines in their original order', () => {
+    const { lines } = parseLogsBefore([line(2, 'first'), line(2, 'second')].join('\n'), '', BEFORE);
+    assert.deepEqual(lines, [line(2, 'first'), line(2, 'second')]);
+  });
+
+  await t.test('returns nothing for empty output', () => {
+    assert.deepEqual(parseLogsBefore('', '', BEFORE), { lines: [], total: 0 });
+  });
+});
+
+test('mergeLogsAfter', async (t) => {
+  const AFTER = '2026-01-01T00:00:10.000000000Z';
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+
+  await t.test('drops the line at the cursor itself, since --since is inclusive', () => {
+    const { lines } = mergeLogsAfter([line(10, 'a'), line(11, 'b')], [], AFTER, 100);
+    assert.deepEqual(lines, [line(11, 'b')]);
+  });
+
+  await t.test('merges both streams by stamp and keeps only the first page', () => {
+    const { lines, more } = mergeLogsAfter([line(11, 'o1'), line(13, 'o2')], [line(12, 'e1'), line(14, 'e2')], AFTER, 3);
+    assert.deepEqual(lines, [line(11, 'o1'), line(12, 'e1'), line(13, 'o2')]);
+    assert.equal(more, true);
+  });
+
+  await t.test('says there is no more when the page is not full', () => {
+    assert.equal(mergeLogsAfter([line(11, 'a')], [], AFTER, 5).more, false);
   });
 });

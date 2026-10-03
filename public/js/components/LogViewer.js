@@ -1,10 +1,20 @@
-import { MAX_LOG_LINES } from '../constants.js';
-import { logsUrl, downloadLogsUrl } from '../api.js';
+import { LOG_PAGE_LINES } from '../constants.js';
+import { logsUrl, downloadLogsUrl, apiGetLogHistory } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { closestIndexByTs, topIndexByOffset } from '../lib/logSync.js';
 import { maxPaneHeight, shouldTogglePause, statusBadge } from '../lib/logPane.js';
 import { decorateLines, selectLines, hitIndexFor, stepHitId } from '../lib/logLines.js';
 import { pushCapped } from '../lib/logBuffer.js';
+import {
+  streamTailFor,
+  maxLinesFor,
+  oldestTimestamp,
+  newestTimestamp,
+  timestampOf,
+  idAbove,
+  prependPage,
+  appendPage,
+} from '../lib/logHistory.js';
 import LogMatchPane from './LogMatchPane.js';
 
 // How little of the log body the match strip may leave behind. The body's floor, so it stays here
@@ -72,6 +82,13 @@ export default {
       // what arrived rather than re-tailing. Dropping the connection would cost a re-tail instead.
       paused: false,
       pendingCount: 0,
+      // "All" only: a page of history is being fetched ('older' | 'newer'), the window has reached the
+      // very start of the log, the window no longer reaches the live tail (the stream is stopped
+      // until it does), and the last page failure - together they drive the banner over the log.
+      paging: null,
+      atStart: false,
+      detached: false,
+      pagingError: null,
       // The filtered-results strip: the match list rendered under the log body as its own
       // scrollable pane, single-pane only (multiPane has no room). Off by default - see matchPaneVisible.
       showMatchPane: false,
@@ -142,6 +159,18 @@ export default {
     matchPaneVisible() {
       return this.showMatchPane && !this.multiPane;
     },
+    // How many lines this pane may hold - follows the tail selection, see maxLinesFor.
+    maxLines() {
+      return maxLinesFor(this.tail);
+    },
+    pagingNote() {
+      if (this.paging) return `Loading ${this.paging} lines…`;
+      if (this.pagingError) return this.pagingError;
+      const notes = [];
+      if (this.atStart) notes.push('Start of log');
+      if (this.detached) notes.push('Not live - scroll down to load newer lines');
+      return notes.join(' · ') || null;
+    },
     statusBadge() {
       return statusBadge({ paused: this.paused, suspended: this.suspended, pendingCount: this.pendingCount });
     },
@@ -151,7 +180,13 @@ export default {
     this._programmatic = false;
     this._syncRaf = null;
     this._pendingJoinTsMs = null;
-    // Deliberately not reactive: this holds up to MAX_LOG_LINES decorated lines that nothing
+    this._streamGen = 0;
+    this._retryPagingAt = 0;
+    // Set while re-attaching to the stream after paging forward: drops the tail lines the window
+    // already holds, and `_idBase` keeps the stream's ids (restarting at 0) clear of the window's.
+    this._afterTs = null;
+    this._idBase = 0;
+    // Deliberately not reactive: this holds up to maxLines decorated lines that nothing
     // renders while paused, so reactivity on it would be pure overhead. pendingCount carries the
     // only part the template needs.
     this._pendingLines = [];
@@ -205,10 +240,17 @@ export default {
       if (!body) return paneHeight;
       return maxPaneHeight({ paneHeight, bodyHeight: body.offsetHeight, minBodyHeight: MIN_LOG_BODY_PX });
     },
-    startStream() {
+    // `keep` re-attaches to the live tail without discarding the window: only lines newer than
+    // `afterTs` are taken, and their ids continue on from the window's.
+    startStream({ keep = false, afterTs = null } = {}) {
       if (this._stream) this._stream.stop();
-      this.lines = [];
-      this.atBottom = true;
+      if (!keep) {
+        this.lines = [];
+        this.atBottom = true;
+        this.resetHistory();
+      }
+      this._afterTs = keep ? afterTs : null;
+      this._idBase = keep ? idAbove(this.lines) : 0;
       // logStream restarts line ids from 0 for a new source, so a cursor held across one would
       // point at whatever unrelated line inherits that id. Same reason in onReset below.
       this.activeMatchId = null;
@@ -220,7 +262,7 @@ export default {
       this.clearPending();
       this._pendingJoinTsMs = this.joinAtTsMs;
       this._stream = createLogStream({
-        url: logsUrl(this.hostId, this.containerId, this.tail),
+        url: logsUrl(this.hostId, this.containerId, streamTailFor(this.tail)),
         onFlush: (lines) => this.appendLines(lines),
         onLoadingChange: (loading) => {
           this.loading = loading;
@@ -236,6 +278,7 @@ export default {
           // paused would leave an empty pane that never fills - which reads as broken, not paused.
           this.paused = false;
           this.clearPending();
+          this.resetHistory();
         },
         onSuspendChange: (suspended) => {
           this.suspended = suspended;
@@ -243,15 +286,120 @@ export default {
       });
       this._stream.start();
     },
-    appendLines(lines) {
-      // Paused: buffer instead of rendering, capped at the same MAX_LOG_LINES the visible buffer
+    // A new or re-tailed stream starts from the tail, so any history paged in for the previous one
+    // is gone, and a page fetch still in flight is stale (the generation check discards it).
+    resetHistory() {
+      this._streamGen++;
+      this._afterTs = null;
+      this._idBase = 0;
+      this.paging = null;
+      this.atStart = false;
+      this.detached = false;
+      this.pagingError = null;
+    },
+    // The window ran past the live tail, so nothing newer than its last line is loaded. The stream
+    // is stopped rather than left running: its lines would land after a gap.
+    detach() {
+      if (this._stream) {
+        this._stream.stop();
+        this._stream = null;
+      }
+      this.detached = true;
+      this.paused = false;
+      this.suspended = false;
+      this.loading = false;
+      this.clearPending();
+    },
+    // The window has caught up with the present: rejoin the stream, taking only what is newer.
+    reattach() {
+      this.detached = false;
+      this.startStream({ keep: true, afterTs: newestTimestamp(this.lines) });
+    },
+    // The line at the top of the viewport and how far into it the scroll is, so a page spliced in
+    // above or trimmed from below can put the same line back where it was.
+    captureAnchor() {
+      const el = this.$refs.logView;
+      if (!el || !el.children.length) return null;
+      const idx = topIndexByOffset(el.children.length, (i) => el.children[i].offsetTop, el.scrollTop);
+      const line = idx === -1 ? null : this.filteredLines[idx];
+      return line ? { id: line.id, offset: el.scrollTop - el.children[idx].offsetTop } : null;
+    },
+    restoreAnchor(anchor) {
+      const el = this.$refs.logView;
+      if (!el || !anchor) return;
+      const idx = this.filteredLines.findIndex((l) => l.id === anchor.id);
+      const child = idx === -1 ? null : el.children[idx];
+      if (child) this.scrollWithoutBroadcast(() => (el.scrollTop = child.offsetTop + anchor.offset));
+    },
+    // "All" is a sliding window over the log, not the whole of it: a page is fetched when the user
+    // reaches either end, added there, and the same number of lines dropped from the far end. See
+    // server/CLAUDE.md for the history route and public/CLAUDE.md for the window.
+    async loadPage(direction) {
+      const older = direction === 'older';
+      if (this.tail !== 'all' || this.paging || Date.now() < this._retryPagingAt) return;
+      if (older ? this.atStart : !this.detached) return;
+      const cursor = older ? oldestTimestamp(this.lines) : newestTimestamp(this.lines);
+      if (!cursor) {
+        // A window with no stamped line at that end cannot say where to continue from.
+        if (older) this.atStart = true;
+        else this.startStream();
+        return;
+      }
+      const gen = this._streamGen;
+      this.paging = direction;
+      try {
+        const page = await apiGetLogHistory(this.hostId, this.containerId, older ? { before: cursor } : { after: cursor }, LOG_PAGE_LINES);
+        if (gen !== this._streamGen) return;
+        this.pagingError = null;
+        const anchor = this.captureAnchor();
+        if (older) {
+          const result = prependPage(this.lines, page.lines, this.maxLines);
+          this.lines = result.lines;
+          if (!page.more) this.atStart = true;
+          if (result.droppedNewer) this.detach();
+        } else {
+          const result = appendPage(this.lines, page.lines, this.maxLines);
+          this.lines = result.lines;
+          if (result.droppedOlder) this.atStart = false;
+          if (!page.more) this.reattach();
+        }
+        await this.$nextTick();
+        this.restoreAnchor(anchor);
+      } catch (err) {
+        if (gen !== this._streamGen) return;
+        this.pagingError = `Couldn't load ${direction} lines: ${err.message}`;
+        this._retryPagingAt = Date.now() + 5000;
+      } finally {
+        if (gen === this._streamGen) this.paging = null;
+      }
+    },
+    // Past the window's end is the live tail, so while detached "bottom" means re-tailing.
+    jumpToBottom() {
+      if (this.detached) this.startStream();
+      else this.scrollToBottom();
+    },
+    appendLines(incoming) {
+      let lines = incoming;
+      if (this._afterTs) {
+        lines = [];
+        for (const line of incoming) {
+          const ts = timestampOf(line.text);
+          if (this._afterTs && ts && ts <= this._afterTs) continue;
+          if (ts) this._afterTs = null;
+          lines.push(line);
+        }
+        if (!lines.length) return;
+      }
+      if (this._idBase) lines = lines.map((l) => ({ ...l, id: l.id + this._idBase }));
+      // Paused: buffer instead of rendering, capped at the same maxLines the visible buffer
       // is - a chatty container left paused for an hour must not grow this without bound.
       if (this.paused) {
-        pushCapped(this._pendingLines, decorateLines(lines), MAX_LOG_LINES);
+        pushCapped(this._pendingLines, decorateLines(lines), this.maxLines);
         this.pendingCount = this._pendingLines.length;
         return;
       }
-      pushCapped(this.lines, decorateLines(lines), MAX_LOG_LINES);
+      pushCapped(this.lines, decorateLines(lines), this.maxLines);
+      if (this.lines.length >= this.maxLines) this.atStart = false;
       // First real content since a pending join was requested - honor it instead of the normal
       // tail-to-bottom behavior below, then never again for this stream (one-shot).
       if (this._pendingJoinTsMs != null) {
@@ -282,7 +430,7 @@ export default {
       if (!pending.length) return;
       // Straight onto the visible buffer rather than back through appendLines - these are already
       // decorated, and re-running that would decorate them a second time.
-      pushCapped(this.lines, pending, MAX_LOG_LINES);
+      pushCapped(this.lines, pending, this.maxLines);
       // Silent, unlike the ▼ button: catching up after a pause is this pane's own bookkeeping,
       // not the user navigating, so it must not drag a sibling out of the history someone is reading.
       if (this.atBottom) this.$nextTick(() => this.scrollToBottom({ broadcast: false }));
@@ -314,7 +462,12 @@ export default {
     },
     onScroll() {
       const el = this.$refs.logView;
-      if (el) this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      if (el) {
+        const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        this.atBottom = fromBottom < 40;
+        if (el.scrollTop < 300) this.loadPage('older');
+        else if (this.detached && fromBottom < 300) this.loadPage('newer');
+      }
       // A sync-driven scroll (scrollToTimestamp) shouldn't itself broadcast, or every pane would
       // ping-pong forever. rAF-throttled like logStream.js's own flush, since a real drag scroll
       // fires this dozens of times a frame. A pane with sync off never broadcasts at all.
@@ -512,10 +665,11 @@ export default {
               ☰ <span class="btn-label">Matches</span>
             </button>
           </div>
-          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load">
+          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
             <option :value="1000">1000</option>
             <option :value="5000">5000</option>
             <option :value="10000">10000</option>
+            <option :value="20000">20000</option>
             <option value="all">All</option>
           </select>
           <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
@@ -574,8 +728,9 @@ export default {
       </div>
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
+        <div v-if="pagingNote" class="log-older-note"><span v-if="paging" class="spinner"></span> {{ pagingNote }}</div>
         <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" class="log-line" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
-        <button v-show="!atBottom" class="scroll-bottom-btn" @click="scrollToBottom()" title="Scroll to bottom">&#8595; Bottom</button>
+        <button v-show="!atBottom || detached" class="scroll-bottom-btn" @click="jumpToBottom()" :title="detached ? 'Jump to the live end of the log' : 'Scroll to bottom'">&#8595; {{ detached ? 'Latest' : 'Bottom' }}</button>
       </div>
       <log-match-pane
         v-if="matchPaneVisible"

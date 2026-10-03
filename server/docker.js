@@ -122,13 +122,13 @@ function dockerCommandError(err, args, timeoutMs, stderr) {
   return err;
 }
 
-function spawnDocker(args, timeoutMs) {
+function spawnDocker(args, timeoutMs, withStderr = false) {
   return new Promise((resolve, reject) => {
     let killTimer = null;
-    const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 25 * 1024 * 1024 }, (err, stdout, stderr) => {
       clearTimeout(killTimer);
       if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr));
-      resolve(stdout);
+      resolve(withStderr ? { stdout, stderr } : stdout);
     });
     killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -136,10 +136,10 @@ function spawnDocker(args, timeoutMs) {
   });
 }
 
-async function run(args, timeoutMs = CMD_TIMEOUT_MS) {
+async function run(args, timeoutMs = CMD_TIMEOUT_MS, withStderr = false) {
   await acquire();
   try {
-    return await spawnDocker(args, timeoutMs);
+    return await spawnDocker(args, timeoutMs, withStderr);
   } finally {
     release();
   }
@@ -777,6 +777,99 @@ function downloadLogs(host, id, { tail = 1000 } = {}) {
   return spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--tail', String(tail), id]);
 }
 
+// `docker logs --timestamps` prefixes every line with a fixed-width RFC3339 UTC stamp, so lines
+// from the two streams sort correctly as plain strings.
+const LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) /;
+
+// Pure half of getLogsBefore: stdout and stderr arrive as separate buffers, so they are merged back
+// into one timeline, and anything not strictly before `before` is dropped (--until is inclusive).
+// `total` is the pre-filter count, which is what says whether the page came back full.
+function parseLogsBefore(stdout, stderr, before) {
+  const lines = [...String(stdout || '').split('\n'), ...String(stderr || '').split('\n')].filter((l) => l.length);
+  const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+  const kept = lines.filter((l) => {
+    const ts = stamp(l);
+    return !ts || ts < before;
+  });
+  if (stderr) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { lines: kept, total: lines.length };
+}
+
+// One page of history older than `before`, for the log viewer's scroll-up paging. Not streamed:
+// it is a bounded one-shot, so it goes through run() and its concurrency cap like any other call.
+async function getLogsBefore(host, id, { before, limit }) {
+  const out = await run([...hostArgs(host), 'logs', '--timestamps', '--until', before, '--tail', String(limit), id], CMD_TIMEOUT_MS, true);
+  const { lines, total } = parseLogsBefore(out.stdout, out.stderr, before);
+  return { lines, more: total >= limit };
+}
+
+// Pure half of getLogsAfter: each stream is already in order, so the first `limit` lines overall
+// are among the first `limit` of each. Merged by stamp, with --since's inclusive cursor dropped.
+function mergeLogsAfter(outLines, errLines, after, limit) {
+  const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+  const kept = [...outLines, ...errLines].filter((l) => {
+    const ts = stamp(l);
+    return !ts || ts > after;
+  });
+  if (errLines.length) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { lines: kept.slice(0, limit), more: kept.length >= limit };
+}
+
+// One page of history newer than `after`. `docker logs` has no way to take the *first* N lines of a
+// range, so this reads the stream and kills it once both ends have `limit` (+1 for the inclusive
+// cursor) lines - memory stays bounded however much log lies ahead.
+function getLogsAfter(host, id, { after, limit }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--since', after, id]);
+    const cap = limit + 1;
+    const lines = { out: [], err: [] };
+    const partial = { out: '', err: '' };
+    let stderrText = '';
+    let settled = false;
+    let stoppedByUs = false;
+    let graceTimer = null;
+    const stop = () => {
+      stoppedByUs = true;
+      finish();
+    };
+    const timer = setTimeout(() => finish(Object.assign(new Error('timed out reading log history'), { timedOut: true })), CMD_TIMEOUT_MS);
+
+    function finish(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (err) return reject(err);
+      resolve(mergeLogsAfter(lines.out, lines.err, after, limit));
+    }
+
+    const take = (key) => (chunk) => {
+      if (key === 'err') stderrText += chunk;
+      partial[key] += chunk;
+      const parts = partial[key].split('\n');
+      partial[key] = parts.pop();
+      for (const part of parts) if (part.length && lines[key].length < cap) lines[key].push(part);
+      if (lines[key].length < cap) return;
+      // One end is full; the other gets a short grace to deliver anything that sorts earlier,
+      // since a quiet stream (usually stderr) would otherwise never reach `cap` at all.
+      if (lines.out.length >= cap && lines.err.length >= cap) return stop();
+      if (!graceTimer) graceTimer = setTimeout(stop, 300);
+    };
+    child.stdout.setEncoding('utf8').on('data', take('out'));
+    child.stderr.setEncoding('utf8').on('data', take('err'));
+    child.on('error', (err) => finish(err));
+    child.on('close', (code) => {
+      for (const key of ['out', 'err']) if (partial[key].length && lines[key].length < cap) lines[key].push(partial[key]);
+      // stderr doubles as the container's own stderr, so it only means "the command failed" when
+      // the exit is non-zero and we were not the one who ended it.
+      if (code && !stoppedByUs)
+        return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+      finish();
+    });
+  });
+}
+
 function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
@@ -860,6 +953,11 @@ module.exports = {
   containerAction,
   streamLogs,
   downloadLogs,
+  getLogsBefore,
+  getLogsAfter,
+  parseLogsBefore,
+  mergeLogsAfter,
+  LOG_TS_RE,
   streamEvents,
   streamStats,
   getStats,

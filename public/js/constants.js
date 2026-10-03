@@ -8,6 +8,11 @@ export const MAX_POLL_BACKOFF_MS = 60_000;
 // that was hidden before a host was selected still comes to life on its own.
 export const HIDDEN_POLL_MS = 30_000;
 export const MAX_LOG_LINES = 3000;
+// The "All" log option loads LOG_PAGE_LINES, then another page each time the user scrolls to an end
+// of what is loaded. The window holds at most LOG_WINDOW_LINES: a page added at one end drops the
+// same number from the other, so the DOM stays bounded however far into a huge log you go.
+export const LOG_PAGE_LINES = 10_000;
+export const LOG_WINDOW_LINES = 30_000;
 // How many containers' logs the Logs tab can stream side by side, scroll-synced by timestamp -
 // a connection budget as much as a layout choice: each pane is a long-lived EventSource and a
 // browser allows only ~6 per origin. Four leaves two connections for the poll loop; see public/CLAUDE.md.

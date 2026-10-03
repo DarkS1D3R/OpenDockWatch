@@ -1,6 +1,6 @@
 const express = require('express');
 const { requireAdmin } = require('../auth');
-const { streamLogs, downloadLogs, CONTAINER_ACTION_TIMEOUT_MS, MAX_QUEUE_WAIT_MS } = require('../docker');
+const { streamLogs, downloadLogs, CONTAINER_ACTION_TIMEOUT_MS, MAX_QUEUE_WAIT_MS, LOG_TS_RE } = require('../docker');
 // The module object, not a destructured reference, for the calls the compose-group route and
 // performContainerAction make - test/index.test.js mocks them afterwards. See server/CLAUDE.md.
 const docker = require('../docker');
@@ -11,6 +11,7 @@ const { orderGroupLevels, mapLimit } = require('../composeGroup');
 const {
   REQUEST_TIMEOUT_MS,
   tailParam,
+  intParam,
   requireHost,
   requireContainerId,
   requireContainerAction,
@@ -224,6 +225,28 @@ router.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId
   // otherwise land in cleanup's closedBy.
   child.on('close', () => cleanup('child'));
   req.on('close', () => cleanup('client'));
+});
+
+// The most the history route returns per call; the viewer asks for LOG_PAGE_LINES (10000).
+const MAX_HISTORY_LIMIT = 20_000;
+
+// A page of lines older than `before` or newer than `after` (a timestamp the viewer holds), so
+// "All" can page both ways through a sliding window. `more` is false once a page comes back short.
+router.get('/hosts/:hostId/containers/:id/logs/history', requireHost, requireContainerId, async (req, res) => {
+  const { before, after } = req.query;
+  if ((before === undefined) === (after === undefined)) return res.status(400).json({ error: 'give exactly one of before or after' });
+  const cursor = String(before === undefined ? after : before);
+  if (!LOG_TS_RE.test(`${cursor} `)) return res.status(400).json({ error: 'cursor must be a docker log timestamp' });
+  const limit = intParam(req.query.limit, 10_000, MAX_HISTORY_LIMIT) || 10_000;
+  try {
+    const page =
+      before === undefined
+        ? await docker.getLogsAfter(req.odwHost, req.params.id, { after: cursor, limit })
+        : await docker.getLogsBefore(req.odwHost, req.params.id, { before: cursor, limit });
+    res.json(page);
+  } catch (err) {
+    dockerError(res, err);
+  }
 });
 
 router.get('/hosts/:hostId/containers/:id/logs/download', requireHost, requireContainerId, (req, res) => {

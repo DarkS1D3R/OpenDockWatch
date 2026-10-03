@@ -445,6 +445,58 @@ test('container action validation', async (t) => {
   });
 });
 
+test('GET /hosts/:hostId/containers/:id/logs/history', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const BEFORE = '2026-01-01T00:00:10.000000000Z';
+
+  await t.test('400s without a docker-format cursor', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const base = `/api/hosts/${hostId}/containers/abcabcabcabc/logs/history`;
+    assert.equal((await admin.get(base)).status, 400);
+    assert.equal((await admin.get(`${base}?before=yesterday`)).status, 400);
+    assert.equal((await admin.get(`${base}?before=--follow`)).status, 400, 'a flag-shaped value must never reach the CLI');
+  });
+
+  await t.test('404s for an unknown host', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${FAKE_HOST_ID}/containers/abc/logs/history?before=${BEFORE}`);
+    assert.equal(res.status, 404);
+  });
+
+  await t.test('passes the cursor and a clamped limit to docker and returns its page', async (t2) => {
+    const calls = [];
+    t2.mock.method(docker, 'getLogsBefore', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      return { lines: ['x'], more: true };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${hostId}/containers/abc/logs/history?before=${BEFORE}&limit=99999999`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { lines: ['x'], more: true });
+    assert.deepEqual(calls, [{ id: 'abc', before: BEFORE, limit: 20000 }]);
+  });
+
+  await t.test('routes `after` to the forward reader', async (t2) => {
+    const calls = [];
+    t2.mock.method(docker, 'getLogsAfter', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      return { lines: ['y'], more: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${hostId}/containers/abc/logs/history?after=${BEFORE}&limit=50`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { lines: ['y'], more: false });
+    assert.deepEqual(calls, [{ id: 'abc', after: BEFORE, limit: 50 }]);
+  });
+
+  await t.test('400s unless exactly one of before and after is given', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const base = `/api/hosts/${hostId}/containers/abc/logs/history`;
+    assert.equal((await admin.get(`${base}?before=${BEFORE}&after=${BEFORE}`)).status, 400);
+    assert.equal((await admin.get(`${base}?limit=5`)).status, 400);
+  });
+});
+
 // docker.listContainers/getTopologyMeta/containerAction are mocked via the module object rather
 // than the request/response boundary - the route reads them that way specifically so this doesn't
 // need a real docker daemon (see the comment on `const docker = require('./docker')` in index.js).
