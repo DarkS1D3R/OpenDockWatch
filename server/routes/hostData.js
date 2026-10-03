@@ -1,6 +1,9 @@
 const express = require('express');
 const { loadHosts } = require('../hosts');
+const { requireAdmin } = require('../auth');
 const { checkHost, getHostInfo, getDiskUsage, getDiskUsageImages, getContainerInspect, maskEnvValues } = require('../docker');
+// The module object for getContainerTop, so test/index.test.js can stub it without a daemon.
+const docker = require('../docker');
 const db = require('../db');
 const { computeContainerUptime, computeHostUptime } = require('../uptime');
 const { HISTORY_RANGES } = require('../historyRanges');
@@ -74,6 +77,18 @@ router.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContaine
     if (req.session.role === 'admin') return res.json(inspect);
     res.json({ ...inspect, env: maskEnvValues(inspect.env), envMasked: true });
   } catch (err) {
+    dockerError(res, err);
+  }
+});
+
+// Admin-only like /audit, and for the same reason env is masked for a viewer: a command line is
+// where --password=... and tokens end up. Read-only does not mean "may read every secret".
+router.get('/hosts/:hostId/containers/:id/top', requireAdmin, requireHost, requireContainerId, async (req, res) => {
+  try {
+    res.json(await docker.getContainerTop(req.odwHost, req.params.id));
+  } catch (err) {
+    // docker's own refusal for a stopped container is a state, not a gateway failure.
+    if (/is not running/i.test(err.stderr || err.message)) return res.status(409).json({ error: 'container is not running' });
     dockerError(res, err);
   }
 });

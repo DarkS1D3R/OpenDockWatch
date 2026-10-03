@@ -724,10 +724,27 @@ async function getTopology(host, snapshot) {
 // `docker inspect` is the one place env vars, mounts, labels, restart policy, and created time
 // live - none of it comes back from `docker ps`/`docker stats`. Fetched on demand (container
 // selection), not on the poll cycle, since unlike CPU/mem it can't change between polls.
+// HostConfig reports "no limit" as 0 (or -1 for pids, or null on older daemons), which is a
+// different fact from a limit of zero - so each comes out as null rather than a number to misread.
+// CPU has two spellings: --cpus lands in NanoCpus, the older --cpu-quota/--cpu-period pair in the
+// other two. Pure and exported for testing, like the other inspect parsing.
+function parseResourceLimits(hostConfig) {
+  const hc = hostConfig || {};
+  const positive = (n) => (typeof n === 'number' && n > 0 ? n : null);
+  let cpuLimit = positive(hc.NanoCpus) ? hc.NanoCpus / 1e9 : null;
+  if (cpuLimit === null && positive(hc.CpuQuota) && positive(hc.CpuPeriod)) cpuLimit = hc.CpuQuota / hc.CpuPeriod;
+  return {
+    memoryLimitBytes: positive(hc.Memory),
+    cpuLimit,
+    pidsLimit: positive(hc.PidsLimit),
+  };
+}
+
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
   return {
+    limits: parseResourceLimits(raw.HostConfig),
     createdAt: raw.Created,
     restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
     restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
@@ -740,6 +757,43 @@ async function getContainerInspect(host, id) {
       rw: m.RW,
     })),
   };
+}
+
+// The most processes and the longest command line one `docker top` response carries - a container
+// forking hundreds of workers, or one with an enormous argv, should not make the response unbounded.
+const TOP_MAX_ROWS = 500;
+const TOP_MAX_CELL = 1000;
+
+// `docker top` prints a header then one whitespace-aligned row per process, and the last column
+// (CMD) is the only one that may itself contain spaces - so a row is split into the header's column
+// count minus one, with whatever remains as the last cell. Pure and exported for testing.
+function parseTop(stdout) {
+  const lines = String(stdout || '')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length);
+  if (!lines.length) return { columns: [], rows: [], truncated: false };
+  const columns = lines[0].trim().split(/\s+/);
+  const rows = [];
+  for (const line of lines.slice(1, TOP_MAX_ROWS + 1)) {
+    const cells = [];
+    let rest = line.trim();
+    for (let i = 0; i < columns.length - 1; i++) {
+      const m = /^(\S+)\s*/.exec(rest);
+      if (!m) break;
+      cells.push(m[1]);
+      rest = rest.slice(m[0].length);
+    }
+    cells.push(rest);
+    rows.push(cells.map((c) => (c.length > TOP_MAX_CELL ? c.slice(0, TOP_MAX_CELL) + '…' : c)));
+  }
+  return { columns, rows, truncated: lines.length - 1 > TOP_MAX_ROWS };
+}
+
+// The processes in one container, from the daemon's own `docker top`. Only for a running container
+// - the CLI refuses otherwise, and that refusal is passed through for the route to recognise.
+async function getContainerTop(host, id) {
+  return parseTop(await run([...hostArgs(host), 'top', id]));
 }
 
 // Config.Env entries are "KEY=value" and routinely hold DB passwords and API keys. Masks the
@@ -977,6 +1031,9 @@ module.exports = {
   cachedHostInfo,
   containerCounts,
   getContainerInspect,
+  parseResourceLimits,
+  getContainerTop,
+  parseTop,
   maskEnvValues,
   parseByteString,
   parseMemUsedBytes,

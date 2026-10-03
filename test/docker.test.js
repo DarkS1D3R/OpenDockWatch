@@ -24,6 +24,8 @@ const {
   dockerCommandError,
   parseLogsBefore,
   mergeLogsAfter,
+  parseResourceLimits,
+  parseTop,
   DISK_USAGE_TIMEOUT_MS,
 } = require('../server/docker');
 
@@ -744,5 +746,80 @@ test('mergeLogsAfter', async (t) => {
 
   await t.test('says there is no more when the page is not full', () => {
     assert.equal(mergeLogsAfter([line(11, 'a')], [], AFTER, 5).more, false);
+  });
+});
+
+test('parseResourceLimits', async (t) => {
+  await t.test('reads memory, --cpus and pids when set', () => {
+    assert.deepEqual(parseResourceLimits({ Memory: 536870912, NanoCpus: 1500000000, PidsLimit: 200 }), {
+      memoryLimitBytes: 536870912,
+      cpuLimit: 1.5,
+      pidsLimit: 200,
+    });
+  });
+
+  await t.test('reports "no limit" as null, never as 0 or -1', () => {
+    assert.deepEqual(parseResourceLimits({ Memory: 0, NanoCpus: 0, PidsLimit: -1 }), {
+      memoryLimitBytes: null,
+      cpuLimit: null,
+      pidsLimit: null,
+    });
+    assert.deepEqual(parseResourceLimits({ PidsLimit: null }), { memoryLimitBytes: null, cpuLimit: null, pidsLimit: null });
+  });
+
+  await t.test('derives the CPU limit from the older quota/period pair', () => {
+    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 0.5);
+  });
+
+  await t.test('prefers --cpus over the quota pair, and ignores a quota with no period', () => {
+    assert.equal(parseResourceLimits({ NanoCpus: 2e9, CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 2);
+    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 0 }).cpuLimit, null);
+  });
+
+  await t.test('copes with a missing HostConfig', () => {
+    assert.deepEqual(parseResourceLimits(undefined), { memoryLimitBytes: null, cpuLimit: null, pidsLimit: null });
+  });
+});
+
+test('parseTop', async (t) => {
+  const OUT = [
+    'UID                 PID                 PPID                C                   STIME               TTY                 TIME                CMD',
+    'root                1234                1200                0                   10:00               ?                   00:00:01            nginx: master process /usr/sbin/nginx -g daemon off;',
+    'www-data            1260                1234                2                   10:00               ?                   00:00:09            nginx: worker process',
+  ].join('\n');
+
+  await t.test('splits a row into the header columns, keeping the spaced command whole', () => {
+    const top = parseTop(OUT);
+    assert.deepEqual(top.columns, ['UID', 'PID', 'PPID', 'C', 'STIME', 'TTY', 'TIME', 'CMD']);
+    assert.deepEqual(top.rows[0], [
+      'root',
+      '1234',
+      '1200',
+      '0',
+      '10:00',
+      '?',
+      '00:00:01',
+      'nginx: master process /usr/sbin/nginx -g daemon off;',
+    ]);
+    assert.equal(top.rows[1][7], 'nginx: worker process');
+    assert.equal(top.truncated, false);
+  });
+
+  await t.test('returns nothing for empty output, and a header alone is no processes', () => {
+    assert.deepEqual(parseTop(''), { columns: [], rows: [], truncated: false });
+    assert.deepEqual(parseTop('UID PID CMD\n').rows, []);
+  });
+
+  await t.test('caps the rows and says so', () => {
+    const many = ['PID CMD', ...Array.from({ length: 600 }, (_, i) => `${i} proc${i}`)].join('\n');
+    const top = parseTop(many);
+    assert.equal(top.rows.length, 500);
+    assert.equal(top.truncated, true);
+  });
+
+  await t.test('caps an enormous command line', () => {
+    const top = parseTop('PID CMD\n1 ' + 'x'.repeat(5000));
+    assert.ok(top.rows[0][1].length <= 1001);
+    assert.ok(top.rows[0][1].endsWith('…'));
   });
 });

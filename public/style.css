@@ -699,6 +699,28 @@ table.containers th.sortable {
 table.containers th.sortable:hover {
   color: var(--text);
 }
+.proc-table-wrap {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.proc-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.proc-table th,
+.proc-table td {
+  text-align: left;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.proc-table th {
+  color: var(--muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
 .sort-arrow {
   font-size: 10px;
 }

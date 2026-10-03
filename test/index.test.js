@@ -497,6 +497,51 @@ test('GET /hosts/:hostId/containers/:id/logs/history', async (t) => {
   });
 });
 
+// The process list carries full command lines, which is where credentials end up - so, like
+// /audit, it is admin-only. It is a GET, so the structural walk at the top cannot catch a missing
+// gate; this viewer-403/admin-200 pair is the whole of its protection.
+test('GET /hosts/:hostId/containers/:id/top', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const url = `/api/hosts/${hostId}/containers/abcabcabcabc/top`;
+
+  await t.test('is closed to a viewer', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get(url)).status, 403);
+  });
+
+  await t.test('404s for an unknown host and 400s for a flag-shaped container id', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(`/api/hosts/${FAKE_HOST_ID}/containers/abc/top`)).status, 404);
+    assert.equal((await admin.get(`/api/hosts/${hostId}/containers/--all/top`)).status, 400);
+  });
+
+  await t.test('returns the parsed process table to an admin', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => ({ columns: ['PID', 'CMD'], rows: [['1', 'nginx']], truncated: false }));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.rows, [['1', 'nginx']]);
+  });
+
+  await t.test('answers 409, not 502, for a container that is not running', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => {
+      throw Object.assign(new Error('failed'), { stderr: 'Error response from daemon: container abc is not running' });
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, 'container is not running');
+  });
+
+  await t.test('passes any other docker failure through as a 502', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => {
+      throw Object.assign(new Error('failed'), { stderr: 'permission denied' });
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(url)).status, 502);
+  });
+});
+
 // docker.listContainers/getTopologyMeta/containerAction are mocked via the module object rather
 // than the request/response boundary - the route reads them that way specifically so this doesn't
 // need a real docker daemon (see the comment on `const docker = require('./docker')` in index.js).

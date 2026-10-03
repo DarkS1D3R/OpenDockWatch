@@ -1,8 +1,9 @@
 import { PREVIEW_TAIL } from '../constants.js';
 import { healthColor, healthLabel, formatRatePair } from '../format.js';
-import { logsUrl, apiGetContainerInspect } from '../api.js';
+import { logsUrl, apiGetContainerInspect, apiGetContainerTop } from '../api.js';
 import { createLogStream } from '../lib/logStream.js';
 import { decorateLines } from '../lib/logLines.js';
+import { cpuLimitLabel, memoryLimitLabel, pidsLimitLabel } from '../lib/resourceLimits.js';
 
 // The right-hand detail panel for one container: status/stats, `docker inspect` details,
 // start/stop/restart, and the log preview. Stays mounted across container switches; the
@@ -20,6 +21,12 @@ export default {
   data() {
     return {
       containerInspect: null,
+      // The process list: admin-only, fetched when its section is opened (not polled - a snapshot
+      // you refresh by hand is what `top` is for), and refetched when the container changes under it.
+      topOpen: false,
+      top: null,
+      topError: null,
+      loadingTop: false,
       previewLines: [],
       atBottom: true,
       loading: false,
@@ -32,6 +39,22 @@ export default {
     stat() {
       return this.stats[this.container.id] || {};
     },
+    limits() {
+      return this.containerInspect ? this.containerInspect.limits : null;
+    },
+    cpuLimit() {
+      return cpuLimitLabel(this.limits);
+    },
+    memoryLimit() {
+      return memoryLimitLabel(this.limits);
+    },
+    pidsLimit() {
+      return pidsLimitLabel(this.limits);
+    },
+    // `docker top` only works on a running container, so the section is not offered otherwise.
+    canShowTop() {
+      return this.isAdmin && this.container.state === 'running';
+    },
   },
   watch: {
     'container.id': {
@@ -42,9 +65,12 @@ export default {
         this.loading = false;
         this.suspended = false;
         this.containerInspect = null;
+        this.top = null;
+        this.topError = null;
         if (newId) {
           this.openStream(newId);
           this.fetchInspect(newId);
+          if (this.topOpen && this.canShowTop) this.fetchTop(newId);
         }
       },
     },
@@ -64,6 +90,25 @@ export default {
         if (this.container.id === id) this.containerInspect = inspect;
       } catch {
         /* inspect details are best-effort */
+      }
+    },
+    onTopToggle(event) {
+      this.topOpen = event.target.open;
+      if (this.topOpen) this.fetchTop(this.container.id);
+    },
+    async fetchTop(id) {
+      this.loadingTop = true;
+      this.topError = null;
+      try {
+        const top = await apiGetContainerTop(this.hostId, id);
+        if (this.container.id === id) this.top = top;
+      } catch (err) {
+        if (this.container.id === id) {
+          this.top = null;
+          this.topError = err.message;
+        }
+      } finally {
+        if (this.container.id === id) this.loadingTop = false;
       }
     },
     openStream(id) {
@@ -154,8 +199,18 @@ export default {
         <div class="detail-row" v-if="container.health"><span class="label">Health</span><span><span class="health-dot" :style="{ background: healthDotColor(container.health) }"></span> {{ healthTitle(container.health) }}</span></div>
         <div class="detail-row" v-if="container.restartCount1h"><span class="label">Restarts (1h)</span><span>{{ container.restartCount1h }}</span></div>
         <div class="detail-row"><span class="label">Image</span><span>{{ container.image }}</span></div>
-        <div class="detail-row"><span class="label">CPU</span><span>{{ stat.cpuPerc || '—' }}</span></div>
-        <div class="detail-row"><span class="label">Memory</span><span>{{ stat.memUsage || '—' }}</span></div>
+        <div class="detail-row">
+          <span class="label">CPU</span>
+          <span>{{ stat.cpuPerc || '—' }} <span v-if="cpuLimit" class="muted small" title="The CPU limit set on this container - 100% is one full core">· limit {{ cpuLimit }}</span></span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Memory</span>
+          <span>
+            {{ stat.memUsage || '—' }}
+            <span v-if="memoryLimit === 'no limit'" class="muted small" title="No memory limit is set, so the second figure is the host's memory, not a cap on this container">· no limit</span>
+          </span>
+        </div>
+        <div class="detail-row" v-if="pidsLimit"><span class="label">PID limit</span><span>{{ pidsLimit }}</span></div>
         <div class="detail-row"><span class="label">Net I/O</span><span>{{ fmtRatePair(stat.netRxRate, stat.netTxRate) }}</span></div>
         <div class="detail-row"><span class="label">Block I/O</span><span>{{ fmtRatePair(stat.blockReadRate, stat.blockWriteRate) }}</span></div>
         <div class="detail-row"><span class="label">Ports</span><span>{{ container.ports || '—' }}</span></div>
@@ -164,6 +219,24 @@ export default {
         <template v-if="containerInspect">
           <div class="detail-row"><span class="label">Created</span><span>{{ fmtCreated(containerInspect.createdAt) }}</span></div>
           <div class="detail-row"><span class="label">Restart Policy</span><span>{{ fmtRestartPolicy(containerInspect) }}</span></div>
+
+          <details v-if="canShowTop" class="inspect-section" :open="topOpen" @toggle="onTopToggle">
+            <summary>Processes<template v-if="top"> ({{ top.rows.length }})</template></summary>
+            <div class="inspect-list">
+              <button class="small-btn" :disabled="loadingTop" @click.prevent="fetchTop(container.id)">{{ loadingTop ? 'Loading…' : 'Refresh' }}</button>
+              <div v-if="topError" class="error small">{{ topError }}</div>
+              <div v-else-if="top && !top.rows.length" class="muted small">No processes.</div>
+              <div v-else-if="top" class="proc-table-wrap">
+                <table class="proc-table">
+                  <thead><tr><th v-for="col in top.columns" :key="col">{{ col }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(row, i) in top.rows" :key="i"><td v-for="(cell, j) in row" :key="j" class="mono">{{ cell }}</td></tr>
+                  </tbody>
+                </table>
+                <div v-if="top.truncated" class="muted small">Showing the first {{ top.rows.length }} processes.</div>
+              </div>
+            </div>
+          </details>
 
           <details class="inspect-section">
             <summary>Environment ({{ containerInspect.env.length }})</summary>

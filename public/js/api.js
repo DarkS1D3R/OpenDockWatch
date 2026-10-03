@@ -101,6 +101,10 @@ export async function apiGetContainerInspect(hostId, id) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/inspect`));
 }
 
+export async function apiGetContainerTop(hostId, id) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/top`));
+}
+
 export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
 }
