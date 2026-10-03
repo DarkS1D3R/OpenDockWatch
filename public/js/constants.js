@@ -13,6 +13,8 @@ export const MAX_LOG_LINES = 3000;
 // same number from the other, so the DOM stays bounded however far into a huge log you go.
 export const LOG_PAGE_LINES = 10_000;
 export const LOG_WINDOW_LINES = 30_000;
+// How much log before a jump target (an alert's timestamp) the viewer loads, so the line lands with context above it.
+export const SEEK_CONTEXT_MS = 60_000;
 // How many containers' logs the Logs tab can stream side by side, scroll-synced by timestamp -
 // a connection budget as much as a layout choice: each pane is a long-lived EventSource and a
 // browser allows only ~6 per origin. Four leaves two connections for the poll loop; see public/CLAUDE.md.

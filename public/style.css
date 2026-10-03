@@ -1848,6 +1848,11 @@ table.containers td:nth-child(7) {
   font-weight: 700;
   box-shadow: 0 0 0 1px #ff6a00;
 }
+/* The line a jump from an alert landed on - fades out after a few seconds (LogViewer clears it). */
+.log-line-target {
+  background: rgba(255, 106, 0, 0.22);
+  box-shadow: inset 3px 0 0 #ff6a00;
+}
 .search-line-clickable {
   cursor: pointer;
 }
@@ -2381,6 +2386,10 @@ button.log-pane-main-btn.active:hover {
 .event-row.severity-ok td:first-child {
   box-shadow: inset 3px 0 0 var(--ok);
 }
+.event-logs {
+  text-align: right;
+  white-space: nowrap;
+}
 .event-action {
   color: var(--muted);
 }
@@ -2439,6 +2448,12 @@ table.uptime-table tr:last-child td {
 }
 .uptime-removed-row {
   opacity: 0.7;
+}
+.alert-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 .alert-row-main {
   display: flex;

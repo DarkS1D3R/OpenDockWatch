@@ -34,6 +34,16 @@ test('maxLinesFor', async (t) => {
   });
 });
 
+test('seekCursorFor', async (t) => {
+  await t.test('is a valid docker log timestamp, SEEK_CONTEXT_MS before the target', () => {
+    const target = Date.parse('2026-01-01T00:05:00.000Z');
+    const cursor = h.seekCursorFor(target);
+    assert.equal(cursor, '2026-01-01T00:04:00.000Z');
+    assert.match(cursor + ' ', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z /);
+    assert.equal(target - Date.parse(cursor), consts.SEEK_CONTEXT_MS);
+  });
+});
+
 test('timestamps at the window ends', async (t) => {
   await t.test('reads the stamp off the first and last line', () => {
     const lines = [{ text: text(3) }, { text: text(4) }, { text: text(5) }];

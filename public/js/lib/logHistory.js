@@ -1,4 +1,4 @@
-import { MAX_LOG_LINES, LOG_PAGE_LINES, LOG_WINDOW_LINES } from '../constants.js';
+import { MAX_LOG_LINES, LOG_PAGE_LINES, LOG_WINDOW_LINES, SEEK_CONTEXT_MS } from '../constants.js';
 import { decorateLines } from './logLines.js';
 
 // The pure half of the log viewer's "All" option: how much to ask the stream for, how many lines a
@@ -13,6 +13,12 @@ export function streamTailFor(tail) {
 // 3000 lines, which is what made the larger options look like they fell back to a shorter one.
 export function maxLinesFor(tail) {
   return tail === 'all' ? LOG_WINDOW_LINES : Math.max(MAX_LOG_LINES, tail);
+}
+
+// The `after` cursor that lands a window on `tsMs` with some context above it. toISOString is
+// UTC with milliseconds, which is a valid docker log timestamp as far as the history route goes.
+export function seekCursorFor(tsMs) {
+  return new Date(tsMs - SEEK_CONTEXT_MS).toISOString();
 }
 
 const DOCKER_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) /;

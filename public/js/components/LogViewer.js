@@ -14,6 +14,7 @@ import {
   idAbove,
   prependPage,
   appendPage,
+  seekCursorFor,
 } from '../lib/logHistory.js';
 import LogMatchPane from './LogMatchPane.js';
 
@@ -48,11 +49,16 @@ export default {
     // live-tailing at the bottom - LogsView sets this when opening a pane into an already-scrolled
     // group. Read once at mount, in startStream; a later prop change doesn't re-trigger it.
     joinAtTsMs: { type: Number, default: null },
+    // Opens the pane on the log around this time instead of at the live tail (the Activity tab's
+    // "Logs" button on an alert). Read once at mount; see seek().
+    seekToTsMs: { type: Number, default: null },
   },
   emits: ['close', 'update:fullscreen', 'update:wrap', 'scroll-sync', 'toggle-sync', 'set-main'],
   data() {
     return {
-      tail: 1000,
+      tail: this.seekToTsMs != null ? 'all' : 1000,
+      // The line a seek landed on, marked for a few seconds so it can be found in the surrounding text.
+      targetLineId: null,
       filter: '',
       regexMode: false,
       levels: { error: true, warn: true, info: true, debug: true },
@@ -209,7 +215,8 @@ export default {
     },
   },
   mounted() {
-    this.startStream();
+    if (this.seekToTsMs != null) this.seek(this.seekToTsMs);
+    else this.startStream();
     // Embedded instances sit in a fixed spot inside the Logs tab's layout and get remounted every
     // time the active container changes (keyed by container id) - scrolling the page to align them
     // would jump the whole tab on every click instead of just swapping the stream underneath it.
@@ -222,6 +229,7 @@ export default {
     document.addEventListener('keydown', this.onKeydown);
   },
   beforeUnmount() {
+    clearTimeout(this._targetTimer);
     if (this._stream) {
       this._stream.stop();
       this._stream = null;
@@ -372,6 +380,55 @@ export default {
       } finally {
         if (gen === this._streamGen) this.paging = null;
       }
+    },
+    // Opens the window on the log around `tsMs` rather than at the tail: a page from a minute before
+    // it, detached from the stream like any window that doesn't reach the present. Everything after
+    // that - older, newer, rejoining live - is the same paging as scrolling "All".
+    async seek(tsMs) {
+      if (this._stream) {
+        this._stream.stop();
+        this._stream = null;
+      }
+      this.lines = [];
+      this.resetHistory();
+      this.detached = true;
+      this.loading = true;
+      const gen = this._streamGen;
+      try {
+        const page = await apiGetLogHistory(this.hostId, this.containerId, { after: seekCursorFor(tsMs) }, LOG_PAGE_LINES);
+        if (gen !== this._streamGen) return;
+        if (!page.lines.length) return this.seekFailed('No log lines found around that time - the log may have been rotated');
+        this.lines = appendPage([], page.lines, this.maxLines).lines;
+        this.atBottom = false;
+        // A short page means the window already reaches the present, so go live straight away.
+        if (!page.more) this.reattach();
+        await this.$nextTick();
+        this.centerOnTimestamp(tsMs);
+      } catch (err) {
+        if (gen === this._streamGen) this.seekFailed(`Couldn't load the log around that time: ${err.message}`);
+      } finally {
+        if (gen === this._streamGen) this.loading = false;
+      }
+    },
+    // Falls back to the ordinary live tail, with the reason left in the banner.
+    seekFailed(message) {
+      this.loading = false;
+      this.startStream();
+      this.pagingError = message;
+    },
+    // Scrolls the line closest to `tsMs` to the middle of the pane and marks it for a few seconds.
+    centerOnTimestamp(tsMs) {
+      const el = this.$refs.logView;
+      const index = closestIndexByTs(
+        this.filteredLines.map((l) => l.tsMs),
+        tsMs
+      );
+      const child = index === -1 || !el ? null : el.children[index];
+      if (!child) return;
+      this.targetLineId = this.filteredLines[index].id;
+      clearTimeout(this._targetTimer);
+      this._targetTimer = setTimeout(() => (this.targetLineId = null), 8000);
+      this.scrollWithoutBroadcast(() => child.scrollIntoView({ block: 'center' }));
     },
     // Past the window's end is the live tail, so while detached "bottom" means re-tailing.
     jumpToBottom() {
@@ -729,7 +786,7 @@ export default {
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
         <div v-if="pagingNote" class="log-older-note"><span v-if="paging" class="spinner"></span> {{ pagingNote }}</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" class="log-line" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" class="log-line" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'log-line-target': line.id === targetLineId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
         <button v-show="!atBottom || detached" class="scroll-bottom-btn" @click="jumpToBottom()" :title="detached ? 'Jump to the live end of the log' : 'Scroll to bottom'">&#8595; {{ detached ? 'Latest' : 'Bottom' }}</button>
       </div>
       <log-match-pane
