@@ -232,6 +232,13 @@ export async function apiClearThresholdConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/thresholds', { method: 'DELETE' }));
 }
 
+// hostId '' means every host. The route clamps `limit` itself, so this just passes it along.
+export async function apiGetAuditLog(hostId, limit) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (hostId) qs.set('hostId', hostId);
+  return jsonOrThrow(await apiFetch(`/api/audit?${qs}`));
+}
+
 export async function apiGetHostsConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/hosts'));
 }

@@ -595,10 +595,18 @@ body {
   color: #fff;
 }
 
-.container-list-search-wrap {
-  width: 100%;
-  max-width: 320px;
+/* The filter box and the sort controls share one row, wrapping the sort under the filter only when
+   the pane is too narrow for both. */
+.container-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
   margin-bottom: 12px;
+}
+.container-list-search-wrap {
+  flex: 1 1 220px;
+  max-width: 320px;
 }
 .container-list-search {
   background: var(--panel);
@@ -721,6 +729,66 @@ table.containers th.sortable:hover {
   top: 0;
   background: var(--panel);
 }
+.audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.audit-search-wrap {
+  flex: 1 1 200px;
+}
+.audit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.audit-table-wrap {
+  overflow-x: auto;
+}
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.audit-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.audit-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+}
+.audit-ok {
+  color: var(--ok);
+}
+.audit-error-badge {
+  color: var(--danger);
+}
+.audit-pending {
+  color: var(--warn);
+}
+/* A failed action's docker/ssh stderr sits on its own full-width row under it: it is long, and
+   nowrap in a cell would have stretched the whole table to fit one message. */
+.audit-error-row td {
+  white-space: normal;
+  word-break: break-word;
+  color: var(--danger);
+  font-family: ui-monospace, monospace;
+  padding-top: 0;
+}
 .sort-arrow {
   font-size: 10px;
 }
@@ -728,7 +796,6 @@ table.containers th.sortable:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
 }
 /* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
    buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,

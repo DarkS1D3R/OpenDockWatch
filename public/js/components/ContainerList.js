@@ -121,24 +121,26 @@ export default {
   },
   template: `
     <div>
-      <div class="search-clear-wrap container-list-search-wrap">
-        <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
-        <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
-      </div>
-      <div class="container-list-sort">
-        <label class="muted small" for="container-sort">Sort by</label>
-        <select id="container-sort" :value="sort ? sort.key : ''" @change="onSortSelect($event.target.value)">
-          <option value="">Default</option>
-          <option v-for="o in sortOptions" :key="o.key" :value="o.key">{{ o.label }}</option>
-        </select>
-        <button
-          v-if="sort"
-          class="small-btn"
-          @click="flipSortDir"
-          :title="sort.dir === 'asc' ? 'Ascending - click for descending' : 'Descending - click for ascending'"
-        >
-          {{ sort.dir === 'asc' ? '▲' : '▼' }}
-        </button>
+      <div class="container-list-toolbar">
+        <div class="search-clear-wrap container-list-search-wrap">
+          <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
+          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+        </div>
+        <div class="container-list-sort">
+          <label class="muted small" for="container-sort">Sort by</label>
+          <select id="container-sort" :value="sort ? sort.key : ''" @change="onSortSelect($event.target.value)">
+            <option value="">Default</option>
+            <option v-for="o in sortOptions" :key="o.key" :value="o.key">{{ o.label }}</option>
+          </select>
+          <button
+            v-if="sort"
+            class="small-btn"
+            @click="flipSortDir"
+            :title="sort.dir === 'asc' ? 'Ascending - click for descending' : 'Descending - click for ascending'"
+          >
+            {{ sort.dir === 'asc' ? '▲' : '▼' }}
+          </button>
+        </div>
       </div>
       <p v-if="search.trim() && !filteredGroups.length" class="muted">No containers match "{{ search.trim() }}".</p>
       <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="group-block">

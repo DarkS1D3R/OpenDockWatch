@@ -4,9 +4,10 @@ import SettingsThresholds from './SettingsThresholds.js';
 import SettingsContainerRules from './SettingsContainerRules.js';
 import SettingsHosts from './SettingsHosts.js';
 import SettingsAppearance from './SettingsAppearance.js';
+import SettingsAudit from './SettingsAudit.js';
 
-// The Settings panel: a tab strip over six independent sections, each owning its own data/fetch
-// (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance - see those files). v-if, not v-show,
+// The Settings panel: a tab strip over seven independent sections, each owning its own data/fetch
+// (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance/Audit - see those files). v-if, not v-show,
 // per tab: each child is a cheap admin-only GET-config panel with no stream to preserve across a
 // switch, so remounting fresh keeps data always-current (e.g. add a host, then flip to Container
 // Rules and see it in the dropdown) at the cost of one harmless refetch per tab click - Appearance
@@ -20,6 +21,7 @@ export default {
     SettingsContainerRules,
     SettingsHosts,
     SettingsAppearance,
+    SettingsAudit,
   },
   emits: ['close', 'hosts-changed'],
   data() {
@@ -38,6 +40,7 @@ export default {
         <button :class="{active: activeTab==='container-rules'}" @click="activeTab='container-rules'">Container Rules</button>
         <button :class="{active: activeTab==='hosts'}" @click="activeTab='hosts'">Hosts</button>
         <button :class="{active: activeTab==='appearance'}" @click="activeTab='appearance'">Appearance</button>
+        <button :class="{active: activeTab==='audit'}" @click="activeTab='audit'">Audit log</button>
       </div>
       <div class="detail-body">
         <settings-general v-if="activeTab==='general'"></settings-general>
@@ -46,6 +49,7 @@ export default {
         <settings-container-rules v-if="activeTab==='container-rules'"></settings-container-rules>
         <settings-hosts v-if="activeTab==='hosts'" @hosts-changed="$emit('hosts-changed')"></settings-hosts>
         <settings-appearance v-if="activeTab==='appearance'"></settings-appearance>
+        <settings-audit v-if="activeTab==='audit'"></settings-audit>
       </div>
     </aside>
   `,
