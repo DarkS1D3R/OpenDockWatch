@@ -222,7 +222,7 @@ router.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (re
 
 // Per-container/name/compose-project alert overrides - first-match-wins ordered list, same
 // admin-only shape as the webhook/threshold/host settings above. See alerts.js's resolveContainerConfig.
-const EVENT_RULE_NAMES = new Set(['container_crashed', 'crash_loop', 'unhealthy']);
+const EVENT_RULE_NAMES = new Set(['container_crashed', 'crash_loop', 'unhealthy', 'unexpected_exit']);
 const MATCH_TYPES = new Set(['name', 'composeProject']);
 
 // Same reasoning as intParam/requireContainerId: nothing off the URL reaches sqlite unchecked.
@@ -248,7 +248,7 @@ function validateContainerRuleBody(body, hosts) {
     }
   }
   if (mutedRules !== undefined && (!Array.isArray(mutedRules) || mutedRules.some((r) => !EVENT_RULE_NAMES.has(r)))) {
-    return 'mutedRules must be an array of container_crashed/crash_loop/unhealthy';
+    return 'mutedRules must be an array of container_crashed/crash_loop/unhealthy/unexpected_exit';
   }
   return null;
 }

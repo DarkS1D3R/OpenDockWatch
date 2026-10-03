@@ -13,6 +13,7 @@ const EVENT_RULES = [
   { value: 'container_crashed', label: 'Container crashed' },
   { value: 'crash_loop', label: 'Crash loop' },
   { value: 'unhealthy', label: 'Unhealthy' },
+  { value: 'unexpected_exit', label: 'Unexpected clean exit' },
 ];
 
 function blankRule() {

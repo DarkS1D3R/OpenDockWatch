@@ -1,6 +1,9 @@
 const db = require('./db');
 const logger = require('./logger');
 const { parseByteString } = require('./docker');
+// The module object too, for getRestartPolicy - a destructured binding would be a copy taken at
+// require time, out of reach of test/alerts.test.js stubbing it afterwards.
+const docker = require('./docker');
 const hosts = require('./hosts');
 
 const COOLDOWN_MS = 10 * 60 * 1000;
@@ -10,6 +13,28 @@ const CRASH_LOOP_THRESHOLD = 3;
 // before the die event fires; this must exceed that or a container taking the full grace period
 // falls outside the lookback window from the die event back to the requested action's audit row.
 const MANUAL_STOP_GRACE_MS = 15000;
+
+// docker emits `kill` (carrying the signal) just before the `die` of anything it stopped on
+// request - docker stop/restart/kill, compose stop/down, from the CLI as much as from this app - and
+// nothing before a process that simply ended. That is the only thing that tells a clean exit that
+// was asked for from one that was not, since both arrive as `die` with exit code 0. Kept for longer
+// than a stop's 10s grace, so `docker stop -t 60` still reads as commanded.
+const KILL_MEMORY_MS = 60_000;
+const recentKills = new Map(); // "hostId:containerId" -> ts of the last kill event
+
+function noteKill(hostId, containerId, ts) {
+  for (const [key, killedAt] of recentKills) if (ts - killedAt > KILL_MEMORY_MS) recentKills.delete(key);
+  recentKills.set(`${hostId}:${containerId}`, ts);
+}
+
+function wasKilledRecently(hostId, containerId, ts) {
+  const killedAt = recentKills.get(`${hostId}:${containerId}`);
+  return killedAt !== undefined && ts - killedAt <= KILL_MEMORY_MS;
+}
+
+// Restart policies that mean "keep this running". A clean exit under `no` or `on-failure` is how a
+// finished job or migration looks, so those stay silent - alerting on them would be every one-shot.
+const KEEP_RUNNING_POLICIES = new Set(['always', 'unless-stopped']);
 
 function shouldFire(hostId, containerId, rule) {
   const last = db.getLastAlertFireTs(hostId, containerId, rule);
@@ -262,6 +287,7 @@ function retainContainers(hostId, containerIds) {
 }
 
 function forgetHost(hostId) {
+  for (const key of recentKills.keys()) if (key.startsWith(`${hostId}:`)) recentKills.delete(key);
   for (const key of breachStarts.keys()) {
     if (key.startsWith(`${hostId}:`)) {
       breachStarts.delete(key);
@@ -451,9 +477,33 @@ function fire({ hostId, containerId, containerName, rule, severity, message }) {
   notify({ id, ts, hostId, containerId, containerName, rule, severity, message });
 }
 
+// A container that exited 0 when it was meant to stay up: restart policy `always`/`unless-stopped`,
+// and nobody asked it to stop (no audit row from this app, no kill event from docker). Exported for
+// testing, since handleEvent can only fire-and-forget it.
+async function checkCleanExit(event) {
+  const { hostId, containerId, containerName, ts } = event;
+  if (db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0) return;
+  if (wasKilledRecently(hostId, containerId, ts)) return;
+  const host = hosts.getHost(hostId);
+  if (!host) return;
+  const policy = await docker.getRestartPolicy(host, containerId);
+  if (!KEEP_RUNNING_POLICIES.has(policy)) return;
+  if (mutedByRule('unexpected_exit', event)) return;
+  fire({
+    hostId,
+    containerId,
+    containerName,
+    rule: 'unexpected_exit',
+    severity: 'warning',
+    message: `Container ${containerName || containerId} exited cleanly (code 0), but its restart policy is "${policy}" so it should keep running`,
+  });
+}
+
 function handleEvent(event) {
   // composeProject isn't destructured here - mutedByRule reads it (and the ids) off `event` itself.
   const { hostId, containerId, containerName, action, ts, raw } = event;
+
+  if (action === 'kill') noteKill(hostId, containerId, ts);
 
   if (action === 'die') {
     const exitCode = raw && raw.Actor && raw.Actor.Attributes ? raw.Actor.Attributes.exitCode : undefined;
@@ -462,7 +512,13 @@ function handleEvent(event) {
     // "exited with code NaN" instead of a message that actually describes what happened.
     const parsed = exitCode !== undefined ? parseInt(exitCode, 10) : 0;
     const code = Number.isNaN(parsed) ? null : parsed;
-    if (code !== 0) {
+    if (code === 0) {
+      // Async because it has to ask the daemon for the restart policy; never throws out of here -
+      // handleEvent runs inside a stdout handler, where a rejection would be an unhandled one.
+      checkCleanExit(event).catch((err) =>
+        logger.warn('unexpected_exit.check_failed', { host: hostId, container: containerName || containerId, error: err.message })
+      );
+    } else {
       const recentManualStop = db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0;
       // mutedByRule only runs in this already-narrow, about-to-fire path - not once per
       // docker-events line - so this is at most one extra rules-table read per real crash.
@@ -630,6 +686,7 @@ function handleDiskUsage({ hostId, hostName, rows }, ctx) {
 
 module.exports = {
   handleEvent,
+  checkCleanExit,
   handleHostReachability,
   handleSample,
   handleHostSample,

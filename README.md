@@ -159,17 +159,18 @@ Recommended setup for a remote host:
 
 OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) for these rules:
 
-| Rule                | Fires when                                                                             |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `container_crashed` | a container exits with a non-zero code (not from a manual stop/restart just before it) |
-| `crash_loop`        | a container restarts 3+ times in 5 minutes, excluding manual restarts                  |
-| `unhealthy`         | a container's healthcheck reports unhealthy                                            |
-| `host_unreachable`  | a host stops responding to `docker version`                                            |
-| `container_cpu`     | a container's CPU % stays over threshold for the sustain window                        |
-| `container_mem`     | a container's mem % stays over threshold for the sustain window                        |
-| `host_cpu`          | a host's normalized CPU % (sum of container CPU / core count) stays over threshold     |
-| `host_mem`          | a host's summed container memory usage vs. total host memory stays over threshold      |
-| `docker_disk`       | `docker system df`'s total footprint exceeds a threshold — see caveat below            |
+| Rule                | Fires when                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `container_crashed` | a container exits with a non-zero code (not from a manual stop/restart just before it)   |
+| `unexpected_exit`   | a container with restart policy `always`/`unless-stopped` exits 0 without being asked to |
+| `crash_loop`        | a container restarts 3+ times in 5 minutes, excluding manual restarts                    |
+| `unhealthy`         | a container's healthcheck reports unhealthy                                              |
+| `host_unreachable`  | a host stops responding to `docker version`                                              |
+| `container_cpu`     | a container's CPU % stays over threshold for the sustain window                          |
+| `container_mem`     | a container's mem % stays over threshold for the sustain window                          |
+| `host_cpu`          | a host's normalized CPU % (sum of container CPU / core count) stays over threshold       |
+| `host_mem`          | a host's summed container memory usage vs. total host memory stays over threshold        |
+| `docker_disk`       | `docker system df`'s total footprint exceeds a threshold — see caveat below              |
 
 The five threshold-based rules (`container_cpu`/`container_mem`/`host_cpu`/`host_mem`/`docker_disk`) are opt-in and disabled by default — set `ALERT_CPU_THRESHOLD`, `ALERT_MEM_THRESHOLD`, and/or `ALERT_DISK_THRESHOLD_GB` in `.env` (or from the Settings panel, see below) to enable them. `ALERT_SUSTAIN_MINUTES` (default 5, shared between the CPU and mem rules) avoids alerting on a single spike from an image build, cron job, or JVM startup — a value has to stay over threshold continuously for that long before it fires.
 
@@ -179,7 +180,7 @@ Some caveats worth knowing:
 - Mem % is `docker stats` MemPerc, computed against a container's own memory limit. A container with no limit set reads low against host total and rarely trips `container_mem` — in practice this focuses the rule on containers that do have limits, which is where memory pressure actually OOMKills.
 - `docker_disk` is Docker's own footprint (images, containers, volumes, build cache) — Docker doesn't report host filesystem free space, so this can't be a true "disk almost full" alert. Treat it as a prune reminder.
 - Skip threshold alerts for a single container entirely with the `opendockwatch.alerts=off` label (`docker run --label opendockwatch.alerts=off ...` or the equivalent in a compose file).
-- Beyond that blanket label, admins can define per-container/name/compose-project alert rules from the Settings panel's **Container Rules** tab: an ordered list matched by container name (substring, case-insensitive) or an exact compose project, optionally scoped to one host, overriding the CPU/mem/sustain thresholds and/or muting individual event rules (`container_crashed`/`crash_loop`/`unhealthy`) for matched containers. The first matching rule wins in full — rules aren't merged together — and anything a matched rule leaves blank still inherits the global threshold above. No glob/regex matching. A muted event rule logs an `alert.muted` line instead of firing, so the Log Viewer still shows that something was suppressed and which rule did it.
+- Beyond that blanket label, admins can define per-container/name/compose-project alert rules from the Settings panel's **Container Rules** tab: an ordered list matched by container name (substring, case-insensitive) or an exact compose project, optionally scoped to one host, overriding the CPU/mem/sustain thresholds and/or muting individual event rules (`container_crashed`/`crash_loop`/`unhealthy`/`unexpected_exit`) for matched containers. The first matching rule wins in full — rules aren't merged together — and anything a matched rule leaves blank still inherits the global threshold above. No glob/regex matching. A muted event rule logs an `alert.muted` line instead of firing, so the Log Viewer still shows that something was suppressed and which rule did it.
 
 Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification on any of the rules above. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
 

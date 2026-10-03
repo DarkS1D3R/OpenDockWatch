@@ -740,6 +740,18 @@ function parseResourceLimits(hostConfig) {
   };
 }
 
+// The restart policy name (`always`, `unless-stopped`, `on-failure`, `no`), or null when it cannot
+// be read - the container is already gone (`--rm`) or the daemon is not answering. Never throws:
+// the one caller is deciding whether to raise an alert and "unknown" simply means "don't".
+async function getRestartPolicy(host, id) {
+  try {
+    const out = await run([...hostArgs(host), 'inspect', '--format', '{{.HostConfig.RestartPolicy.Name}}', id]);
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
@@ -1032,6 +1044,7 @@ module.exports = {
   containerCounts,
   getContainerInspect,
   parseResourceLimits,
+  getRestartPolicy,
   getContainerTop,
   parseTop,
   maskEnvValues,
