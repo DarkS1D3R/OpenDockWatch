@@ -90,7 +90,10 @@ const SERVER_DIR = path.join(__dirname, '..', 'server');
 const CONSOLE_CALL_RE = /\bconsole\.\w+\s*\(/g;
 
 test('logger is the only thing in server/ that writes to console', async (t) => {
-  const files = fs.readdirSync(SERVER_DIR).filter((name) => name.endsWith('.js'));
+  const files = fs
+    .readdirSync(SERVER_DIR, { recursive: true })
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => name.replaceAll(path.sep, '/'));
 
   await t.test('no server module calls console directly', () => {
     const offenders = [];

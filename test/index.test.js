@@ -73,9 +73,16 @@ const ADMIN_EXEMPT = new Map([
 test('every non-GET /api route has requireAdmin in its middleware stack', () => {
   const checked = [];
   const usedExemptions = new Set();
-  for (const layer of api.stack) {
-    if (!layer.route) continue; // skips api.use(requireAuth) and the router's own path-matching layers
-    const { path, methods, stack } = layer.route;
+  // Per-area routers are mounted on api at '/', so recursing into them keeps every route's full path.
+  const routes = [];
+  const collect = (router) => {
+    for (const layer of router.stack) {
+      if (layer.route) routes.push(layer.route);
+      else if (layer.handle && Array.isArray(layer.handle.stack)) collect(layer.handle);
+    }
+  };
+  collect(api);
+  for (const { path, methods, stack } of routes) {
     for (const method of Object.keys(methods)) {
       if (method === 'get' || method === 'head') continue;
       const label = `${method.toUpperCase()} /api${path}`;
