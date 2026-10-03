@@ -1,10 +1,12 @@
 import { apiGetHostsConfig, apiAddHost, apiUpdateHost, apiDeleteHost, apiTestHost } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
+import ConfirmButton from './ConfirmButton.js';
 
 // The Settings panel's Hosts tab. Split out of the former single SettingsPanel.js - see
 // SettingsWebhook.js for the reasoning.
 export default {
   name: 'SettingsHosts',
+  components: { ConfirmButton },
   emits: ['hosts-changed'],
   data() {
     return {
@@ -113,7 +115,7 @@ export default {
               {{ testingHostId === h.id ? 'Testing…' : 'Test connection' }}
             </button>
             <button class="small-btn" :disabled="saving" @click="startEditHost(h)">Edit</button>
-            <button class="small-btn" :disabled="saving" @click="removeHost(h.id)">Remove</button>
+            <confirm-button label="Remove" hint="Stops monitoring this host and deletes it from the config" :disabled="saving" @confirm="removeHost(h.id)"></confirm-button>
           </div>
         </template>
       </div>

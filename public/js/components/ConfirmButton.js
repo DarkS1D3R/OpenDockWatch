@@ -10,6 +10,7 @@ export default {
     // Short enough not to resize the button much - it sits in a header row that already wraps.
     confirmLabel: { type: String, default: 'Sure?' },
     hint: { type: String, default: '' },
+    disabled: { type: Boolean, default: false },
   },
   emits: ['confirm'],
   data() {
@@ -43,6 +44,7 @@ export default {
     <button
       class="small-btn confirm-btn"
       :class="{ armed }"
+      :disabled="disabled"
       :title="armed ? 'Click again to confirm, or click away to cancel' : hint"
       @click="onClick"
       @blur="disarm"
