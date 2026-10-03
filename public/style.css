@@ -692,6 +692,22 @@ table.containers th {
   color: var(--muted);
   font-weight: 600;
 }
+table.containers th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+table.containers th.sortable:hover {
+  color: var(--text);
+}
+.sort-arrow {
+  font-size: 10px;
+}
+.container-list-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
 /* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
    buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,
    so together with the fixed column the table is always over-subscribed: the fixed width is

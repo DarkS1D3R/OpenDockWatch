@@ -1,5 +1,8 @@
 import { healthColor, healthLabel, formatBytes, iconFor, badgeInnerHtml, badgeTitle, badgeIsTile } from '../format.js';
+import { SORT_KEYS, DEFAULT_SORT_DIR, sortContainers, loadSort, saveSort } from '../lib/containerSort.js';
 import MiniSpark from './MiniSpark.js';
+
+const SORT_LABELS = { name: 'Name', cpu: 'CPU', mem: 'Memory', restarts: 'Restarts (1h)' };
 
 // The List view: containers grouped by compose project, with mini sparklines and
 // start/stop/restart/Logs actions. Selection/actions/log-viewer/metrics-modal are owned by the
@@ -21,6 +24,9 @@ export default {
     return {
       collapsedGroups: {},
       search: '',
+      // { key, dir } or null for docker's own order. Applied within each group - the groups
+      // themselves stay alphabetical - and remembered per browser, see lib/containerSort.js.
+      sort: loadSort(),
     };
   },
   computed: {
@@ -28,13 +34,43 @@ export default {
     // entirely rather than rendering an empty table.
     filteredGroups() {
       const q = this.search.trim().toLowerCase();
-      if (!q) return this.groupedContainers;
-      return this.groupedContainers
-        .map(([name, items]) => [name, items.filter((c) => c.name.toLowerCase().includes(q))])
-        .filter(([, items]) => items.length);
+      const groups = q
+        ? this.groupedContainers
+            .map(([name, items]) => [name, items.filter((c) => c.name.toLowerCase().includes(q))])
+            .filter(([, items]) => items.length)
+        : this.groupedContainers;
+      if (!this.sort) return groups;
+      return groups.map(([name, items]) => [name, sortContainers(items, this.sort, this.stats)]);
+    },
+    sortOptions() {
+      return SORT_KEYS.map((key) => ({ key, label: SORT_LABELS[key] }));
     },
   },
   methods: {
+    setSort(sort) {
+      this.sort = sort;
+      saveSort(sort);
+    },
+    // The select picks a column and starts it in that column's natural direction.
+    onSortSelect(key) {
+      this.setSort(key ? { key, dir: DEFAULT_SORT_DIR[key] } : null);
+    },
+    // A header click on the active column flips its direction; on another column it switches to it.
+    sortBy(key) {
+      if (this.sort && this.sort.key === key) this.setSort({ key, dir: this.sort.dir === 'asc' ? 'desc' : 'asc' });
+      else this.setSort({ key, dir: DEFAULT_SORT_DIR[key] });
+    },
+    flipSortDir() {
+      if (this.sort) this.setSort({ key: this.sort.key, dir: this.sort.dir === 'asc' ? 'desc' : 'asc' });
+    },
+    sortArrow(key) {
+      if (!this.sort || this.sort.key !== key) return '';
+      return this.sort.dir === 'asc' ? '▲' : '▼';
+    },
+    ariaSort(key) {
+      if (!this.sort || this.sort.key !== key) return 'none';
+      return this.sort.dir === 'asc' ? 'ascending' : 'descending';
+    },
     // "Ungrouped" is the synthetic bucket for standalone containers (see app.js's
     // groupedContainers) - there is no compose project behind it to batch-act on.
     isRealGroup(name) {
@@ -89,6 +125,21 @@ export default {
         <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
         <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
       </div>
+      <div class="container-list-sort">
+        <label class="muted small" for="container-sort">Sort by</label>
+        <select id="container-sort" :value="sort ? sort.key : ''" @change="onSortSelect($event.target.value)">
+          <option value="">Default</option>
+          <option v-for="o in sortOptions" :key="o.key" :value="o.key">{{ o.label }}</option>
+        </select>
+        <button
+          v-if="sort"
+          class="small-btn"
+          @click="flipSortDir"
+          :title="sort.dir === 'asc' ? 'Ascending - click for descending' : 'Descending - click for ascending'"
+        >
+          {{ sort.dir === 'asc' ? '▲' : '▼' }}
+        </button>
+      </div>
       <p v-if="search.trim() && !filteredGroups.length" class="muted">No containers match "{{ search.trim() }}".</p>
       <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="group-block">
         <div class="group-header" @click="toggleGroup(groupName)">
@@ -103,11 +154,11 @@ export default {
         <table v-show="!collapsedGroups[groupName]" class="containers">
           <thead>
             <tr>
-              <th>Name</th>
+              <th class="sortable" :aria-sort="ariaSort('name')" @click="sortBy('name')" title="Sort by name">Name <span class="sort-arrow">{{ sortArrow('name') }}</span></th>
               <th>Image</th>
               <th>Status</th>
-              <th>CPU</th>
-              <th>Memory</th>
+              <th class="sortable" :aria-sort="ariaSort('cpu')" @click="sortBy('cpu')" title="Sort by CPU">CPU <span class="sort-arrow">{{ sortArrow('cpu') }}</span></th>
+              <th class="sortable" :aria-sort="ariaSort('mem')" @click="sortBy('mem')" title="Sort by memory used">Memory <span class="sort-arrow">{{ sortArrow('mem') }}</span></th>
               <th>Ports</th>
               <th>Actions</th>
             </tr>
