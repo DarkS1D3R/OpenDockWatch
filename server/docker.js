@@ -122,13 +122,13 @@ function dockerCommandError(err, args, timeoutMs, stderr) {
   return err;
 }
 
-function spawnDocker(args, timeoutMs) {
+function spawnDocker(args, timeoutMs, withStderr = false) {
   return new Promise((resolve, reject) => {
     let killTimer = null;
-    const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 25 * 1024 * 1024 }, (err, stdout, stderr) => {
       clearTimeout(killTimer);
       if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr));
-      resolve(stdout);
+      resolve(withStderr ? { stdout, stderr } : stdout);
     });
     killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -136,10 +136,10 @@ function spawnDocker(args, timeoutMs) {
   });
 }
 
-async function run(args, timeoutMs = CMD_TIMEOUT_MS) {
+async function run(args, timeoutMs = CMD_TIMEOUT_MS, withStderr = false) {
   await acquire();
   try {
-    return await spawnDocker(args, timeoutMs);
+    return await spawnDocker(args, timeoutMs, withStderr);
   } finally {
     release();
   }
@@ -298,9 +298,15 @@ async function listContainers(host) {
         composeProject: labels['com.docker.compose.project'] || null,
         composeService: labels['com.docker.compose.service'] || null,
         alertsDisabled: labels['opendockwatch.alerts'] === 'off',
-        iconOverride: labels['opendockwatch.icon'] || null,
+        iconOverride: iconOverrideFromLabel(labels['opendockwatch.icon']),
       };
     });
+}
+
+// Logo slugs are lowercase, and a label is typed by hand: `Redis` or ` redis ` should not be
+// silently ignored for a difference the user can't see the reason for.
+function iconOverrideFromLabel(value) {
+  return (value || '').trim().toLowerCase() || null;
 }
 
 // Env var *names* that identify a container's runtime when its image name says nothing (a
@@ -345,13 +351,23 @@ function parseIconHints(raw) {
 // cache key and a create/destroy refetches. Called by metricsCollector off the poll's critical
 // path; routes read it synchronously through iconHintFor, so no request ever waits on it.
 const iconHintsCache = new Map(); // hostId -> { signature, hints: Map(shortId -> slug) }
+const iconHintsInFlight = new Set(); // hostIds with an inspect still running
 
-async function refreshIconHints(host, containers) {
+// One inspect per host at a time: the caller doesn't await, so an inspect slower than the poll
+// interval would otherwise be re-spawned every poll, and an older one could land last and
+// overwrite a newer set's hints. A skipped set is picked up by the next poll. `exec` is for tests.
+async function refreshIconHints(host, containers, exec = run) {
   const ids = containers.map((c) => c.id).sort();
   const signature = ids.join(',');
   if (!ids.length || iconHintsCache.get(host.id)?.signature === signature) return;
-  const raw = await run([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids]);
-  iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
+  if (iconHintsInFlight.has(host.id)) return;
+  iconHintsInFlight.add(host.id);
+  try {
+    const raw = await exec([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids]);
+    iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
+  } finally {
+    iconHintsInFlight.delete(host.id);
+  }
 }
 
 function iconHintFor(hostId, containerId) {
@@ -708,10 +724,42 @@ async function getTopology(host, snapshot) {
 // `docker inspect` is the one place env vars, mounts, labels, restart policy, and created time
 // live - none of it comes back from `docker ps`/`docker stats`. Fetched on demand (container
 // selection), not on the poll cycle, since unlike CPU/mem it can't change between polls.
+// HostConfig reports "no limit" as 0 (or -1 for pids, or null on older daemons), which is a
+// different fact from a limit of zero - so each comes out as null rather than a number to misread.
+// CPU has two spellings: --cpus lands in NanoCpus, the older --cpu-quota/--cpu-period pair in the
+// other two. Pure and exported for testing, like the other inspect parsing.
+// A quota set without --cpu-period stores a period of 0, meaning the kernel's 100ms default.
+const DEFAULT_CPU_PERIOD_US = 100_000;
+
+function parseResourceLimits(hostConfig) {
+  const hc = hostConfig || {};
+  const positive = (n) => (typeof n === 'number' && n > 0 ? n : null);
+  let cpuLimit = positive(hc.NanoCpus) ? hc.NanoCpus / 1e9 : null;
+  if (cpuLimit === null && positive(hc.CpuQuota)) cpuLimit = hc.CpuQuota / (positive(hc.CpuPeriod) || DEFAULT_CPU_PERIOD_US);
+  return {
+    memoryLimitBytes: positive(hc.Memory),
+    cpuLimit,
+    pidsLimit: positive(hc.PidsLimit),
+  };
+}
+
+// The restart policy name (`always`, `unless-stopped`, `on-failure`, `no`), or null when it cannot
+// be read - the container is already gone (`--rm`) or the daemon is not answering. Never throws:
+// the one caller is deciding whether to raise an alert and "unknown" simply means "don't".
+async function getRestartPolicy(host, id) {
+  try {
+    const out = await run([...hostArgs(host), 'inspect', '--format', '{{.HostConfig.RestartPolicy.Name}}', id]);
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
   return {
+    limits: parseResourceLimits(raw.HostConfig),
     createdAt: raw.Created,
     restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
     restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
@@ -724,6 +772,43 @@ async function getContainerInspect(host, id) {
       rw: m.RW,
     })),
   };
+}
+
+// The most processes and the longest command line one `docker top` response carries - a container
+// forking hundreds of workers, or one with an enormous argv, should not make the response unbounded.
+const TOP_MAX_ROWS = 500;
+const TOP_MAX_CELL = 1000;
+
+// `docker top` prints a header then one whitespace-aligned row per process, and the last column
+// (CMD) is the only one that may itself contain spaces - so a row is split into the header's column
+// count minus one, with whatever remains as the last cell. Pure and exported for testing.
+function parseTop(stdout) {
+  const lines = String(stdout || '')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length);
+  if (!lines.length) return { columns: [], rows: [], truncated: false };
+  const columns = lines[0].trim().split(/\s+/);
+  const rows = [];
+  for (const line of lines.slice(1, TOP_MAX_ROWS + 1)) {
+    const cells = [];
+    let rest = line.trim();
+    for (let i = 0; i < columns.length - 1; i++) {
+      const m = /^(\S+)\s*/.exec(rest);
+      if (!m) break;
+      cells.push(m[1]);
+      rest = rest.slice(m[0].length);
+    }
+    cells.push(rest);
+    rows.push(cells.map((c) => (c.length > TOP_MAX_CELL ? c.slice(0, TOP_MAX_CELL) + '…' : c)));
+  }
+  return { columns, rows, truncated: lines.length - 1 > TOP_MAX_ROWS };
+}
+
+// The processes in one container, from the daemon's own `docker top`. Only for a running container
+// - the CLI refuses otherwise, and that refusal is passed through for the route to recognise.
+async function getContainerTop(host, id) {
+  return parseTop(await run([...hostArgs(host), 'top', id]));
 }
 
 // Config.Env entries are "KEY=value" and routinely hold DB passwords and API keys. Masks the
@@ -759,6 +844,161 @@ function streamLogs(host, id, { tail = 200 } = {}) {
 // Same as streamLogs but without -f, for a one-shot download instead of a live tail.
 function downloadLogs(host, id, { tail = 1000 } = {}) {
   return spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--tail', String(tail), id]);
+}
+
+// `docker logs --timestamps` prefixes every line with a fixed-width RFC3339 UTC stamp, so lines
+// from the two streams sort correctly as plain strings.
+const LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) /;
+
+// Keeps only the last `cap` lines pushed into it, in order. A ring rather than push/shift, since
+// getLogsBefore pushes a whole log through it. `dropped` says older lines fell off the front.
+function createTailBuffer(cap) {
+  const ring = new Array(cap);
+  let count = 0;
+  return {
+    push(line) {
+      ring[count % cap] = line;
+      count++;
+    },
+    lines() {
+      if (count <= cap) return ring.slice(0, count);
+      const head = count % cap;
+      return [...ring.slice(head), ...ring.slice(0, head)];
+    },
+    get dropped() {
+      return count > cap;
+    },
+  };
+}
+
+// Pure half of getLogsBefore: both streams' tails merged into one timeline by stamp, the inclusive
+// cursor line dropped, and the newest `limit` kept. There is more history when a stream's buffer
+// dropped older lines, or the merge had more than a page to choose from.
+function mergeLogsBefore(outLines, errLines, before, limit, olderDropped = false) {
+  const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+  const kept = [...outLines, ...errLines].filter((l) => {
+    const ts = stamp(l);
+    return !ts || ts < before;
+  });
+  if (errLines.length) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { lines: kept.slice(-limit), more: olderDropped || kept.length > limit };
+}
+
+// Reading a large json-file log up to the cursor takes longer than an ordinary call's 10s.
+const LOG_HISTORY_TIMEOUT_MS = 30_000;
+
+// One page of history older than `before`. Not `--tail`: json-file applies it to the whole log
+// before --until, so an older cursor came back empty. Reads the range, keeping each stream's last
+// `limit + 1` lines (server/CLAUDE.md). Holds a run() slot while it reads.
+async function getLogsBefore(host, id, { before, limit }) {
+  await acquire();
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--until', before, id]);
+      const bufs = { out: createTailBuffer(limit + 1), err: createTailBuffer(limit + 1) };
+      const partial = { out: '', err: '' };
+      let stderrText = '';
+      let settled = false;
+      const timer = setTimeout(
+        () => finish(Object.assign(new Error('timed out reading log history'), { timedOut: true })),
+        LOG_HISTORY_TIMEOUT_MS
+      );
+
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        if (err) return reject(err);
+        resolve(mergeLogsBefore(bufs.out.lines(), bufs.err.lines(), before, limit, bufs.out.dropped || bufs.err.dropped));
+      }
+
+      const take = (key) => (chunk) => {
+        // stderr is also the container's own stderr, so only its tail is kept for an error message.
+        if (key === 'err') stderrText = (stderrText + chunk).slice(-4096);
+        const parts = (partial[key] + chunk).split('\n');
+        partial[key] = parts.pop();
+        for (const part of parts) if (part.length) bufs[key].push(part);
+      };
+      child.stdout.setEncoding('utf8').on('data', take('out'));
+      child.stderr.setEncoding('utf8').on('data', take('err'));
+      child.on('error', (err) => finish(err));
+      child.on('close', (code) => {
+        for (const key of ['out', 'err']) if (partial[key].length) bufs[key].push(partial[key]);
+        if (code) return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+        finish();
+      });
+    });
+  } finally {
+    release();
+  }
+}
+
+// Pure half of getLogsAfter: each stream is already in order, so the first `limit` lines overall
+// are among the first `limit` of each. Merged by stamp, with --since's inclusive cursor dropped.
+function mergeLogsAfter(outLines, errLines, after, limit) {
+  const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+  const kept = [...outLines, ...errLines].filter((l) => {
+    const ts = stamp(l);
+    return !ts || ts > after;
+  });
+  if (errLines.length) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { lines: kept.slice(0, limit), more: kept.length >= limit };
+}
+
+// One page of history newer than `after`. `docker logs` has no way to take the *first* N lines of a
+// range, so this reads the stream and kills it once both ends have `limit` (+1 for the inclusive
+// cursor) lines - memory stays bounded however much log lies ahead.
+function getLogsAfter(host, id, { after, limit }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--since', after, id]);
+    const cap = limit + 1;
+    const lines = { out: [], err: [] };
+    const partial = { out: '', err: '' };
+    let stderrText = '';
+    let settled = false;
+    let stoppedByUs = false;
+    let graceTimer = null;
+    const stop = () => {
+      stoppedByUs = true;
+      finish();
+    };
+    const timer = setTimeout(() => finish(Object.assign(new Error('timed out reading log history'), { timedOut: true })), CMD_TIMEOUT_MS);
+
+    function finish(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (err) return reject(err);
+      resolve(mergeLogsAfter(lines.out, lines.err, after, limit));
+    }
+
+    const take = (key) => (chunk) => {
+      if (key === 'err') stderrText += chunk;
+      partial[key] += chunk;
+      const parts = partial[key].split('\n');
+      partial[key] = parts.pop();
+      for (const part of parts) if (part.length && lines[key].length < cap) lines[key].push(part);
+      if (lines[key].length < cap) return;
+      // One end is full; the other gets a short grace to deliver anything that sorts earlier,
+      // since a quiet stream (usually stderr) would otherwise never reach `cap` at all.
+      if (lines.out.length >= cap && lines.err.length >= cap) return stop();
+      if (!graceTimer) graceTimer = setTimeout(stop, 300);
+    };
+    child.stdout.setEncoding('utf8').on('data', take('out'));
+    child.stderr.setEncoding('utf8').on('data', take('err'));
+    child.on('error', (err) => finish(err));
+    child.on('close', (code) => {
+      for (const key of ['out', 'err']) if (partial[key].length && lines[key].length < cap) lines[key].push(partial[key]);
+      // stderr doubles as the container's own stderr, so it only means "the command failed" when
+      // the exit is non-zero and we were not the one who ended it.
+      if (code && !stoppedByUs)
+        return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+      finish();
+    });
+  });
 }
 
 function streamEvents(host) {
@@ -844,6 +1084,12 @@ module.exports = {
   containerAction,
   streamLogs,
   downloadLogs,
+  getLogsBefore,
+  getLogsAfter,
+  createTailBuffer,
+  mergeLogsBefore,
+  mergeLogsAfter,
+  LOG_TS_RE,
   streamEvents,
   streamStats,
   getStats,
@@ -852,6 +1098,7 @@ module.exports = {
   getTopology,
   getTopologyMeta,
   refreshIconHints,
+  iconOverrideFromLabel,
   iconHintFor,
   parseIconHints,
   runtimeHintFromEnv,
@@ -862,6 +1109,10 @@ module.exports = {
   cachedHostInfo,
   containerCounts,
   getContainerInspect,
+  parseResourceLimits,
+  getRestartPolicy,
+  getContainerTop,
+  parseTop,
   maskEnvValues,
   parseByteString,
   parseMemUsedBytes,

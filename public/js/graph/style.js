@@ -210,7 +210,7 @@ export const CY_STYLE = [
     style: {
       // A long compose project name overflowed this pill exactly as long network names once
       // overflowed node.net - wrap + height: 'label' grows the box instead (see wrapPillLabel).
-      // padding 10px keeps a one-line pill at the 30px height this used to be pinned to.
+      // Padding adds to both axes: 120 + 2x10 keeps the 140px box, and a one-line pill at ~30px tall.
       'background-color': '#1d2027',
       'border-width': 1,
       'border-color': '#2d5fa8',
@@ -222,7 +222,7 @@ export const CY_STYLE = [
       'text-wrap': 'wrap',
       'text-max-width': 105,
       'text-margin-x': 8,
-      width: 140,
+      width: 120,
       height: 'label',
       padding: '10px',
       shape: 'round-rectangle',

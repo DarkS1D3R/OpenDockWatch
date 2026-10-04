@@ -7,11 +7,13 @@ import {
   apiGetHostsConfig,
 } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
+import ConfirmButton from './ConfirmButton.js';
 
 const EVENT_RULES = [
   { value: 'container_crashed', label: 'Container crashed' },
   { value: 'crash_loop', label: 'Crash loop' },
   { value: 'unhealthy', label: 'Unhealthy' },
+  { value: 'unexpected_exit', label: 'Unexpected clean exit' },
 ];
 
 function blankRule() {
@@ -23,6 +25,7 @@ function blankRule() {
 // first-match-wins ordered-list semantics this list is editing.
 export default {
   name: 'SettingsContainerRules',
+  components: { ConfirmButton },
   data() {
     return {
       rules: [],
@@ -174,7 +177,7 @@ export default {
             <button class="small-btn" :disabled="saving || i === 0" @click="moveRule(i, -1)" title="Move up">▲</button>
             <button class="small-btn" :disabled="saving || i === rules.length - 1" @click="moveRule(i, 1)" title="Move down">▼</button>
             <button class="small-btn" :disabled="saving" @click="startEdit(r)">Edit</button>
-            <button class="small-btn" :disabled="saving" @click="removeRule(r.id)">Remove</button>
+            <confirm-button label="Remove" hint="Deletes this rule - matching containers fall back to the global thresholds" :disabled="saving" @confirm="removeRule(r.id)"></confirm-button>
           </div>
         </template>
       </div>

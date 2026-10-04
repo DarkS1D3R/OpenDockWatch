@@ -101,8 +101,19 @@ export async function apiGetContainerInspect(hostId, id) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/inspect`));
 }
 
+export async function apiGetContainerTop(hostId, id) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/top`));
+}
+
 export function logsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs?tail=${tail}`;
+}
+
+// `cursor` is `{ before }` or `{ after }`: a docker log timestamp, and the side of it to page towards.
+export async function apiGetLogHistory(hostId, id, cursor, limit) {
+  const [key, value] = Object.entries(cursor)[0];
+  const qs = `${key}=${encodeURIComponent(value)}&limit=${limit}`;
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/logs/history?${qs}`, { timeoutMs: 40_000 }));
 }
 
 export function downloadLogsUrl(hostId, id, tail) {
@@ -219,6 +230,13 @@ export async function apiSaveThresholdConfig(values) {
 
 export async function apiClearThresholdConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/thresholds', { method: 'DELETE' }));
+}
+
+// hostId '' means every host. The route clamps `limit` itself, so this just passes it along.
+export async function apiGetAuditLog(hostId, limit) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (hostId) qs.set('hostId', hostId);
+  return jsonOrThrow(await apiFetch(`/api/audit?${qs}`));
 }
 
 export async function apiGetHostsConfig() {

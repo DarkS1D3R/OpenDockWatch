@@ -73,9 +73,16 @@ const ADMIN_EXEMPT = new Map([
 test('every non-GET /api route has requireAdmin in its middleware stack', () => {
   const checked = [];
   const usedExemptions = new Set();
-  for (const layer of api.stack) {
-    if (!layer.route) continue; // skips api.use(requireAuth) and the router's own path-matching layers
-    const { path, methods, stack } = layer.route;
+  // Per-area routers are mounted on api at '/', so recursing into them keeps every route's full path.
+  const routes = [];
+  const collect = (router) => {
+    for (const layer of router.stack) {
+      if (layer.route) routes.push(layer.route);
+      else if (layer.handle && Array.isArray(layer.handle.stack)) collect(layer.handle);
+    }
+  };
+  collect(api);
+  for (const { path, methods, stack } of routes) {
     for (const method of Object.keys(methods)) {
       if (method === 'get' || method === 'head') continue;
       const label = `${method.toUpperCase()} /api${path}`;
@@ -435,6 +442,103 @@ test('container action validation', async (t) => {
       const res = await admin.post(`/api/hosts/${FAKE_HOST_ID}/containers/${CONTAINER}/${action}`);
       assert.equal(res.status, 404, `${action} was rejected by the action gate instead of reaching requireHost`);
     }
+  });
+});
+
+test('GET /hosts/:hostId/containers/:id/logs/history', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const BEFORE = '2026-01-01T00:00:10.000000000Z';
+
+  await t.test('400s without a docker-format cursor', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const base = `/api/hosts/${hostId}/containers/abcabcabcabc/logs/history`;
+    assert.equal((await admin.get(base)).status, 400);
+    assert.equal((await admin.get(`${base}?before=yesterday`)).status, 400);
+    assert.equal((await admin.get(`${base}?before=--follow`)).status, 400, 'a flag-shaped value must never reach the CLI');
+  });
+
+  await t.test('404s for an unknown host', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${FAKE_HOST_ID}/containers/abc/logs/history?before=${BEFORE}`);
+    assert.equal(res.status, 404);
+  });
+
+  await t.test('passes the cursor and a clamped limit to docker and returns its page', async (t2) => {
+    const calls = [];
+    t2.mock.method(docker, 'getLogsBefore', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      return { lines: ['x'], more: true };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${hostId}/containers/abc/logs/history?before=${BEFORE}&limit=99999999`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { lines: ['x'], more: true });
+    assert.deepEqual(calls, [{ id: 'abc', before: BEFORE, limit: 20000 }]);
+  });
+
+  await t.test('routes `after` to the forward reader', async (t2) => {
+    const calls = [];
+    t2.mock.method(docker, 'getLogsAfter', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      return { lines: ['y'], more: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(`/api/hosts/${hostId}/containers/abc/logs/history?after=${BEFORE}&limit=50`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { lines: ['y'], more: false });
+    assert.deepEqual(calls, [{ id: 'abc', after: BEFORE, limit: 50 }]);
+  });
+
+  await t.test('400s unless exactly one of before and after is given', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const base = `/api/hosts/${hostId}/containers/abc/logs/history`;
+    assert.equal((await admin.get(`${base}?before=${BEFORE}&after=${BEFORE}`)).status, 400);
+    assert.equal((await admin.get(`${base}?limit=5`)).status, 400);
+  });
+});
+
+// The process list carries full command lines, which is where credentials end up - so, like
+// /audit, it is admin-only. It is a GET, so the structural walk at the top cannot catch a missing
+// gate; this viewer-403/admin-200 pair is the whole of its protection.
+test('GET /hosts/:hostId/containers/:id/top', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const url = `/api/hosts/${hostId}/containers/abcabcabcabc/top`;
+
+  await t.test('is closed to a viewer', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get(url)).status, 403);
+  });
+
+  await t.test('404s for an unknown host and 400s for a flag-shaped container id', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(`/api/hosts/${FAKE_HOST_ID}/containers/abc/top`)).status, 404);
+    assert.equal((await admin.get(`/api/hosts/${hostId}/containers/--all/top`)).status, 400);
+  });
+
+  await t.test('returns the parsed process table to an admin', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => ({ columns: ['PID', 'CMD'], rows: [['1', 'nginx']], truncated: false }));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.rows, [['1', 'nginx']]);
+  });
+
+  await t.test('answers 409, not 502, for a container that is not running', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => {
+      throw Object.assign(new Error('failed'), { stderr: 'Error response from daemon: container abc is not running' });
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, 'container is not running');
+  });
+
+  await t.test('passes any other docker failure through as a 502', async (t2) => {
+    t2.mock.method(docker, 'getContainerTop', async () => {
+      throw Object.assign(new Error('failed'), { stderr: 'permission denied' });
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(url)).status, 502);
   });
 });
 

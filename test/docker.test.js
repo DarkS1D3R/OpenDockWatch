@@ -13,12 +13,20 @@ const {
   splitCombinedTopologyPs,
   runtimeHintFromEnv,
   parseIconHints,
+  refreshIconHints,
+  iconHintFor,
+  iconOverrideFromLabel,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
   maskEnvValues,
   containerCounts,
   dockerCommandError,
+  createTailBuffer,
+  mergeLogsBefore,
+  mergeLogsAfter,
+  parseResourceLimits,
+  parseTop,
   DISK_USAGE_TIMEOUT_MS,
 } = require('../server/docker');
 
@@ -630,6 +638,49 @@ test('runtimeHintFromEnv', async (t) => {
   });
 });
 
+test('iconOverrideFromLabel', () => {
+  assert.equal(iconOverrideFromLabel('redis'), 'redis');
+  assert.equal(iconOverrideFromLabel(' Redis '), 'redis');
+  for (const absent of [undefined, null, '', '   ']) assert.equal(iconOverrideFromLabel(absent), null);
+});
+
+// metricsCollector fires this every poll without awaiting it, so overlap is the normal case on a slow host.
+test('refreshIconHints', async (t) => {
+  const line = (ch, env) => `${ch.repeat(64)}\t${JSON.stringify(env)}`;
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => ((resolve = res), (reject = rej)));
+    return { promise, resolve, reject };
+  };
+
+  await t.test('a second call while an inspect is running does not spawn another', async () => {
+    const host = { id: 'hint-overlap' };
+    const containers = [{ id: 'a'.repeat(12) }];
+    const pending = deferred();
+    let calls = 0;
+    const exec = () => (calls++, pending.promise);
+    const first = refreshIconHints(host, containers, exec);
+    await refreshIconHints(host, containers, exec);
+    await refreshIconHints(host, [{ id: 'b'.repeat(12) }], exec);
+    assert.equal(calls, 1);
+    pending.resolve(line('a', ['SPRING_PROFILES_ACTIVE=dev']));
+    await first;
+    assert.equal(iconHintFor(host.id, 'a'.repeat(12)), 'springboot');
+    // Cached for that id set now, so nothing further is spawned for it.
+    await refreshIconHints(host, containers, exec);
+    assert.equal(calls, 1);
+  });
+
+  await t.test('a failed inspect releases the guard so the next poll retries', async () => {
+    const host = { id: 'hint-retry' };
+    const containers = [{ id: 'c'.repeat(12) }];
+    await assert.rejects(refreshIconHints(host, containers, () => Promise.reject(new Error('No such container'))));
+    assert.equal(iconHintFor(host.id, 'c'.repeat(12)), null);
+    await refreshIconHints(host, containers, () => Promise.resolve(line('c', ['NODE_VERSION=24'])));
+    assert.equal(iconHintFor(host.id, 'c'.repeat(12)), 'nodedotjs');
+  });
+});
+
 test('parseIconHints', async (t) => {
   await t.test('keys hints by 12-char short id and skips containers with none', () => {
     const raw = [
@@ -647,5 +698,201 @@ test('parseIconHints', async (t) => {
     const hints = parseIconHints(`${'a'.repeat(12)}\tnot json\n${'d'.repeat(12)}\t["NODE_VERSION=24"]`);
     assert.equal(hints.get('d'.repeat(12)), 'nodedotjs');
     assert.equal(hints.size, 1);
+  });
+});
+
+test('createTailBuffer', async (t) => {
+  const fill = (cap, n) => {
+    const buf = createTailBuffer(cap);
+    for (let i = 1; i <= n; i++) buf.push(`l${i}`);
+    return buf;
+  };
+
+  await t.test('holds everything, in order, while under its cap', () => {
+    const buf = fill(5, 3);
+    assert.deepEqual(buf.lines(), ['l1', 'l2', 'l3']);
+    assert.equal(buf.dropped, false);
+  });
+
+  await t.test('exactly at its cap has dropped nothing', () => {
+    const buf = fill(3, 3);
+    assert.deepEqual(buf.lines(), ['l1', 'l2', 'l3']);
+    assert.equal(buf.dropped, false);
+  });
+
+  await t.test('keeps the newest lines in order once it wraps, and says older ones were dropped', () => {
+    const buf = fill(3, 8);
+    assert.deepEqual(buf.lines(), ['l6', 'l7', 'l8']);
+    assert.equal(buf.dropped, true);
+  });
+});
+
+test('mergeLogsBefore', async (t) => {
+  const BEFORE = '2026-01-01T00:00:10.000000000Z';
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+
+  await t.test('drops the line at the cursor itself, since --until is inclusive', () => {
+    const { lines } = mergeLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')], [], BEFORE, 100);
+    assert.deepEqual(lines, [line(8, 'a'), line(9, 'b')]);
+  });
+
+  await t.test('returns the newest `limit` lines before the cursor, not the oldest', () => {
+    const { lines, more } = mergeLogsBefore([line(5, 'a'), line(6, 'b'), line(7, 'c'), line(8, 'd')], [], BEFORE, 2);
+    assert.deepEqual(lines, [line(7, 'c'), line(8, 'd')]);
+    assert.equal(more, true);
+  });
+
+  await t.test('a full buffer that only lost the cursor line is the start of the log, not more', () => {
+    // limit 2, buffer cap 3: the cursor line filled the third slot and nothing was dropped.
+    const { lines, more } = mergeLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')], [], BEFORE, 2, false);
+    assert.deepEqual(lines, [line(8, 'a'), line(9, 'b')]);
+    assert.equal(more, false);
+  });
+
+  await t.test('reports more when a stream dropped older lines, even if the page is short', () => {
+    // The kept lines all sit at the cursor; the dropped ones before them are still history.
+    const { lines, more } = mergeLogsBefore([line(10, 'a'), line(10, 'b')], [], BEFORE, 1, true);
+    assert.deepEqual(lines, []);
+    assert.equal(more, true);
+  });
+
+  await t.test('merges stderr back into the timeline instead of appending it', () => {
+    const { lines } = mergeLogsBefore([line(1, 'out1'), line(5, 'out2')], [line(3, 'err1')], BEFORE, 100);
+    assert.deepEqual(lines, [line(1, 'out1'), line(3, 'err1'), line(5, 'out2')]);
+  });
+
+  await t.test('keeps equal-timestamp lines in their original order', () => {
+    const { lines } = mergeLogsBefore([line(2, 'first'), line(2, 'second')], [], BEFORE, 100);
+    assert.deepEqual(lines, [line(2, 'first'), line(2, 'second')]);
+  });
+
+  await t.test('returns nothing for empty output', () => {
+    assert.deepEqual(mergeLogsBefore([], [], BEFORE, 100), { lines: [], more: false });
+  });
+
+  await t.test('pages through a log longer than one page, end to end through the buffers', () => {
+    // 25 lines, pages of 10: the old --tail approach returned nothing for any cursor older than
+    // the newest 10. Each page here must be the 10 lines right before its cursor.
+    const all = Array.from({ length: 25 }, (_, i) => `2026-01-01T00:00:${String(i + 10).padStart(2, '0')}.000000000Z line${i}`);
+    const stampOf = (l) => l.slice(0, 30);
+    const pageBefore = (cursor) => {
+      const buf = createTailBuffer(11);
+      for (const l of all) if (stampOf(l) <= cursor) buf.push(l); // docker's inclusive --until
+      return mergeLogsBefore(buf.lines(), [], cursor, 10, buf.dropped);
+    };
+    const first = pageBefore(stampOf(all[24]));
+    assert.deepEqual(first.lines, all.slice(14, 24));
+    assert.equal(first.more, true);
+    const second = pageBefore(stampOf(first.lines[0]));
+    assert.deepEqual(second.lines, all.slice(4, 14));
+    assert.equal(second.more, true);
+    const last = pageBefore(stampOf(second.lines[0]));
+    assert.deepEqual(last.lines, all.slice(0, 4));
+    assert.equal(last.more, false);
+  });
+});
+
+test('mergeLogsAfter', async (t) => {
+  const AFTER = '2026-01-01T00:00:10.000000000Z';
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+
+  await t.test('drops the line at the cursor itself, since --since is inclusive', () => {
+    const { lines } = mergeLogsAfter([line(10, 'a'), line(11, 'b')], [], AFTER, 100);
+    assert.deepEqual(lines, [line(11, 'b')]);
+  });
+
+  await t.test('merges both streams by stamp and keeps only the first page', () => {
+    const { lines, more } = mergeLogsAfter([line(11, 'o1'), line(13, 'o2')], [line(12, 'e1'), line(14, 'e2')], AFTER, 3);
+    assert.deepEqual(lines, [line(11, 'o1'), line(12, 'e1'), line(13, 'o2')]);
+    assert.equal(more, true);
+  });
+
+  await t.test('says there is no more when the page is not full', () => {
+    assert.equal(mergeLogsAfter([line(11, 'a')], [], AFTER, 5).more, false);
+  });
+});
+
+test('parseResourceLimits', async (t) => {
+  await t.test('reads memory, --cpus and pids when set', () => {
+    assert.deepEqual(parseResourceLimits({ Memory: 536870912, NanoCpus: 1500000000, PidsLimit: 200 }), {
+      memoryLimitBytes: 536870912,
+      cpuLimit: 1.5,
+      pidsLimit: 200,
+    });
+  });
+
+  await t.test('reports "no limit" as null, never as 0 or -1', () => {
+    assert.deepEqual(parseResourceLimits({ Memory: 0, NanoCpus: 0, PidsLimit: -1 }), {
+      memoryLimitBytes: null,
+      cpuLimit: null,
+      pidsLimit: null,
+    });
+    assert.deepEqual(parseResourceLimits({ PidsLimit: null }), { memoryLimitBytes: null, cpuLimit: null, pidsLimit: null });
+  });
+
+  await t.test('derives the CPU limit from the older quota/period pair', () => {
+    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 0.5);
+  });
+
+  await t.test('prefers --cpus over the quota pair', () => {
+    assert.equal(parseResourceLimits({ NanoCpus: 2e9, CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 2);
+  });
+
+  await t.test("reads a quota set without --cpu-period against the kernel's 100ms default", () => {
+    // `docker run --cpu-quota 50000` stores CpuPeriod 0 (or omits it); the container is capped at 0.5.
+    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 0 }).cpuLimit, 0.5);
+    assert.equal(parseResourceLimits({ CpuQuota: 200000 }).cpuLimit, 2);
+  });
+
+  await t.test('treats an unset quota (0 or -1) as no limit whatever the period', () => {
+    assert.equal(parseResourceLimits({ CpuQuota: 0, CpuPeriod: 100000 }).cpuLimit, null);
+    assert.equal(parseResourceLimits({ CpuQuota: -1, CpuPeriod: 0 }).cpuLimit, null);
+  });
+
+  await t.test('copes with a missing HostConfig', () => {
+    assert.deepEqual(parseResourceLimits(undefined), { memoryLimitBytes: null, cpuLimit: null, pidsLimit: null });
+  });
+});
+
+test('parseTop', async (t) => {
+  const OUT = [
+    'UID                 PID                 PPID                C                   STIME               TTY                 TIME                CMD',
+    'root                1234                1200                0                   10:00               ?                   00:00:01            nginx: master process /usr/sbin/nginx -g daemon off;',
+    'www-data            1260                1234                2                   10:00               ?                   00:00:09            nginx: worker process',
+  ].join('\n');
+
+  await t.test('splits a row into the header columns, keeping the spaced command whole', () => {
+    const top = parseTop(OUT);
+    assert.deepEqual(top.columns, ['UID', 'PID', 'PPID', 'C', 'STIME', 'TTY', 'TIME', 'CMD']);
+    assert.deepEqual(top.rows[0], [
+      'root',
+      '1234',
+      '1200',
+      '0',
+      '10:00',
+      '?',
+      '00:00:01',
+      'nginx: master process /usr/sbin/nginx -g daemon off;',
+    ]);
+    assert.equal(top.rows[1][7], 'nginx: worker process');
+    assert.equal(top.truncated, false);
+  });
+
+  await t.test('returns nothing for empty output, and a header alone is no processes', () => {
+    assert.deepEqual(parseTop(''), { columns: [], rows: [], truncated: false });
+    assert.deepEqual(parseTop('UID PID CMD\n').rows, []);
+  });
+
+  await t.test('caps the rows and says so', () => {
+    const many = ['PID CMD', ...Array.from({ length: 600 }, (_, i) => `${i} proc${i}`)].join('\n');
+    const top = parseTop(many);
+    assert.equal(top.rows.length, 500);
+    assert.equal(top.truncated, true);
+  });
+
+  await t.test('caps an enormous command line', () => {
+    const top = parseTop('PID CMD\n1 ' + 'x'.repeat(5000));
+    assert.ok(top.rows[0][1].length <= 1001);
+    assert.ok(top.rows[0][1].endsWith('…'));
   });
 });

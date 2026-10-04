@@ -17,8 +17,11 @@ export default {
     hostId: { type: String, required: true },
     alerts: { type: Array, default: () => [] },
     isAdmin: { type: Boolean, default: false },
+    // Ids of the containers that exist on this host right now - an alert for one that has since been
+    // removed or recreated has no log left to jump to.
+    containerIds: { type: Array, default: () => [] },
   },
-  emits: ['ack', 'ack-all', 'clear-alerts'],
+  emits: ['ack', 'ack-all', 'clear-alerts', 'open-logs'],
   data() {
     return {
       alertSearch: '',
@@ -36,6 +39,9 @@ export default {
   computed: {
     // Acknowledge-all acts on every open alert for this host, not just the ones the current
     // search happens to match - clearing the badge should always actually clear the badge.
+    existingContainerIds() {
+      return new Set(this.containerIds);
+    },
     hasUnacknowledged() {
       return this.alerts.some((a) => !a.acknowledged);
     },
@@ -83,6 +89,13 @@ export default {
     window.removeEventListener('resize', this.updateWrapHeight);
   },
   methods: {
+    // Shared by the alert and event rows: both name a container and a time, and both can only jump
+    // to a log that still exists.
+    logsTitle(containerId) {
+      return this.existingContainerIds.has(containerId)
+        ? "Open this container's log at the time of the alert"
+        : 'This container no longer exists on this host';
+    },
     updateWrapHeight() {
       const el = this.$refs.wrap;
       if (!el) return;
@@ -213,8 +226,19 @@ export default {
                 <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
               </div>
               <div class="alert-message">{{ a.message }}</div>
-              <button v-if="isAdmin && !a.acknowledged" class="small-btn" @click="$emit('ack', a)">Acknowledge</button>
-              <span v-else-if="a.acknowledged" class="ack-tick">✓ Acknowledged</span>
+              <div class="alert-row-actions">
+                <button
+                  v-if="a.container_id"
+                  class="small-btn"
+                  :disabled="!existingContainerIds.has(a.container_id)"
+                  :title="logsTitle(a.container_id)"
+                  @click="$emit('open-logs', { containerId: a.container_id, tsMs: a.ts })"
+                >
+                  Logs
+                </button>
+                <button v-if="isAdmin && !a.acknowledged" class="small-btn" @click="$emit('ack', a)">Acknowledge</button>
+                <span v-else-if="a.acknowledged" class="ack-tick">✓ Acknowledged</span>
+              </div>
             </div>
           </div>
           <button v-show="!alertsAtTop" class="scroll-top-btn" @click="scrollAlertsToTop" title="Scroll to top">&#8593; Top</button>
@@ -254,12 +278,23 @@ export default {
         <div v-else class="activity-list-wrap">
           <div class="activity-list" ref="eventsListView" @scroll="onEventsScroll">
             <table class="containers">
-              <thead><tr><th>Time</th><th>Container</th><th>Action</th></tr></thead>
+              <thead><tr><th>Time</th><th>Container</th><th>Action</th><th></th></tr></thead>
               <tbody>
                 <tr v-for="(e, i) in searchedEvents" :key="i" class="event-row" :class="e.severity ? 'severity-' + e.severity : null">
                   <td class="muted">{{ formatEventTime(e.ts) }}</td>
                   <td>{{ e.containerName || e.containerId || '—' }}</td>
                   <td class="event-action">{{ e.action }}</td>
+                  <td class="event-logs">
+                    <button
+                      v-if="e.containerId"
+                      class="small-btn"
+                      :disabled="!existingContainerIds.has(e.containerId)"
+                      :title="logsTitle(e.containerId)"
+                      @click="$emit('open-logs', { containerId: e.containerId, tsMs: e.ts })"
+                    >
+                      Logs
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>

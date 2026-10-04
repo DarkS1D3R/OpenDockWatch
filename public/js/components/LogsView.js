@@ -16,6 +16,8 @@ export default {
     // container in single-pane mode. Read once at mount - this component is v-if'd, so it remounts
     // fresh every time the tab is switched into, never patched while already showing.
     openContainerId: { type: String, default: null },
+    // With openContainerId: open that pane on the log around this time (an alert's timestamp).
+    openSeekTsMs: { type: Number, default: null },
   },
   data() {
     return {
@@ -31,6 +33,9 @@ export default {
       // Keyed by id and left in place after use; it's read once at that pane's mount, so a stale
       // entry sitting here for a still-open pane has no further effect.
       joinTsMsById: {},
+      // Panes to open on the log around a time rather than at the tail. Read once at each pane's
+      // mount; dropped when the pane closes (see the openIds watcher) so reopening it goes live.
+      seekTsMsById: {},
       // Measured, not guessed - see updateWrapHeight.
       wrapHeightPx: 420,
       // One toggle for the whole tab rather than one per pane (LogViewer's own header has this too,
@@ -72,7 +77,13 @@ export default {
     // Anything naming a pane is worth remembering; the scroll positions (lastSyncTsMs,
     // joinTsMsById) deliberately are not, since every pane re-tails on return and a saved
     // timeframe would land the group somewhere the logs no longer are.
-    openIds: 'persistOpenPanes',
+    openIds(ids) {
+      this.persistOpenPanes();
+      const kept = Object.keys(this.seekTsMsById).filter((id) => ids.includes(id));
+      if (kept.length !== Object.keys(this.seekTsMsById).length) {
+        this.seekTsMsById = Object.fromEntries(kept.map((id) => [id, this.seekTsMsById[id]]));
+      }
+    },
     viewMode: 'persistOpenPanes',
     disabledSyncIds: 'persistOpenPanes',
     mainId: 'persistOpenPanes',
@@ -100,6 +111,7 @@ export default {
       this.openIds = [this.openContainerId];
       this.disabledSyncIds = [];
       this.mainId = null;
+      if (this.openSeekTsMs != null) this.seekTsMsById = { [this.openContainerId]: this.openSeekTsMs };
     }
     this.updateWrapHeight();
     // document.body doesn't actually resize with the viewport (its box is content-driven, not
@@ -282,6 +294,7 @@ export default {
             :sync-enabled="!disabledSyncIds.includes(c.id)"
             :is-main="mainId === c.id"
             :join-at-ts-ms="joinTsMsById[c.id] ?? null"
+            :seek-to-ts-ms="seekTsMsById[c.id] ?? null"
             :wrap="wrapLines"
             @scroll-sync="onScrollSync"
             @toggle-sync="toggleSync(c.id)"

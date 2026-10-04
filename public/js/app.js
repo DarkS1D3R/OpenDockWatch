@@ -12,6 +12,7 @@ import LogsView from './components/LogsView.js';
 import UptimeReport from './components/UptimeReport.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
+import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -134,6 +135,8 @@ const app = createApp({
       // LogsView's mounted() (it remounts fresh every time view flips into 'logs', v-if not v-show)
       // then cleared, so a later plain click on the Logs nav tab doesn't keep reopening this container.
       logsTabOpenId: null,
+      // Rides along with logsTabOpenId when the jump comes from an alert: the time to open it at.
+      logsTabSeekTsMs: null,
 
       settingsOpen: false,
 
@@ -144,6 +147,10 @@ const app = createApp({
     };
   },
   computed: {
+    // Which containers exist right now - the Activity tab disables an alert's Logs button for one that does not.
+    containerIds() {
+      return this.containers.map((c) => c.id);
+    },
     isAdmin() {
       return this.role === 'admin';
     },
@@ -204,6 +211,9 @@ const app = createApp({
     },
   },
   async mounted() {
+    // Before session/host bootstrap, not after: this is a local rendering preference with nothing
+    // to do with auth, and applying it early means a log pane never paints in the old colors first.
+    applyLogTheme(loadLogTheme());
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     let session;
     try {
@@ -509,6 +519,12 @@ const app = createApp({
       await this.$nextTick();
       this.logsTabOpenId = null;
     },
+    // The Activity tab's "Logs" button on an alert: the same hand-off as openLogsFor, plus the time.
+    async openLogsAt({ containerId, tsMs }) {
+      this.logsTabSeekTsMs = tsMs;
+      await this.openLogsFor(containerId);
+      this.logsTabSeekTsMs = null;
+    },
     closeDetail() {
       this.selectedContainerId = null;
     },
@@ -592,10 +608,15 @@ const app = createApp({
         :disk-usage="diskUsage"
         :disk-usage-error="diskUsageError"
         :with-detail="detailPanelVisible || settingsOpen"
+        :class="{ 'settings-open': settingsOpen }"
         v-model:fullscreen="hostCardFullscreen"
       ></host-card>
 
-      <div v-show="!logViewerFullscreen && !hostCardFullscreen" class="layout" :class="{ 'with-detail': detailPanelVisible || settingsOpen }">
+      <div
+        v-show="!logViewerFullscreen && !hostCardFullscreen"
+        class="layout"
+        :class="{ 'with-detail': detailPanelVisible || settingsOpen, 'settings-open': settingsOpen }"
+      >
         <div class="main">
           <div v-show="view === 'list'">
             <container-list
@@ -630,6 +651,7 @@ const app = createApp({
             :host-id="selectedHostId"
             :grouped-containers="groupedContainers"
             :open-container-id="logsTabOpenId"
+            :open-seek-ts-ms="logsTabSeekTsMs"
           ></logs-view>
 
           <activity-view
@@ -637,6 +659,8 @@ const app = createApp({
             :host-id="selectedHostId"
             :alerts="alerts"
             :is-admin="isAdmin"
+            :container-ids="containerIds"
+            @open-logs="openLogsAt"
             @ack="ackAlertAction"
             @ack-all="ackAllAlertsAction"
             @clear-alerts="clearAlertsAction"

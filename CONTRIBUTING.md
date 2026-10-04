@@ -54,6 +54,20 @@ leave the stack running a while before shooting or those charts render as sliver
 renders at 2x for a hidpi-crisp result, at approximately four times the file size — the committed
 set is 1x, which keeps all nine under 2MB.
 
+Settings that matter when retaking the set:
+
+- **Warm-up is 6 minutes** (`SCREENSHOT_WARM_MS`, default 360000). The old 135s left the host
+  card's chart and the metrics modal looking thin. Start the stack, wait, then run the script;
+  a fresh data directory (`rm -rf data/*` on the throwaway mount) avoids stale history.
+- **The Logs tab shot opens four panes** (shop-api, shop-worker, blog-api, shop-payments) in
+  Multi mode. One pane undersells the tab, whose point is side-by-side, timestamp-synced logs.
+  The script clicks "Multi" first because a remembered single-pane choice would otherwise stick.
+- **Use a throwaway instance, not your own**: a separate image tag, a scratch `data`/`config`
+  directory, an `--env-file` with a known demo password, and a `hosts.json` holding only `local`
+  (the example file's fake prod/staging hosts spam the log with SSH retries).
+- On Windows with Docker inside WSL, run `demo-stack.sh` and the container commands through
+  `wsl.exe`; the screenshot script itself runs from the Windows side against `localhost:3100`.
+
 Review every shot before committing. Several of the views need coaxing to photograph well (the
 graph views use the Fullscreen toggle so nodes don't fall back to their compact rendering, and the
 details panel has to be told to expand its collapsed sections), and a UI change can quietly undo

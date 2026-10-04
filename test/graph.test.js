@@ -300,6 +300,21 @@ test('buildTreeElements', async (t) => {
     assert.equal(projEdge.data.source, projNode.data.id);
   });
 
+  // graph.js's applyFading filters pills on `search`: a term spanning a wrap point can't match the label.
+  await t.test('every pill carries its unwrapped name for the filter to match against', () => {
+    const longProject = 'acme-corp-billing-service-staging';
+    const longNet = 'opendockwatch_default_network';
+    const longMount = '/srv/acme-corp/billing-service/data/uploads';
+    const nodes = [{ id: 'a', group: longProject, state: 'running', networks: [longNet], mounts: [{ source: longMount, kind: 'bind' }] }];
+    const els = elements.buildTreeElements(nodes, null);
+    const proj = els.find((el) => el.classes === 'proj');
+    assert.equal(proj.data.search, longProject);
+    assert.ok(!proj.data.label.includes('corp-billing'), 'fixture should wrap inside the term being searched');
+    assert.ok(proj.data.search.includes('corp-billing'));
+    assert.equal(els.find((el) => el.classes === 'net').data.search, longNet);
+    assert.equal(els.find((el) => el.classes === 'mount mount-bind').data.search, longMount);
+  });
+
   await t.test('leaves a short compose project name on a single line, unwrapped', () => {
     const nodes = [{ id: 'a', group: 'shop', state: 'running', networks: [], mounts: [] }];
     const projNode = elements.buildTreeElements(nodes, null).find((el) => el.classes === 'proj');

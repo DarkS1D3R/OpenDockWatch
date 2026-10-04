@@ -4,6 +4,7 @@ const db = require('../server/db');
 const hosts = require('../server/hosts');
 const logger = require('../server/logger');
 const alerts = require('../server/alerts');
+const docker = require('../server/docker');
 
 // Same reasoning as mockDb below: alerts.js calls hosts.loadHosts() through the module object
 // (not a destructured reference), so mocking it here reaches loadBreachState without touching the
@@ -115,6 +116,169 @@ test('handleEvent: container_crashed', async (t) => {
     assert.equal(fired.length, 1);
     assert.doesNotMatch(fired[0].message, /NaN/);
     assert.match(fired[0].message, /unrecognized exit code/);
+  });
+});
+
+// A clean exit is how a finished job looks, so this rule only fires for a restart policy that means
+// "keep this running", and only when nothing asked the container to stop. Each container id below is
+// unique to its test: the kill memory is module state, and a shared id would let one test's kill
+// event suppress another's alert.
+test('checkCleanExit: unexpected_exit', async (t) => {
+  let n = 0;
+  const cleanDie = (extra = {}) => ({
+    hostId: 'h',
+    containerId: `clean${++n}`,
+    containerName: 'web',
+    action: 'die',
+    ts: Date.now(),
+    raw: { Actor: { Attributes: { exitCode: '0' } } },
+    ...extra,
+  });
+  const setup = (t2, { policy = 'always', dbOverrides = {} } = {}) => {
+    const fired = captureFired(t2, dbOverrides);
+    const inspected = [];
+    t2.mock.method(hosts, 'getHost', (id) => (id === 'h' ? { id: 'h', dockerHost: null } : undefined));
+    t2.mock.method(docker, 'getRestartPolicy', async (host, id) => {
+      inspected.push(id);
+      return policy;
+    });
+    return { fired, inspected };
+  };
+
+  await t.test('fires for a container whose restart policy is always, and names the policy', async (t2) => {
+    const { fired } = setup(t2, { policy: 'always' });
+    await alerts.checkCleanExit(cleanDie());
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'unexpected_exit');
+    assert.equal(fired[0].severity, 'warning');
+    assert.match(fired[0].message, /exited cleanly/);
+    assert.match(fired[0].message, /"always"/);
+  });
+
+  await t.test('fires for unless-stopped too', async (t2) => {
+    const { fired } = setup(t2, { policy: 'unless-stopped' });
+    await alerts.checkCleanExit(cleanDie());
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('stays silent for no, on-failure, or a policy that could not be read - a finished job looks the same', async (t2) => {
+    for (const policy of ['no', 'on-failure', '', null]) {
+      const { fired } = setup(t2, { policy });
+      await alerts.checkCleanExit(cleanDie());
+      assert.equal(fired.length, 0, `fired for policy ${JSON.stringify(policy)}`);
+    }
+  });
+
+  await t.test('stays silent after a manual stop or restart from this app, without even asking the daemon', async (t2) => {
+    const { fired, inspected } = setup(t2, { dbOverrides: { countManualStopsSince: () => 1 } });
+    await alerts.checkCleanExit(cleanDie());
+    assert.equal(fired.length, 0);
+    assert.equal(inspected.length, 0);
+  });
+
+  await t.test('stays silent when docker itself signalled the container just before it exited', async (t2) => {
+    const { fired } = setup(t2);
+    const ev = cleanDie();
+    alerts.handleEvent({ ...ev, action: 'kill', raw: {} });
+    await alerts.checkCleanExit(ev);
+    assert.equal(fired.length, 0, 'a docker stop run from the CLI is not an unexpected exit');
+  });
+
+  await t.test('a kill of some other container does not suppress this one', async (t2) => {
+    const { fired } = setup(t2);
+    const ev = cleanDie();
+    alerts.handleEvent({ ...ev, containerId: 'someone-else', action: 'kill', raw: {} });
+    await alerts.checkCleanExit(ev);
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('a kill from long before no longer counts as the reason for this exit', async (t2) => {
+    const { fired } = setup(t2);
+    const ev = cleanDie();
+    alerts.handleEvent({ ...ev, action: 'kill', ts: ev.ts - 5 * 60_000, raw: {} });
+    await alerts.checkCleanExit(ev);
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('forgetHost drops the kill memory for that host', async (t2) => {
+    const { fired } = setup(t2);
+    const ev = cleanDie();
+    alerts.handleEvent({ ...ev, action: 'kill', raw: {} });
+    alerts.forgetHost('h');
+    await alerts.checkCleanExit(ev);
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('does nothing, and does not ask a daemon, for a host that is not configured', async (t2) => {
+    const { fired, inspected } = setup(t2);
+    await alerts.checkCleanExit(cleanDie({ hostId: 'gone' }));
+    assert.equal(fired.length, 0);
+    assert.equal(inspected.length, 0);
+  });
+
+  await t.test('can be muted per container with the unexpected_exit event rule', async (t2) => {
+    const { fired } = setup(t2, {
+      dbOverrides: {
+        getContainerAlertRules: () => [
+          {
+            id: 1,
+            hostId: null,
+            matchType: 'name',
+            matchValue: 'batchy',
+            cpuThreshold: null,
+            memThreshold: null,
+            sustainMinutes: null,
+            mutedRules: ['unexpected_exit'],
+          },
+        ],
+      },
+    });
+    await alerts.checkCleanExit(cleanDie({ containerName: 'batchy-worker' }));
+    assert.equal(fired.length, 0);
+    await alerts.checkCleanExit(cleanDie({ containerName: 'web' }));
+    assert.equal(fired.length, 1, 'an unmatched container must still alert');
+  });
+
+  await t.test('respects the ordinary cooldown, so a flapping container is one alert and not a stream', async (t2) => {
+    const { fired } = setup(t2, { dbOverrides: { getLastAlertFireTs: () => Date.now() - 1000 } });
+    await alerts.checkCleanExit(cleanDie());
+    assert.equal(fired.length, 0);
+  });
+
+  await t.test('handleEvent runs it for a die with exit code 0', async (t2) => {
+    const { fired } = setup(t2);
+    alerts.handleEvent(cleanDie());
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'unexpected_exit');
+  });
+
+  await t.test('handleEvent does not throw, and logs, when the check itself fails', async (t2) => {
+    captureFired(t2);
+    t2.mock.method(hosts, 'getHost', () => ({ id: 'h', dockerHost: null }));
+    t2.mock.method(docker, 'getRestartPolicy', async () => {
+      throw new Error('daemon exploded');
+    });
+    const warned = [];
+    t2.mock.method(logger, 'warn', (event, fields) => warned.push({ event, fields }));
+    assert.doesNotThrow(() => alerts.handleEvent(cleanDie()));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(warned.length, 1);
+    assert.equal(warned[0].event, 'unexpected_exit.check_failed');
+    assert.match(warned[0].fields.error, /daemon exploded/);
+  });
+
+  await t.test('a non-zero exit is still container_crashed and never reaches this rule', async (t2) => {
+    const { fired, inspected } = setup(t2);
+    alerts.handleEvent(cleanDie({ raw: { Actor: { Attributes: { exitCode: '1' } } } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['container_crashed']
+    );
+    assert.equal(inspected.length, 0);
   });
 });
 

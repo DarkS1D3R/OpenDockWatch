@@ -60,6 +60,13 @@ body {
 .layout.with-detail .main {
   margin-right: 520px;
 }
+/* Chained onto .with-detail (always present alongside it - see app.js's toggleSettings) rather than
+   standing alone, so its extra class makes this strictly more specific and the override holds
+   regardless of source order. Settings is the one occupant of this slot wide enough to need it -
+   see .detail-panel.settings-panel above. */
+.layout.with-detail.settings-open .main {
+  margin-right: 660px;
+}
 
 .host-card {
   background: var(--panel);
@@ -72,6 +79,9 @@ body {
 }
 .host-card.with-detail {
   margin-right: 520px;
+}
+.host-card.with-detail.settings-open {
+  margin-right: 660px;
 }
 .host-card-header {
   display: flex;
@@ -585,10 +595,18 @@ body {
   color: #fff;
 }
 
-.container-list-search-wrap {
-  width: 100%;
-  max-width: 320px;
+/* The filter box and the sort controls share one row, wrapping the sort under the filter only when
+   the pane is too narrow for both. */
+.container-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
   margin-bottom: 12px;
+}
+.container-list-search-wrap {
+  flex: 1 1 220px;
+  max-width: 320px;
 }
 .container-list-search {
   background: var(--panel);
@@ -681,6 +699,103 @@ table.containers td {
 table.containers th {
   color: var(--muted);
   font-weight: 600;
+}
+table.containers th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+table.containers th.sortable:hover {
+  color: var(--text);
+}
+.proc-table-wrap {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.proc-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.proc-table th,
+.proc-table td {
+  text-align: left;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.proc-table th {
+  color: var(--muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.audit-search-wrap {
+  flex: 1 1 200px;
+}
+.audit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.audit-table-wrap {
+  overflow-x: auto;
+}
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.audit-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.audit-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+}
+.audit-ok {
+  color: var(--ok);
+}
+.audit-error-badge {
+  color: var(--danger);
+}
+.audit-pending {
+  color: var(--warn);
+}
+/* A failed action's docker/ssh stderr sits on its own full-width row under it: it is long, and
+   nowrap in a cell would have stretched the whole table to fit one message. */
+.audit-error-row td {
+  white-space: normal;
+  word-break: break-word;
+  color: var(--danger);
+  font-family: ui-monospace, monospace;
+  padding-top: 0;
+}
+.sort-arrow {
+  font-size: 10px;
+}
+.container-list-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 /* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
    buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,
@@ -1214,6 +1329,15 @@ table.containers td:nth-child(7) {
   border-radius: 0;
   box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
   z-index: 20;
+}
+/* Settings is wider than the container detail panel this class is shared with: six tabs (one two
+   words wide) plus Appearance's row of preset buttons and two color pickers were cramped at 520px,
+   wrapping "Container Rules" onto two lines inside its own tab. The container detail panel stays at
+   the base 520px - its own layout (name/stats/env/labels) was already measured against it, and
+   widening it too would be an unrelated, unrequested change. See .settings-open below for the
+   matching push on .main/.host-card, which has to grow by the same amount or the panel overlaps them. */
+.detail-panel.settings-panel {
+  width: 660px;
 }
 .detail-header {
   display: flex;
@@ -1829,17 +1953,29 @@ table.containers td:nth-child(7) {
   font-weight: 700;
   box-shadow: 0 0 0 1px #ff6a00;
 }
+/* The line a jump from an alert landed on - fades out after a few seconds (LogViewer clears it). */
+.log-line-target {
+  background: rgba(255, 106, 0, 0.22);
+  box-shadow: inset 3px 0 0 #ff6a00;
+}
 .search-line-clickable {
   cursor: pointer;
 }
-.search-line-clickable:hover {
+/* Scoped to .log-view (rather than the bare .search-line-clickable:hover this used to be) so its
+   specificity beats .log-line:nth-child(even) below regardless of source order - otherwise the
+   stripe would win the tie and hover would stop being visible on every other row. */
+.log-view .search-line-clickable:hover {
   background: rgba(88, 166, 255, 0.06);
 }
 
+/* --log-bg/--log-text are set by lib/logTheme.js (Settings > Appearance) via two custom properties
+   on the root; the literals here are only the fallback for a page that hasn't called it yet, so
+   this renders identically to before the feature existed. */
 .log-view {
   margin: 0;
   padding: 12px;
-  background: #0d0e11;
+  background: var(--log-bg, #0d0e11);
+  color: var(--log-text, var(--text));
   border: 1px solid var(--border);
   border-radius: 6px;
   height: 400px;
@@ -1850,6 +1986,12 @@ table.containers td:nth-child(7) {
   white-space: pre-wrap;
   word-break: break-all;
 }
+/* Nudged toward the text color rather than toward black/white, so one rule reads correctly against
+   both a dark preset and a light one (e.g. Paper) - mixing toward a fixed white would vanish into a
+   light background, and toward a fixed black would vanish into a dark one. */
+.log-line:nth-child(even) {
+  background: color-mix(in srgb, var(--log-bg, #0d0e11) 92%, var(--log-text, var(--text)) 8%);
+}
 .detail-log {
   height: 600px;
 }
@@ -1857,6 +1999,20 @@ table.containers td:nth-child(7) {
   color: var(--muted);
   margin-right: 8px;
   user-select: none;
+}
+/* Inside a themed log body the timestamp is derived from the theme pair - the fixed --muted grey is
+   tuned for the dark panel and drops to ~3:1 on a light log background. */
+.log-view .log-ts {
+  color: color-mix(in srgb, var(--log-text, var(--text)) 62%, var(--log-bg, #0d0e11));
+}
+/* ANSI-coloured log text (format.js's highlightLine). The palette is a dark-terminal one, so on a
+   light log background (data-log-scheme, set by lib/logTheme.js) each colour is darkened toward
+   black - ANSI white would otherwise be invisible on Paper. */
+.log-ansi {
+  color: var(--ansi);
+}
+:root[data-log-scheme='light'] .log-view .log-ansi {
+  color: color-mix(in srgb, var(--ansi) 45%, #000);
 }
 .hide-ts .log-ts {
   display: none;
@@ -1881,6 +2037,23 @@ table.containers td:nth-child(7) {
   border-radius: 6px;
   color: var(--muted);
   font-size: 13px;
+  z-index: 1;
+  pointer-events: none;
+}
+.log-older-note {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(13, 14, 17, 0.9);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
   z-index: 1;
   pointer-events: none;
 }
@@ -2318,6 +2491,10 @@ button.log-pane-main-btn.active:hover {
 .event-row.severity-ok td:first-child {
   box-shadow: inset 3px 0 0 var(--ok);
 }
+.event-logs {
+  text-align: right;
+  white-space: nowrap;
+}
 .event-action {
   color: var(--muted);
 }
@@ -2376,6 +2553,12 @@ table.uptime-table tr:last-child td {
 }
 .uptime-removed-row {
   opacity: 0.7;
+}
+.alert-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 .alert-row-main {
   display: flex;
@@ -2464,6 +2647,49 @@ table.uptime-table tr:last-child td {
   gap: 8px;
   margin-top: 12px;
   flex-wrap: wrap;
+}
+.log-theme-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.log-theme-preset-btn {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.log-theme-preset-btn.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.log-theme-custom {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+.log-theme-custom .modal-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.log-theme-custom input[type='color'] {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+/* A live sample rather than a description - the whole feature is about how the log actually reads,
+   which a swatch of flat color doesn't show. height:auto since there's nothing to scroll here. */
+.log-theme-preview {
+  height: auto;
+  margin-bottom: 16px;
 }
 /* The mute-event-rule checkboxes inside a .modal-field - flex-direction:column there would stack
    these one per line otherwise, which reads as three separate fields instead of one group. */

@@ -119,7 +119,7 @@ db.exec(`
   -- Per-container/name/compose-project alert overrides, evaluated in sort_order as an ordered,
   -- first-match-wins list by alerts.js's resolveContainerConfig - see server/CLAUDE.md. host_id NULL
   -- means "all hosts"; cpu/mem/sustain NULL means "inherit the global threshold for that field".
-  -- muted_rules is a JSON array (container_crashed/crash_loop/unhealthy) rather than one column
+  -- muted_rules is a JSON array (container_crashed/crash_loop/unhealthy/unexpected_exit) rather than one column
   -- per rule so a future event rule doesn't need an ALTER TABLE.
   CREATE TABLE IF NOT EXISTS container_alert_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
