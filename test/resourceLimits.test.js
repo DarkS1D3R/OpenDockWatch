@@ -10,10 +10,12 @@ test.before(async () => {
 const NONE = { memoryLimitBytes: null, cpuLimit: null, pidsLimit: null };
 
 test('cpuLimitLabel', async (t) => {
-  await t.test('is null until the limits have loaded, which is not the same as "no limit"', () => {
+  await t.test('is null until the limits have loaded', () => {
     assert.equal(m.cpuLimitLabel(undefined), null);
     assert.equal(m.cpuLimitLabel(null), null);
-    assert.equal(m.cpuLimitLabel(NONE), 'no limit');
+  });
+  await t.test('is null with no limit set, so the panel never shows "limit no limit"', () => {
+    assert.equal(m.cpuLimitLabel(NONE), null);
   });
   await t.test('words whole, fractional and singular limits', () => {
     assert.equal(m.cpuLimitLabel({ ...NONE, cpuLimit: 2 }), '2 CPUs');

@@ -728,11 +728,14 @@ async function getTopology(host, snapshot) {
 // different fact from a limit of zero - so each comes out as null rather than a number to misread.
 // CPU has two spellings: --cpus lands in NanoCpus, the older --cpu-quota/--cpu-period pair in the
 // other two. Pure and exported for testing, like the other inspect parsing.
+// A quota set without --cpu-period stores a period of 0, meaning the kernel's 100ms default.
+const DEFAULT_CPU_PERIOD_US = 100_000;
+
 function parseResourceLimits(hostConfig) {
   const hc = hostConfig || {};
   const positive = (n) => (typeof n === 'number' && n > 0 ? n : null);
   let cpuLimit = positive(hc.NanoCpus) ? hc.NanoCpus / 1e9 : null;
-  if (cpuLimit === null && positive(hc.CpuQuota) && positive(hc.CpuPeriod)) cpuLimit = hc.CpuQuota / hc.CpuPeriod;
+  if (cpuLimit === null && positive(hc.CpuQuota)) cpuLimit = hc.CpuQuota / (positive(hc.CpuPeriod) || DEFAULT_CPU_PERIOD_US);
   return {
     memoryLimitBytes: positive(hc.Memory),
     cpuLimit,
@@ -847,26 +850,88 @@ function downloadLogs(host, id, { tail = 1000 } = {}) {
 // from the two streams sort correctly as plain strings.
 const LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) /;
 
-// Pure half of getLogsBefore: stdout and stderr arrive as separate buffers, so they are merged back
-// into one timeline, and anything not strictly before `before` is dropped (--until is inclusive).
-// `total` is the pre-filter count, which is what says whether the page came back full.
-function parseLogsBefore(stdout, stderr, before) {
-  const lines = [...String(stdout || '').split('\n'), ...String(stderr || '').split('\n')].filter((l) => l.length);
+// Keeps only the last `cap` lines pushed into it, in order. A ring rather than push/shift, since
+// getLogsBefore pushes a whole log through it. `dropped` says older lines fell off the front.
+function createTailBuffer(cap) {
+  const ring = new Array(cap);
+  let count = 0;
+  return {
+    push(line) {
+      ring[count % cap] = line;
+      count++;
+    },
+    lines() {
+      if (count <= cap) return ring.slice(0, count);
+      const head = count % cap;
+      return [...ring.slice(head), ...ring.slice(0, head)];
+    },
+    get dropped() {
+      return count > cap;
+    },
+  };
+}
+
+// Pure half of getLogsBefore: both streams' tails merged into one timeline by stamp, the inclusive
+// cursor line dropped, and the newest `limit` kept. There is more history when a stream's buffer
+// dropped older lines, or the merge had more than a page to choose from.
+function mergeLogsBefore(outLines, errLines, before, limit, olderDropped = false) {
   const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
-  const kept = lines.filter((l) => {
+  const kept = [...outLines, ...errLines].filter((l) => {
     const ts = stamp(l);
     return !ts || ts < before;
   });
-  if (stderr) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
-  return { lines: kept, total: lines.length };
+  if (errLines.length) kept.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { lines: kept.slice(-limit), more: olderDropped || kept.length > limit };
 }
 
-// One page of history older than `before`, for the log viewer's scroll-up paging. Not streamed:
-// it is a bounded one-shot, so it goes through run() and its concurrency cap like any other call.
+// Reading a large json-file log up to the cursor takes longer than an ordinary call's 10s.
+const LOG_HISTORY_TIMEOUT_MS = 30_000;
+
+// One page of history older than `before`. Not `--tail`: json-file applies it to the whole log
+// before --until, so an older cursor came back empty. Reads the range, keeping each stream's last
+// `limit + 1` lines (server/CLAUDE.md). Holds a run() slot while it reads.
 async function getLogsBefore(host, id, { before, limit }) {
-  const out = await run([...hostArgs(host), 'logs', '--timestamps', '--until', before, '--tail', String(limit), id], CMD_TIMEOUT_MS, true);
-  const { lines, total } = parseLogsBefore(out.stdout, out.stderr, before);
-  return { lines, more: total >= limit };
+  await acquire();
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--until', before, id]);
+      const bufs = { out: createTailBuffer(limit + 1), err: createTailBuffer(limit + 1) };
+      const partial = { out: '', err: '' };
+      let stderrText = '';
+      let settled = false;
+      const timer = setTimeout(
+        () => finish(Object.assign(new Error('timed out reading log history'), { timedOut: true })),
+        LOG_HISTORY_TIMEOUT_MS
+      );
+
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        if (err) return reject(err);
+        resolve(mergeLogsBefore(bufs.out.lines(), bufs.err.lines(), before, limit, bufs.out.dropped || bufs.err.dropped));
+      }
+
+      const take = (key) => (chunk) => {
+        // stderr is also the container's own stderr, so only its tail is kept for an error message.
+        if (key === 'err') stderrText = (stderrText + chunk).slice(-4096);
+        const parts = (partial[key] + chunk).split('\n');
+        partial[key] = parts.pop();
+        for (const part of parts) if (part.length) bufs[key].push(part);
+      };
+      child.stdout.setEncoding('utf8').on('data', take('out'));
+      child.stderr.setEncoding('utf8').on('data', take('err'));
+      child.on('error', (err) => finish(err));
+      child.on('close', (code) => {
+        for (const key of ['out', 'err']) if (partial[key].length) bufs[key].push(partial[key]);
+        if (code) return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+        finish();
+      });
+    });
+  } finally {
+    release();
+  }
 }
 
 // Pure half of getLogsAfter: each stream is already in order, so the first `limit` lines overall
@@ -1021,7 +1086,8 @@ module.exports = {
   downloadLogs,
   getLogsBefore,
   getLogsAfter,
-  parseLogsBefore,
+  createTailBuffer,
+  mergeLogsBefore,
   mergeLogsAfter,
   LOG_TS_RE,
   streamEvents,

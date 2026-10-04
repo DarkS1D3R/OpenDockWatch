@@ -22,7 +22,8 @@ const {
   maskEnvValues,
   containerCounts,
   dockerCommandError,
-  parseLogsBefore,
+  createTailBuffer,
+  mergeLogsBefore,
   mergeLogsAfter,
   parseResourceLimits,
   parseTop,
@@ -700,32 +701,94 @@ test('parseIconHints', async (t) => {
   });
 });
 
-test('parseLogsBefore', async (t) => {
+test('createTailBuffer', async (t) => {
+  const fill = (cap, n) => {
+    const buf = createTailBuffer(cap);
+    for (let i = 1; i <= n; i++) buf.push(`l${i}`);
+    return buf;
+  };
+
+  await t.test('holds everything, in order, while under its cap', () => {
+    const buf = fill(5, 3);
+    assert.deepEqual(buf.lines(), ['l1', 'l2', 'l3']);
+    assert.equal(buf.dropped, false);
+  });
+
+  await t.test('exactly at its cap has dropped nothing', () => {
+    const buf = fill(3, 3);
+    assert.deepEqual(buf.lines(), ['l1', 'l2', 'l3']);
+    assert.equal(buf.dropped, false);
+  });
+
+  await t.test('keeps the newest lines in order once it wraps, and says older ones were dropped', () => {
+    const buf = fill(3, 8);
+    assert.deepEqual(buf.lines(), ['l6', 'l7', 'l8']);
+    assert.equal(buf.dropped, true);
+  });
+});
+
+test('mergeLogsBefore', async (t) => {
   const BEFORE = '2026-01-01T00:00:10.000000000Z';
   const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
 
   await t.test('drops the line at the cursor itself, since --until is inclusive', () => {
-    const { lines } = parseLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')].join('\n'), '', BEFORE);
+    const { lines } = mergeLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')], [], BEFORE, 100);
     assert.deepEqual(lines, [line(8, 'a'), line(9, 'b')]);
   });
 
-  await t.test('reports the pre-filter total, so a full page is still recognisable as full', () => {
-    const { total } = parseLogsBefore([line(9, 'b'), line(10, 'c')].join('\n'), '', BEFORE);
-    assert.equal(total, 2);
+  await t.test('returns the newest `limit` lines before the cursor, not the oldest', () => {
+    const { lines, more } = mergeLogsBefore([line(5, 'a'), line(6, 'b'), line(7, 'c'), line(8, 'd')], [], BEFORE, 2);
+    assert.deepEqual(lines, [line(7, 'c'), line(8, 'd')]);
+    assert.equal(more, true);
+  });
+
+  await t.test('a full buffer that only lost the cursor line is the start of the log, not more', () => {
+    // limit 2, buffer cap 3: the cursor line filled the third slot and nothing was dropped.
+    const { lines, more } = mergeLogsBefore([line(8, 'a'), line(9, 'b'), line(10, 'c')], [], BEFORE, 2, false);
+    assert.deepEqual(lines, [line(8, 'a'), line(9, 'b')]);
+    assert.equal(more, false);
+  });
+
+  await t.test('reports more when a stream dropped older lines, even if the page is short', () => {
+    // The kept lines all sit at the cursor; the dropped ones before them are still history.
+    const { lines, more } = mergeLogsBefore([line(10, 'a'), line(10, 'b')], [], BEFORE, 1, true);
+    assert.deepEqual(lines, []);
+    assert.equal(more, true);
   });
 
   await t.test('merges stderr back into the timeline instead of appending it', () => {
-    const { lines } = parseLogsBefore([line(1, 'out1'), line(5, 'out2')].join('\n'), line(3, 'err1'), BEFORE);
+    const { lines } = mergeLogsBefore([line(1, 'out1'), line(5, 'out2')], [line(3, 'err1')], BEFORE, 100);
     assert.deepEqual(lines, [line(1, 'out1'), line(3, 'err1'), line(5, 'out2')]);
   });
 
   await t.test('keeps equal-timestamp lines in their original order', () => {
-    const { lines } = parseLogsBefore([line(2, 'first'), line(2, 'second')].join('\n'), '', BEFORE);
+    const { lines } = mergeLogsBefore([line(2, 'first'), line(2, 'second')], [], BEFORE, 100);
     assert.deepEqual(lines, [line(2, 'first'), line(2, 'second')]);
   });
 
   await t.test('returns nothing for empty output', () => {
-    assert.deepEqual(parseLogsBefore('', '', BEFORE), { lines: [], total: 0 });
+    assert.deepEqual(mergeLogsBefore([], [], BEFORE, 100), { lines: [], more: false });
+  });
+
+  await t.test('pages through a log longer than one page, end to end through the buffers', () => {
+    // 25 lines, pages of 10: the old --tail approach returned nothing for any cursor older than
+    // the newest 10. Each page here must be the 10 lines right before its cursor.
+    const all = Array.from({ length: 25 }, (_, i) => `2026-01-01T00:00:${String(i + 10).padStart(2, '0')}.000000000Z line${i}`);
+    const stampOf = (l) => l.slice(0, 30);
+    const pageBefore = (cursor) => {
+      const buf = createTailBuffer(11);
+      for (const l of all) if (stampOf(l) <= cursor) buf.push(l); // docker's inclusive --until
+      return mergeLogsBefore(buf.lines(), [], cursor, 10, buf.dropped);
+    };
+    const first = pageBefore(stampOf(all[24]));
+    assert.deepEqual(first.lines, all.slice(14, 24));
+    assert.equal(first.more, true);
+    const second = pageBefore(stampOf(first.lines[0]));
+    assert.deepEqual(second.lines, all.slice(4, 14));
+    assert.equal(second.more, true);
+    const last = pageBefore(stampOf(second.lines[0]));
+    assert.deepEqual(last.lines, all.slice(0, 4));
+    assert.equal(last.more, false);
   });
 });
 
@@ -771,9 +834,19 @@ test('parseResourceLimits', async (t) => {
     assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 0.5);
   });
 
-  await t.test('prefers --cpus over the quota pair, and ignores a quota with no period', () => {
+  await t.test('prefers --cpus over the quota pair', () => {
     assert.equal(parseResourceLimits({ NanoCpus: 2e9, CpuQuota: 50000, CpuPeriod: 100000 }).cpuLimit, 2);
-    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 0 }).cpuLimit, null);
+  });
+
+  await t.test("reads a quota set without --cpu-period against the kernel's 100ms default", () => {
+    // `docker run --cpu-quota 50000` stores CpuPeriod 0 (or omits it); the container is capped at 0.5.
+    assert.equal(parseResourceLimits({ CpuQuota: 50000, CpuPeriod: 0 }).cpuLimit, 0.5);
+    assert.equal(parseResourceLimits({ CpuQuota: 200000 }).cpuLimit, 2);
+  });
+
+  await t.test('treats an unset quota (0 or -1) as no limit whatever the period', () => {
+    assert.equal(parseResourceLimits({ CpuQuota: 0, CpuPeriod: 100000 }).cpuLimit, null);
+    assert.equal(parseResourceLimits({ CpuQuota: -1, CpuPeriod: 0 }).cpuLimit, null);
   });
 
   await t.test('copes with a missing HostConfig', () => {

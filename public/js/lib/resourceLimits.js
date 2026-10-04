@@ -17,9 +17,10 @@ function formatLimitBytes(bytes) {
   return `${bytes} B`;
 }
 
+// Null when no CPU limit is set, like the PID limit: the panel shows this as "· limit <label>",
+// and unlike memory, nothing in the CPU row needs a "no limit" caveat to read correctly.
 export function cpuLimitLabel(limits) {
-  if (!limits) return null;
-  if (limits.cpuLimit === null) return 'no limit';
+  if (!limits || limits.cpuLimit === null) return null;
   // 1.5 CPUs, 2 CPUs, 0.25 CPUs - trailing zeros trimmed, and "1 CPU" singular.
   const n = Number(limits.cpuLimit.toFixed(2));
   return `${n} ${n === 1 ? 'CPU' : 'CPUs'}`;
