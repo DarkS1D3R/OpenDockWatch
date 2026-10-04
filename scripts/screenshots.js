@@ -8,7 +8,7 @@ const URL = process.env.SCREENSHOT_URL || 'http://localhost:3100';
 const USER = process.env.SCREENSHOT_USER || 'demo';
 const PASS = process.env.SCREENSHOT_PASS;
 const OUT = process.env.SCREENSHOT_OUT || path.join(__dirname, '..', 'screenshots');
-const WARM_MS = Number(process.env.SCREENSHOT_WARM_MS || 135_000);
+const WARM_MS = Number(process.env.SCREENSHOT_WARM_MS || 360_000);
 const SCALE = Number(process.env.SCREENSHOT_SCALE || 1);
 
 // 1920x1300. Wide because the details panel is a fixed 520px and at 1600 it squeezed the table
@@ -158,8 +158,13 @@ async function main() {
   console.log('logs tab');
   await page.locator('.view-toggle button', { hasText: 'Logs' }).first().click();
   await page.waitForTimeout(1200);
-  await page.locator('.logs-tab-row', { hasText: 'demo-shop-api' }).first().click();
-  await page.waitForTimeout(3000);
+  // Multi mode is the default, but a remembered single-pane choice would hide the point of the tab.
+  await page.locator('.logs-tab-viewmode button', { hasText: 'Multi' }).click();
+  for (const name of ['demo-shop-api', 'demo-shop-worker', 'demo-blog-api', 'demo-shop-payments']) {
+    await page.locator('.logs-tab-row', { hasText: name }).first().click();
+    await page.waitForTimeout(400);
+  }
+  await page.waitForTimeout(3500);
   await shot('logs-tab', { fitHeight: false });
 
   console.log('details panel');
