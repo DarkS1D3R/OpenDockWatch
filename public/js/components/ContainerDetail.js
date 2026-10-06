@@ -199,6 +199,7 @@ export default {
         <div class="detail-row" v-if="container.health"><span class="label">Health</span><span><span class="health-dot" :style="{ background: healthDotColor(container.health) }"></span> {{ healthTitle(container.health) }}</span></div>
         <div class="detail-row" v-if="container.restartCount1h"><span class="label">Restarts (1h)</span><span>{{ container.restartCount1h }}</span></div>
         <div class="detail-row"><span class="label">Image</span><span>{{ container.image }}</span></div>
+        <div v-if="container.url" class="detail-row"><span class="label">Link</span><a :href="container.url" target="_blank" rel="noopener noreferrer">{{ container.url }}</a></div>
         <div class="detail-row">
           <span class="label">CPU</span>
           <span>{{ stat.cpuPerc || '—' }} <span v-if="cpuLimit" class="muted small" title="The CPU limit set on this container - 100% is one full core">· limit {{ cpuLimit }}</span></span>

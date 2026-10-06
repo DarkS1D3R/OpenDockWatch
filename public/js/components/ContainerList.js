@@ -173,7 +173,7 @@ export default {
               :class="{'row-selected': c.id === selectedContainerId}"
               @click="$emit('select', c.id)"
             >
-              <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" v-html="badgeHtml(c)"></span>{{ c.name }}</td>
+              <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" v-html="badgeHtml(c)"></span><a v-if="c.url" :href="c.url" target="_blank" rel="noopener noreferrer" class="container-link" title="Open the service's own UI">{{ c.name }} ↗</a><template v-else>{{ c.name }}</template></td>
               <td class="muted">{{ c.image }}</td>
               <td>
                 <div class="status-cell">

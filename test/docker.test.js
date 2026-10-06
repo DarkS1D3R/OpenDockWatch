@@ -16,6 +16,7 @@ const {
   refreshIconHints,
   iconHintFor,
   iconOverrideFromLabel,
+  urlFromLabel,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
@@ -642,6 +643,15 @@ test('iconOverrideFromLabel', () => {
   assert.equal(iconOverrideFromLabel('redis'), 'redis');
   assert.equal(iconOverrideFromLabel(' Redis '), 'redis');
   for (const absent of [undefined, null, '', '   ']) assert.equal(iconOverrideFromLabel(absent), null);
+});
+
+test('urlFromLabel', () => {
+  assert.equal(urlFromLabel('https://grafana.example.com:3000/d/x'), 'https://grafana.example.com:3000/d/x');
+  assert.equal(urlFromLabel('  http://localhost:8080  '), 'http://localhost:8080');
+  // Anything but http(s) would run or navigate somewhere unintended from an href.
+  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://host', 'not a url', '//host/x', '', '  ', undefined, null]) {
+    assert.equal(urlFromLabel(bad), null, String(bad));
+  }
 });
 
 // metricsCollector fires this every poll without awaiting it, so overlap is the normal case on a slow host.

@@ -299,6 +299,7 @@ async function listContainers(host) {
         composeService: labels['com.docker.compose.service'] || null,
         alertsDisabled: labels['opendockwatch.alerts'] === 'off',
         iconOverride: iconOverrideFromLabel(labels['opendockwatch.icon']),
+        url: urlFromLabel(labels['opendockwatch.url']),
       };
     });
 }
@@ -307,6 +308,18 @@ async function listContainers(host) {
 // silently ignored for a difference the user can't see the reason for.
 function iconOverrideFromLabel(value) {
   return (value || '').trim().toLowerCase() || null;
+}
+
+// The value ends up in an href, so only http(s) survives: a `javascript:` URL in a label would run
+// in the dashboard's origin on click. Anything unparseable is dropped rather than shown broken.
+function urlFromLabel(value) {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+  try {
+    return ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 // Env var *names* that identify a container's runtime when its image name says nothing (a
@@ -700,6 +713,7 @@ async function getTopology(host, snapshot) {
       image: c.image,
       composeService: c.composeService,
       iconOverride: c.iconOverride,
+      url: c.url,
       iconHint: iconHintFor(host.id, c.id),
       ports: c.ports,
       networks: c.networks,
@@ -1099,6 +1113,7 @@ module.exports = {
   getTopologyMeta,
   refreshIconHints,
   iconOverrideFromLabel,
+  urlFromLabel,
   iconHintFor,
   parseIconHints,
   runtimeHintFromEnv,
