@@ -64,6 +64,12 @@ function takePollStats() {
   return out;
 }
 
+// Non-destructive read for /metrics: takePollStats resets maxMs, so a scrape using it would zero
+// the worst-poll figure the vitals line is waiting to report.
+function peekPollStats() {
+  return { ...pollStats };
+}
+
 function getLastPollCompletedTs() {
   return lastPollCompletedTs;
 }
@@ -466,6 +472,7 @@ module.exports = {
   getLastPollCompletedTs,
   getHostCount,
   takePollStats,
+  peekPollStats,
   // Exported for test/metricsCollector.test.js only: reachability is now derived from which of
   // the poll's own calls fail, and the branches that follow from that (the probe gate, the
   // exactly-once alert, what the snapshot keeps) are worth asserting directly.

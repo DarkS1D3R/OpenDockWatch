@@ -333,7 +333,7 @@ app.get('/metrics', (req, res) => {
   const provided = req.get('authorization')?.replace(/^Bearer\s+/i, '') || req.query.token;
   if (!tokenMatches(provided, token)) return res.status(401).type('text/plain').send('unauthorized');
   res.set('Content-Type', 'text/plain; version=0.0.4');
-  res.send(prometheus.render());
+  res.send(prometheus.render({ lagMs: watchdog.status().lagMs }));
 });
 
 app.post('/logout', (req, res) => {

@@ -27,6 +27,7 @@ function withSnapshots(t, snapshots, { restarts = new Map(), openAlerts = 0 } = 
   t.mock.method(metricsCollector, 'getAllSnapshots', () => new Map(Object.entries(snapshots)));
   t.mock.method(db, 'getRestartCountsByContainer', () => restarts);
   t.mock.method(db, 'countOpenAlerts', () => openAlerts);
+  t.mock.method(metricsCollector, 'peekPollStats', () => ({ lastMs: 1500, maxMs: 2000, slow: 0 }));
 }
 
 const container = (over = {}) => ({ id: 'aaaaaaaaaaaa', name: 'web', composeProject: 'shop', ...over });
@@ -38,6 +39,7 @@ const FAMILIES = [
   'opendockwatch_container_restarts_1h',
   'opendockwatch_host_containers_running',
   'opendockwatch_alerts_open',
+  'opendockwatch_host_reachable',
 ];
 
 // Nobody reads this endpoint by eye - a scraper does - so a malformed line doesn't look broken,
@@ -223,5 +225,22 @@ test('prometheus sample values', async (t) => {
   await t.test('a container with no compose project keeps the label with an empty value', (t2) => {
     withSnapshots(t2, { local: snapshot({ containers: [container({ composeProject: null })] }) });
     assert.match(prometheus.render(), /compose_project=""/);
+  });
+});
+
+test('host reachability and app vitals', async (t) => {
+  await t.test('reachable is 1 unless the snapshot says false, per host', (t2) => {
+    withSnapshots(t2, { up: snapshot(), down: snapshot({ reachable: false }) });
+    const out = prometheus.render();
+    assert.match(out, /^opendockwatch_host_reachable{host="up"} 1$/m);
+    assert.match(out, /^opendockwatch_host_reachable{host="down"} 0$/m);
+  });
+
+  await t.test('poll duration and event-loop lag are exported in seconds', (t2) => {
+    withSnapshots(t2, {});
+    const out = prometheus.render({ lagMs: 250 });
+    assert.match(out, /^opendockwatch_poll_duration_seconds 1.5$/m);
+    assert.match(out, /^opendockwatch_event_loop_lag_seconds 0.25$/m);
+    assert.match(prometheus.render(), /^opendockwatch_event_loop_lag_seconds 0$/m);
   });
 });
