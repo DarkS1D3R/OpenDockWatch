@@ -217,6 +217,9 @@ function hashPublicDir() {
 // page load, since `npm run dev` doesn't restart on a public/ edit and a stale tag would pin it.
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 let assetTag = `v${appVersion}-${hashPublicDir()}`;
+// public/ holds developer notes (CLAUDE.md) next to the files the browser needs, and /assets is
+// served without auth. No browser asset is markdown, so refuse it rather than ship docs to clients.
+app.use('/assets', (req, res, next) => (/\.md$/i.test(req.path) ? res.sendStatus(404) : next()));
 const pinnedAssets = express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' });
 app.use('/assets/:tag', (req, res, next) => (req.params.tag === assetTag ? pinnedAssets(req, res, next) : next()));
 

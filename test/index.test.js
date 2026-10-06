@@ -1252,6 +1252,11 @@ test('asset caching', async (t) => {
     assert.equal((await request(app).get('/assets/v0.0.0-not-a-release/js/app.js')).status, 404);
   });
 
+  await t.test('markdown notes in public/ are not served', async () => {
+    assert.equal((await request(app).get('/assets/CLAUDE.md')).status, 404);
+    assert.equal((await request(app).get(`${PREFIX}/CLAUDE.md`)).status, 404);
+  });
+
   // A from-source rebuild keeps the version, so a version-only URL is exactly what a browser from
   // the previous build holds cached - it must not name the current files as immutable.
   await t.test('the prefix is the version plus a content hash, and the version alone is not pinned', async () => {

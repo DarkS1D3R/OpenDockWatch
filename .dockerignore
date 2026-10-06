@@ -13,3 +13,6 @@ data
 .github
 screenshots
 test
+
+# Developer notes beside the browser assets; /assets is unauthenticated, so keep them out of the image.
+public/CLAUDE.md
