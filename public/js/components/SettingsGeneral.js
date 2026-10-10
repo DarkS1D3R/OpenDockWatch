@@ -64,8 +64,8 @@ export default {
       </label>
       <p v-if="overridden" class="muted small">Overriding the .env default.</p>
       <p v-else class="muted small">Using the .env default (if any) — no override saved yet.</p>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="status" class="muted small">{{ status }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="status" class="muted small" role="status">{{ status }}</p>
       <div class="modal-actions">
         <button :disabled="saving" @click="save">Save</button>
         <button :disabled="saving || !overridden" @click="clear">Clear override</button>

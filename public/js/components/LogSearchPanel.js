@@ -84,7 +84,7 @@ export default {
       <div class="log-panel-header">
         <div class="log-search-titlebar">
           <span class="log-panel-name" :title="project">Search logs in <strong>{{ project }}</strong></span>
-          <button class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close search and go back to the open panes">✕</button>
+          <button aria-label="Close search and go back to the open panes" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close search and go back to the open panes">✕</button>
         </div>
         <form class="log-search-form" @submit.prevent="run">
           <input
@@ -93,15 +93,16 @@ export default {
             type="text"
             maxlength="200"
             class="log-search-input"
+            aria-label="Text to search for"
             placeholder="Text to find in every container's log - a request id, an email, an error…"
           />
-          <select v-model.number="sinceMinutes" title="How far back to search">
+          <select v-model.number="sinceMinutes" title="How far back to search" aria-label="How far back to search">
             <option v-for="w in windows" :key="w.minutes" :value="w.minutes">{{ w.label }}</option>
           </select>
           <button type="submit" class="small-btn" :disabled="!query.trim() || loading">{{ loading ? 'Searching…' : 'Search' }}</button>
         </form>
-        <div v-if="error" class="log-search-error">{{ error }}</div>
-        <div v-else-if="result" class="log-search-summary muted">{{ summary }}</div>
+        <div v-if="error" class="log-search-error" role="alert">{{ error }}</div>
+        <div v-else-if="result" class="log-search-summary muted" role="status">{{ summary }}</div>
         <div v-for="w in warnings" :key="w" class="log-search-warning">{{ w }}</div>
       </div>
       <div class="log-view-wrap">
@@ -113,7 +114,11 @@ export default {
           class="log-line log-search-row"
           :class="{ 'search-line-clickable': canOpen(row) }"
           :title="canOpen(row) ? 'Open ' + row.containerName + ' at this line' : 'This container is no longer in the list'"
+          :role="canOpen(row) ? 'button' : null"
+          :tabindex="canOpen(row) ? 0 : null"
           @click="openRow(row)"
+          @keydown.enter.prevent="openRow(row)"
+          @keydown.space.prevent="openRow(row)"
         ><span class="log-search-container">{{ row.containerName }}</span><span v-html="row.html"></span></div></pre>
       </div>
     </div>

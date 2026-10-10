@@ -286,20 +286,20 @@ export default {
         <div class="logs-tab-viewmode">
           <button
             class="small-btn"
-            :class="{ active: viewMode === 'single' }"
+            :class="{ active: viewMode === 'single' }" :aria-pressed="String(viewMode === 'single')"
             @click="setViewMode('single')"
             title="One pane - click a container to swap it in"
           >Single</button>
           <button
             class="small-btn"
-            :class="{ active: viewMode === 'multi' }"
+            :class="{ active: viewMode === 'multi' }" :aria-pressed="String(viewMode === 'multi')"
             @click="setViewMode('multi')"
             :title="'Up to ' + maxPanes + ' panes side by side, synced by timestamp'"
           >Multi</button>
         </div>
         <button
           class="small-btn logs-tab-wrap-toggle"
-          :class="{ active: wrapLines }"
+          :class="{ active: wrapLines }" :aria-pressed="String(wrapLines)"
           @click="wrapLines = !wrapLines"
           :title="wrapLines ? 'Wrapping long lines in every open pane - turn off to scroll sideways instead' : 'Not wrapping - long lines scroll sideways in every open pane'"
         >
@@ -309,8 +309,8 @@ export default {
           ← Results: {{ searchProject }}
         </button>
         <div class="search-clear-wrap logs-tab-search-wrap">
-          <input type="text" v-model="search" placeholder="Filter containers…" class="logs-tab-search" />
-          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+          <input type="text" v-model="search" placeholder="Filter containers…" aria-label="Filter containers by name" class="logs-tab-search" />
+          <button aria-label="Clear filter" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
         </div>
         <p v-if="!filteredGroups.length" class="muted">No containers found.</p>
         <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="logs-tab-group">
@@ -319,7 +319,7 @@ export default {
             <button
               v-if="isRealGroup(groupName)"
               class="logs-tab-group-search"
-              :class="{ active: searchVisible && searchProject === groupName }"
+              :class="{ active: searchVisible && searchProject === groupName }" :aria-pressed="String(searchVisible && searchProject === groupName)"
               @click="openSearch(groupName)"
               title="Search the logs of every container in this project at once"
             >Search</button>
@@ -330,7 +330,12 @@ export default {
             class="logs-tab-row row-clickable"
             :class="{ 'row-selected': openIds.includes(c.id) }"
             :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
+            role="button"
+            tabindex="0"
+            :aria-pressed="String(openIds.includes(c.id))"
             @click="toggleOpen(c.id)"
+            @keydown.enter.prevent="toggleOpen(c.id)"
+            @keydown.space.prevent="toggleOpen(c.id)"
           >
             <span class="logs-tab-row-icon" v-html="stateIcon(c.state, c.health)"></span>
             <span class="logs-tab-row-name">{{ c.name }}</span>

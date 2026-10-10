@@ -566,38 +566,38 @@ const app = createApp({
   },
   template: `
     <div class="app">
-      <div v-if="bootError" class="boot-error">
+      <div v-if="bootError" class="boot-error" role="alert">
         <p>OpenDockWatch failed to load: {{ bootError }}</p>
         <p class="muted">Check the browser console and the container's logs for more detail, then reload.</p>
       </div>
       <template v-else>
       <header class="topbar">
         <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
-        <select v-model="selectedHostId" @change="selectHost(selectedHostId)">
+        <select v-model="selectedHostId" aria-label="Host" @change="selectHost(selectedHostId)">
           <option v-for="h in hosts" :key="h.id" :value="h.id">
             {{ h.name }} {{ h.reachable ? '' : '(unreachable)' }}
           </option>
         </select>
-        <div class="view-toggle">
-          <button :class="{active: view==='list'}" @click="setView('list')">List</button>
-          <button :class="{active: view==='flow'}" @click="setView('flow')">Flow</button>
-          <button :class="{active: view==='logs'}" @click="setView('logs')">Logs</button>
-          <button :class="{active: view==='activity'}" @click="setView('activity')">
-            Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}</span>
+        <nav class="view-toggle" aria-label="Views">
+          <button :class="{active: view==='list'}" :aria-current="view==='list' ? 'page' : null" @click="setView('list')">List</button>
+          <button :class="{active: view==='flow'}" :aria-current="view==='flow' ? 'page' : null" @click="setView('flow')">Flow</button>
+          <button :class="{active: view==='logs'}" :aria-current="view==='logs' ? 'page' : null" @click="setView('logs')">Logs</button>
+          <button :class="{active: view==='activity'}" :aria-current="view==='activity' ? 'page' : null" @click="setView('activity')">
+            Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
           </button>
-          <button :class="{active: view==='uptime'}" @click="setView('uptime')">Uptime</button>
-        </div>
-        <div class="view-toggle">
-          <button :class="{active: stateFilter==='all'}" @click="stateFilter='all'">All</button>
-          <button :class="{active: stateFilter==='running'}" @click="stateFilter='running'">Running</button>
-          <button :class="{active: stateFilter==='stopped'}" @click="stateFilter='stopped'">Stopped</button>
+          <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
+        </nav>
+        <div class="view-toggle" role="group" aria-label="Show containers">
+          <button :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
+          <button :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
+          <button :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
         </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
-        <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Alert webhook settings">⚙ Settings</button>
+        <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Settings" :aria-expanded="String(settingsOpen)">⚙ Settings</button>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
 
-      <p v-if="containersError" class="error">{{ containersError }}</p>
+      <p v-if="containersError" class="error" role="alert">{{ containersError }}</p>
 
       <host-card
         v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity' && view !== 'uptime'"
@@ -617,7 +617,7 @@ const app = createApp({
         class="layout"
         :class="{ 'with-detail': detailPanelVisible || settingsOpen, 'settings-open': settingsOpen }"
       >
-        <div class="main">
+        <main class="main">
           <div v-show="view === 'list'">
             <container-list
               :grouped-containers="groupedContainers"
@@ -667,7 +667,7 @@ const app = createApp({
           ></activity-view>
 
           <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
-        </div>
+        </main>
 
         <container-detail
           v-if="detailPanelVisible"

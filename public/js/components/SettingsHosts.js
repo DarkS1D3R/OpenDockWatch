@@ -84,8 +84,8 @@ export default {
         SSH keys already mounted in, no password needed here. Changes apply immediately, no
         restart required.
       </p>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="status" class="muted small">{{ status }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="status" class="muted small" role="status">{{ status }}</p>
 
       <div v-for="h in hosts" :key="h.id" class="host-row">
         <template v-if="editingHostId === h.id">

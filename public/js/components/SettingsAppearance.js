@@ -43,7 +43,7 @@ export default {
           :key="p.id"
           type="button"
           class="log-theme-preset-btn"
-          :class="{ active: theme.bg === p.bg && theme.text === p.text }"
+          :class="{ active: theme.bg === p.bg && theme.text === p.text }" :aria-pressed="String(theme.bg === p.bg && theme.text === p.text)"
           :style="{ background: p.bg, color: p.text }"
           @click="applyPreset(p)"
         >{{ p.label }}</button>

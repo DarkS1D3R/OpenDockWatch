@@ -190,14 +190,16 @@ export default {
         <div class="log-section-header">
           <h3>Alerts</h3>
           <div class="activity-badges">
-            <span
+            <button
+              type="button"
               v-for="c in alertCounts.shown"
               :key="c.key"
               class="activity-badge"
               :class="['severity-' + (c.meta || 'warning'), { active: alertRuleFilter === c.key }]"
               :title="(alertRuleFilter === c.key ? 'Stop filtering by ' : 'Filter by ') + c.key + ' (' + c.count + ')'"
+              :aria-pressed="String(alertRuleFilter === c.key)"
               @click="toggleAlertFilter(c.key)"
-            >{{ c.key }} <b>{{ c.count }}</b></span>
+            >{{ c.key }} <b>{{ c.count }}</b></button>
             <span
               v-if="alertCounts.hidden.length"
               class="activity-badge activity-badge-more"
@@ -214,8 +216,8 @@ export default {
           ></confirm-button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
-          <input type="text" v-model="alertSearch" placeholder="Search alerts…" class="activity-search" />
-          <button v-if="alertSearch" class="filter-clear-btn" @click="alertSearch = ''" title="Clear search">✕</button>
+          <input type="text" v-model="alertSearch" placeholder="Search alerts…" aria-label="Search alerts" class="activity-search" />
+          <button aria-label="Clear alert search" v-if="alertSearch" class="filter-clear-btn" @click="alertSearch = ''" title="Clear search">✕</button>
         </div>
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
         <div v-else class="activity-list-wrap">
@@ -248,14 +250,16 @@ export default {
         <div class="log-section-header">
           <h3>Events</h3>
           <div class="activity-badges">
-            <span
+            <button
+              type="button"
               v-for="c in eventCounts.shown"
               :key="c.key"
               class="activity-badge"
               :class="[c.meta ? 'severity-' + c.meta : null, { active: eventActionFilter === c.key }]"
               :title="(eventActionFilter === c.key ? 'Stop filtering by ' : 'Filter by ') + c.key + ' (' + c.count + ')'"
+              :aria-pressed="String(eventActionFilter === c.key)"
               @click="toggleEventFilter(c.key)"
-            >{{ c.key }} <b>{{ c.count }}</b></span>
+            >{{ c.key }} <b>{{ c.count }}</b></button>
             <span
               v-if="eventCounts.hidden.length"
               class="activity-badge activity-badge-more"
@@ -271,8 +275,8 @@ export default {
           ></confirm-button>
         </div>
         <div class="search-clear-wrap activity-search-wrap">
-          <input type="text" v-model="eventSearch" placeholder="Search events…" class="activity-search" />
-          <button v-if="eventSearch" class="filter-clear-btn" @click="eventSearch = ''" title="Clear search">✕</button>
+          <input type="text" v-model="eventSearch" placeholder="Search events…" aria-label="Search events" class="activity-search" />
+          <button aria-label="Clear event search" v-if="eventSearch" class="filter-clear-btn" @click="eventSearch = ''" title="Clear search">✕</button>
         </div>
         <p v-if="!searchedEvents.length" class="muted">{{ events.length ? 'No matching events.' : 'No events yet.' }}</p>
         <div v-else class="activity-list-wrap">

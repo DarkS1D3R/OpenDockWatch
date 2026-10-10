@@ -222,7 +222,8 @@ export default {
     // would jump the whole tab on every click instead of just swapping the stream underneath it.
     if (!this.embedded) {
       this.$nextTick(() => {
-        this.$el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        this.$el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
       });
     }
     document.addEventListener('click', this.onDocumentClick);
@@ -663,15 +664,15 @@ export default {
           <span class="log-status-badge" :class="statusBadge.cls" :title="statusBadge.title">{{ statusBadge.text }}</span>
           <div class="log-panel-controls">
           <div class="log-level-toggle log-level-toggle-full">
-            <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-            <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-            <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-            <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+            <button :class="{active: levels.error}" :aria-pressed="String(levels.error)" class="level-error" @click="toggleLevel('error')">Error</button>
+            <button :class="{active: levels.warn}" :aria-pressed="String(levels.warn)" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+            <button :class="{active: levels.info}" :aria-pressed="String(levels.info)" class="level-info" @click="toggleLevel('info')">Info</button>
+            <button :class="{active: levels.debug}" :aria-pressed="String(levels.debug)" class="level-debug" @click="toggleLevel('debug')">Debug</button>
           </div>
           <div class="log-level-toggle-compact" ref="levelsMenuWrap">
             <button
               class="small-btn"
-              :class="{ active: levelsMenuOpen }"
+              :class="{ active: levelsMenuOpen }" :aria-expanded="String(levelsMenuOpen)"
               @click="levelsMenuOpen = !levelsMenuOpen"
               title="Log level filters"
             >
@@ -679,10 +680,10 @@ export default {
             </button>
             <div v-if="levelsMenuOpen" class="log-levels-menu">
               <div class="log-level-toggle log-level-toggle-stacked">
-                <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-                <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-                <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-                <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+                <button :class="{active: levels.error}" :aria-pressed="String(levels.error)" class="level-error" @click="toggleLevel('error')">Error</button>
+                <button :class="{active: levels.warn}" :aria-pressed="String(levels.warn)" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+                <button :class="{active: levels.info}" :aria-pressed="String(levels.info)" class="level-info" @click="toggleLevel('info')">Info</button>
+                <button :class="{active: levels.debug}" :aria-pressed="String(levels.debug)" class="level-debug" @click="toggleLevel('debug')">Debug</button>
               </div>
             </div>
           </div>
@@ -692,15 +693,16 @@ export default {
               <input
                 type="text"
                 v-model="filter"
+                aria-label="Filter log lines"
                 @keydown="onFilterKeydown"
                 :placeholder="regexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
                 :class="{ 'filter-invalid': regexError }"
               />
-              <button v-if="filter" class="filter-clear-btn" @click="filter = ''" title="Clear filter">✕</button>
+              <button aria-label="Clear filter" v-if="filter" class="filter-clear-btn" @click="filter = ''" title="Clear filter">✕</button>
             </div>
-            <button
+            <button aria-label="Treat filter text as a regular expression"
               class="small-btn regex-toggle-btn"
-              :class="{ active: regexMode }"
+              :class="{ active: regexMode }" :aria-pressed="String(regexMode)"
               @click="regexMode = !regexMode"
               title="Treat filter text as a regular expression"
             >
@@ -708,21 +710,21 @@ export default {
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
             <div v-else-if="searchActive" class="search-hits-box">
-              <button class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
+              <button aria-label="Previous match (Shift+Enter or ↑)" class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
               <span class="search-hits-count">{{ matchLines.length ? activeHitIndex + 1 : 0 }} / {{ matchLines.length }}</span>
-              <button class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
+              <button aria-label="Next match (Enter or ↓)" class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
             </div>
             <button
               v-if="!multiPane"
               class="small-btn"
-              :class="{ active: showMatchPane }"
+              :class="{ active: showMatchPane }" :aria-pressed="String(showMatchPane)"
               @click="showMatchPane = !showMatchPane"
               title="List every matching line in a strip below - the log itself stays unfiltered, so clicking a match jumps to it in context"
             >
               ☰ <span class="btn-label">Matches</span>
             </button>
           </div>
-          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
+          <select :value="tail" aria-label="Lines to load" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
             <option :value="1000">1000</option>
             <option :value="5000">5000</option>
             <option :value="10000">10000</option>
@@ -732,7 +734,7 @@ export default {
           <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
           <button
             class="small-btn log-pause-btn"
-            :class="{ active: paused }"
+            :class="{ active: paused }" :aria-pressed="String(paused)"
             @click="togglePause"
             :title="paused ? 'Paused - new lines are held until you resume (space)' : 'Pause the log - new lines are held rather than dropped (space)'"
           >
@@ -740,7 +742,7 @@ export default {
           </button>
           <button
             class="small-btn"
-            :class="{ active: showTimestamps }"
+            :class="{ active: showTimestamps }" :aria-pressed="String(showTimestamps)"
             @click="showTimestamps = !showTimestamps"
             title="Toggle the docker timestamp shown at the start of each line"
           >
@@ -752,7 +754,7 @@ export default {
           <button
             v-if="!embedded"
             class="small-btn"
-            :class="{ active: wrap }"
+            :class="{ active: wrap }" :aria-pressed="String(wrap)"
             @click="$emit('update:wrap', !wrap)"
             :title="wrap ? 'Wrapping long lines - turn off to scroll sideways instead' : 'Not wrapping - long lines scroll sideways'"
           >
@@ -761,7 +763,7 @@ export default {
           <template v-if="multiPane">
             <button
               class="small-btn"
-              :class="{ active: syncEnabled }"
+              :class="{ active: syncEnabled }" :aria-pressed="String(syncEnabled)"
               @click="$emit('toggle-sync')"
               :title="syncEnabled ? 'Synced - scroll it to move the other open panes, or turn this off to scroll it independently' : 'Not synced - scrolling this pane does not move, or get moved by, the others'"
             >
@@ -771,13 +773,15 @@ export default {
               class="log-pane-main-btn"
               :class="{ active: isMain }"
               @click="$emit('set-main')"
+              :aria-label="isMain ? 'Main pane - the others follow it' : 'Make this the main pane'"
+              :aria-pressed="String(isMain)"
               :title="isMain ? 'This is the pane the others follow when synced - click to unset' : 'Make this the pane the others follow when synced'"
             >
               {{ isMain ? '★' : '☆' }}
             </button>
           </template>
             <button v-if="!embedded" @click="$emit('close')">Close</button>
-            <button v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
+            <button aria-label="Close this pane" v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
               ✕
             </button>
           </div>

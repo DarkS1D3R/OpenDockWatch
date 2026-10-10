@@ -27,6 +27,17 @@ test('stateEmoji', async (t) => {
     assert.ok(!running.includes('state-icon-spin'));
   });
 
+  await t.test('every icon names its state in text, since the colour alone carries it otherwise', () => {
+    const label = (svg) => (/role="img" aria-label="([^"]+)"/.exec(svg) || [])[1];
+    assert.equal(label(format.stateEmoji('running')), 'Running');
+    assert.equal(label(format.stateEmoji('running', 'unhealthy')), 'Running, unhealthy');
+    assert.equal(label(format.stateEmoji('running', 'starting')), 'Running, health check starting');
+    assert.equal(label(format.stateEmoji('restarting')), 'Restarting');
+    assert.equal(label(format.stateEmoji('paused')), 'Paused');
+    assert.equal(label(format.stateEmoji('created')), 'Created, never started');
+    assert.equal(label(format.stateEmoji('exited')), 'Stopped');
+  });
+
   await t.test('unrecognized state falls back to the stopped icon', () => {
     assert.equal(format.stateEmoji('exited'), format.stateEmoji('stopped'));
     assert.equal(format.stateEmoji(undefined), format.stateEmoji('stopped'));

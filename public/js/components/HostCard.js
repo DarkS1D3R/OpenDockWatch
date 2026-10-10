@@ -221,7 +221,7 @@ export default {
           <button
             v-for="r in ranges"
             :key="r.key"
-            :class="{ active: range === r.key }"
+            :class="{ active: range === r.key }" :aria-pressed="String(range === r.key)"
             @click="range = r.key"
           >{{ r.label }}</button>
         </div>
@@ -297,7 +297,7 @@ export default {
             <summary>Images{{ diskRow('Images') ? ' (' + diskRow('Images').total + ')' : '' }}</summary>
             <div class="inspect-list">
               <div v-if="imagesLoading" class="muted small">Loading…</div>
-              <div v-if="imagesError" class="error">{{ imagesError }}</div>
+              <div v-if="imagesError" class="error" role="alert">{{ imagesError }}</div>
               <div v-for="img in images" :key="img.id" class="inspect-line">
                 <span class="mono">{{ imageLabel(img) }}</span>
                 <span class="muted small">&nbsp;{{ img.size }} &bull; {{ img.containers ? 'in use (' + img.containers + ')' : 'unused' }} &bull; {{ img.createdSince }}</span>

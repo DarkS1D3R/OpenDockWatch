@@ -81,13 +81,13 @@ export default {
       <div class="log-section-header">
         <h3>Uptime</h3>
         <div class="view-toggle">
-          <button :class="{active: days===1}" @click="days=1">24h</button>
-          <button :class="{active: days===7}" @click="days=7">7d</button>
-          <button :class="{active: days===30}" @click="days=30">30d</button>
+          <button :class="{active: days===1}" :aria-pressed="String(days===1)" @click="days=1">24h</button>
+          <button :class="{active: days===7}" :aria-pressed="String(days===7)" @click="days=7">7d</button>
+          <button :class="{active: days===30}" :aria-pressed="String(days===30)" @click="days=30">30d</button>
         </div>
       </div>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-else-if="loading && !report" class="muted">Loading…</p>
       <template v-else-if="report">
         <p class="uptime-host-summary">
@@ -99,8 +99,8 @@ export default {
         </p>
 
         <div v-if="sortedContainers.length" class="search-clear-wrap uptime-search-wrap">
-          <input type="text" v-model="search" placeholder="Filter by container or project…" class="uptime-search" />
-          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+          <input type="text" v-model="search" placeholder="Filter by container or project…" aria-label="Filter by container or project" class="uptime-search" />
+          <button aria-label="Clear filter" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
         </div>
 
         <p v-if="!sortedContainers.length" class="muted">No container history in this window.</p>

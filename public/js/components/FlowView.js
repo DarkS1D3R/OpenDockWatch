@@ -229,8 +229,8 @@ export default {
       </button>
       <div class="cy-toolbar">
         <div class="view-toggle">
-          <button :class="{active: flowMode==='graph'}" @click="setFlowMode('graph')">Graph</button>
-          <button :class="{active: flowMode==='tree'}" @click="setFlowMode('tree')">Tree</button>
+          <button :class="{active: flowMode==='graph'}" :aria-pressed="String(flowMode==='graph')" @click="setFlowMode('graph')">Graph</button>
+          <button :class="{active: flowMode==='tree'}" :aria-pressed="String(flowMode==='tree')" @click="setFlowMode('tree')">Tree</button>
         </div>
         <span class="toolbar-sep"></span>
         <button @click="zoomBy(1.25)">Zoom in</button>
@@ -250,8 +250,8 @@ export default {
         <button @click="exportFlowSvg" title="Vector export of the whole graph - no size ceiling, good for hosts with a lot of compose projects">Export SVG</button>
         <span class="toolbar-sep"></span>
         <div class="search-clear-wrap">
-          <input type="text" v-model="flowFilterText" placeholder="Filter by name…" class="flow-filter-input" />
-          <button v-if="flowFilterText" class="filter-clear-btn" @click="flowFilterText = ''" title="Clear filter">✕</button>
+          <input type="text" v-model="flowFilterText" placeholder="Filter by name…" aria-label="Filter the graph by container name" class="flow-filter-input" />
+          <button aria-label="Clear filter" v-if="flowFilterText" class="filter-clear-btn" @click="flowFilterText = ''" title="Clear filter">✕</button>
         </div>
         <span class="toolbar-sep"></span>
         <template v-if="flowMode === 'graph'">

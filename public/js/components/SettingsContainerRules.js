@@ -115,8 +115,8 @@ export default {
         label, which still silences threshold alerts for a container unconditionally regardless of
         any rule here.
       </p>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="status" class="muted small">{{ status }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="status" class="muted small" role="status">{{ status }}</p>
 
       <p v-if="!rules.length" class="muted small">No container rules yet - matched containers use the global defaults.</p>
 
@@ -175,8 +175,8 @@ export default {
           </p>
           <p v-if="r.mutedRules.length" class="muted small">Muted: {{ r.mutedRules.map(ruleLabel).join(', ') }}</p>
           <div class="modal-actions">
-            <button class="small-btn" :disabled="saving || i === 0" @click="moveRule(i, -1)" title="Move up">▲</button>
-            <button class="small-btn" :disabled="saving || i === rules.length - 1" @click="moveRule(i, 1)" title="Move down">▼</button>
+            <button aria-label="Move up" class="small-btn" :disabled="saving || i === 0" @click="moveRule(i, -1)" title="Move up">▲</button>
+            <button aria-label="Move down" class="small-btn" :disabled="saving || i === rules.length - 1" @click="moveRule(i, 1)" title="Move down">▼</button>
             <button class="small-btn" :disabled="saving" @click="startEdit(r)">Edit</button>
             <confirm-button label="Remove" hint="Deletes this rule - matching containers fall back to the global thresholds" :disabled="saving" @confirm="removeRule(r.id)"></confirm-button>
           </div>

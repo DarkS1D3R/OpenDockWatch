@@ -186,13 +186,13 @@ export default {
     },
   },
   template: `
-    <aside class="detail-panel">
+    <aside class="detail-panel" :aria-label="'Details for ' + container.name">
       <div class="detail-header">
         <div>
           <strong>{{ container.name }}</strong>
           <div class="muted small">{{ container.composeProject || 'ungrouped' }} / {{ container.composeService || '—' }}</div>
         </div>
-        <button @click="$emit('close')">✕</button>
+        <button @click="$emit('close')" aria-label="Close details" title="Close details">✕</button>
       </div>
       <div class="detail-body">
         <div class="detail-row"><span class="label">Status</span><span :class="stateClass()">{{ container.status }}</span></div>

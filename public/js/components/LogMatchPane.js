@@ -114,7 +114,7 @@ export default {
       >
         <span class="muted small" v-if="searchActive">{{ lines.length }} matching {{ lines.length === 1 ? 'line' : 'lines' }}</span>
         <span class="muted small" v-else>Type a filter above to list matching lines here.</span>
-        <button class="small-btn log-match-close" @click="$emit('close')" title="Hide the match list">✕</button>
+        <button aria-label="Hide the match list" class="small-btn log-match-close" @click="$emit('close')" title="Hide the match list">✕</button>
       </div>
       <div v-if="searchActive" class="log-match-list" ref="list" :style="listStyle">
         <div
