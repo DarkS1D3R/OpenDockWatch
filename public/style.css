@@ -2247,6 +2247,94 @@ table.containers td:nth-child(7) {
   flex: 1;
   min-width: 0;
   display: flex;
+  position: relative;
+}
+/* The compose-wide search sits over the panes rather than replacing them, so open streams keep
+   their layout and scroll position underneath while it's up - display:none would lose both. */
+.logs-tab-search-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+.logs-tab-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.logs-tab-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logs-tab-group-search {
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.logs-tab-group-search:hover,
+.logs-tab-group-search.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.logs-tab-back-to-search {
+  width: 100%;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-search-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.log-search-titlebar .log-panel-name {
+  flex: 1;
+}
+.log-search-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.log-search-input {
+  flex: 1;
+  min-width: 160px;
+}
+.log-search-summary {
+  font-size: 12px;
+}
+.log-search-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.log-search-warning {
+  font-size: 12px;
+  color: var(--warn);
+}
+.log-search-empty {
+  padding: 24px;
+  font-size: 13px;
+}
+/* Which container a merged-timeline line came from - fixed width so the timestamps and messages
+   still line up down the list, ellipsised because compose names run long. */
+.log-search-container {
+  display: inline-block;
+  width: 14ch;
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-weight: 600;
+  opacity: 0.85;
 }
 .logs-tab-empty {
   margin: auto;

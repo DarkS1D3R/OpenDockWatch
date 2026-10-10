@@ -249,6 +249,49 @@ router.get('/hosts/:hostId/containers/:id/logs/history', requireHost, requireCon
   }
 });
 
+// Compose-wide log search: one `docker logs --since` scan per container, LOG_SEARCH_CONCURRENCY at a
+// time, sharing one deadline that stays inside REQUEST_TIMEOUT_MS even after a MAX_QUEUE_WAIT_MS wait
+// for a slot - so the route always answers, slow containers flagged as timed out. See server/CLAUDE.md.
+const LOG_SEARCH_CONCURRENCY = 3;
+const LOG_SEARCH_DEADLINE_MS = 30_000;
+const LOG_SEARCH_MAX_QUERY = 200;
+const LOG_SEARCH_MAX_MINUTES = 7 * 24 * 60;
+const LOG_SEARCH_MAX_LIMIT = 2000;
+
+router.get('/hosts/:hostId/compose/:project/logs/search', requireHost, async (req, res) => {
+  const host = req.odwHost;
+  const { project } = req.params;
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!query) return res.status(400).json({ error: 'q is required' });
+  if (query.length > LOG_SEARCH_MAX_QUERY) return res.status(400).json({ error: `q must be at most ${LOG_SEARCH_MAX_QUERY} characters` });
+  const sinceMinutes = intParam(req.query.sinceMinutes, 60, LOG_SEARCH_MAX_MINUTES) || 60;
+  const limit = intParam(req.query.limit, 500, LOG_SEARCH_MAX_LIMIT) || 500;
+
+  let containers;
+  try {
+    containers = await docker.listContainers(host);
+  } catch (err) {
+    return dockerError(res, err);
+  }
+  const group = containers.filter((c) => c.composeProject === project);
+  if (!group.length) return res.status(404).json({ error: 'no such compose project on this host' });
+
+  // Same audit reasoning as logs.download: this reads log content across a whole project. The query
+  // itself stays out - it is often a request id or an email address pulled from the logs.
+  logger.info('logs.search', { host: host.id, project, containers: group.length, sinceMinutes, user: req.session.username });
+  const since = new Date(Date.now() - sinceMinutes * 60_000).toISOString();
+  const deadline = Date.now() + LOG_SEARCH_DEADLINE_MS;
+  const results = await mapLimit(group, LOG_SEARCH_CONCURRENCY, async (c) => {
+    const base = { containerId: c.id, containerName: c.name };
+    try {
+      return { ...base, ...(await docker.searchLogs(host, c.id, { since, query, limit, deadline })) };
+    } catch (err) {
+      return { ...base, error: err.stderr || err.message };
+    }
+  });
+  res.json({ project, query, sinceMinutes, searched: group.length, ...docker.mergeLogSearch(results, limit) });
+});
+
 router.get('/hosts/:hostId/containers/:id/logs/download', requireHost, requireContainerId, (req, res) => {
   const host = req.odwHost;
 

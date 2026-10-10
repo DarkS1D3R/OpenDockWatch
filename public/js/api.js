@@ -116,6 +116,15 @@ export async function apiGetLogHistory(hostId, id, cursor, limit) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/logs/history?${qs}`, { timeoutMs: 40_000 }));
 }
 
+// Searches every container in a compose project. The server answers within ~45s by design (it flags
+// slow containers as timed out rather than waiting on them), so this only needs headroom over that.
+export async function apiSearchComposeLogs(hostId, project, { q, sinceMinutes, limit }) {
+  const qs = new URLSearchParams({ q, sinceMinutes: String(sinceMinutes), ...(limit ? { limit: String(limit) } : {}) });
+  return jsonOrThrow(
+    await apiFetch(`/api/hosts/${hostId}/compose/${encodeURIComponent(project)}/logs/search?${qs}`, { timeoutMs: 55_000 })
+  );
+}
+
 export function downloadLogsUrl(hostId, id, tail) {
   return `/api/hosts/${hostId}/containers/${id}/logs/download?tail=${tail}`;
 }

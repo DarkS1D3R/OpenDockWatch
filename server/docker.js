@@ -1015,6 +1015,96 @@ function getLogsAfter(host, id, { after, limit }) {
   });
 }
 
+// Matched against the message only, with ANSI colour codes stripped - a search for "2026" must not
+// hit every line's own stamp, and a coloured "ERROR" is "\x1b[31mERROR" in the raw text. `needle`
+// arrives lowercased: plain case-insensitive substring, like every other filter box in the app.
+// eslint-disable-next-line no-control-regex
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
+function logLineMatches(line, needle) {
+  const body = line.replace(LOG_TS_RE, '');
+  const plain = body.includes('\x1b[') ? body.replace(ANSI_SGR_RE, '') : body;
+  return plain.toLowerCase().includes(needle);
+}
+
+// Scans one container's log since `since` for `query`, keeping the newest `limit` matches. Stops at
+// `deadline` (epoch ms, so time queued for a run() slot counts too) and returns what it found rather
+// than failing, so one huge log can't sink a compose-wide search. Holds a slot while it reads.
+async function searchLogs(host, id, { since, query, limit, deadline }) {
+  const needle = query.toLowerCase();
+  await acquire();
+  try {
+    if (deadline - Date.now() <= 0) return { lines: [], matched: 0, timedOut: true };
+    return await new Promise((resolve, reject) => {
+      const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--since', since, id]);
+      const bufs = { out: createTailBuffer(limit), err: createTailBuffer(limit) };
+      const partial = { out: '', err: '' };
+      let matched = 0;
+      let stderrText = '';
+      let settled = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        finish();
+      }, deadline - Date.now());
+
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        if (err) return reject(err);
+        const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+        const lines = [...bufs.out.lines(), ...bufs.err.lines()].sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+        resolve({ lines: lines.slice(-limit), matched, timedOut });
+      }
+
+      const scan = (key, line) => {
+        if (!line.length || !logLineMatches(line, needle)) return;
+        matched++;
+        bufs[key].push(line);
+      };
+      const take = (key) => (chunk) => {
+        if (key === 'err') stderrText = (stderrText + chunk).slice(-4096);
+        const parts = (partial[key] + chunk).split('\n');
+        partial[key] = parts.pop();
+        for (const part of parts) scan(key, part);
+      };
+      child.stdout.setEncoding('utf8').on('data', take('out'));
+      child.stderr.setEncoding('utf8').on('data', take('err'));
+      child.on('error', (err) => finish(err));
+      child.on('close', (code) => {
+        if (timedOut) return;
+        for (const key of ['out', 'err']) scan(key, partial[key]);
+        if (code) return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+        finish();
+      });
+    });
+  } finally {
+    release();
+  }
+}
+
+// Pure half of the compose-wide search route: every container's matches on one timeline, newest
+// `limit` kept. Per-container failures and timeouts are reported beside the matches, not thrown.
+function mergeLogSearch(results, limit) {
+  const stamp = (m) => (LOG_TS_RE.exec(m.line) || [])[1] || '';
+  const all = [];
+  const failed = [];
+  const timedOut = [];
+  let matched = 0;
+  for (const r of results) {
+    if (r.error) {
+      failed.push({ containerId: r.containerId, containerName: r.containerName, error: r.error });
+      continue;
+    }
+    if (r.timedOut) timedOut.push(r.containerName);
+    matched += r.matched;
+    for (const line of r.lines) all.push({ containerId: r.containerId, containerName: r.containerName, line });
+  }
+  all.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { matches: all.slice(-limit), matched, truncated: matched > Math.min(all.length, limit), failed, timedOut };
+}
+
 function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
@@ -1103,6 +1193,9 @@ module.exports = {
   createTailBuffer,
   mergeLogsBefore,
   mergeLogsAfter,
+  searchLogs,
+  logLineMatches,
+  mergeLogSearch,
   LOG_TS_RE,
   streamEvents,
   streamStats,

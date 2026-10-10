@@ -75,6 +75,12 @@ const STREAMING_PATH_RE = /\/(logs|logs\/download|events\/stream)$/;
 // with armResponseTimeout instead of the blanket one below. See routes/containers.js.
 const COMPOSE_GROUP_PATH_RE = /\/compose\/[^/]+\/[^/]+$/;
 
+// The URL as a log line may carry it: a log search's ?q= is often a request id or an email pulled from
+// the logs themselves, so its value is masked here for every line that logs a request's URL.
+function loggableUrl(req) {
+  return req.originalUrl.replace(/([?&]q=)[^&]*/g, '$1…');
+}
+
 // Wraps res.json so a late real response after the timer fires is dropped instead of throwing
 // ERR_HTTP_HEADERS_SENT (the 504 already went out through the captured original), and clears the
 // timer on finish/close. Shared by the blanket timeout below and routes/containers.js.
@@ -86,7 +92,7 @@ function armResponseTimeout(req, res, ms) {
   const timer = setTimeout(() => {
     if (res.headersSent || res.writableEnded) return;
     timedOut = true;
-    logger.warn('request.timeout', { method: req.method, path: req.originalUrl, ms });
+    logger.warn('request.timeout', { method: req.method, path: loggableUrl(req), ms });
     res.status(504);
     sendJson({ error: 'timed out waiting for the docker daemon' });
   }, ms);
@@ -122,5 +128,6 @@ module.exports = {
   requireHostQuery,
   armResponseTimeout,
   requestTimeout,
+  loggableUrl,
   dockerError,
 };

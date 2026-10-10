@@ -21,7 +21,7 @@ const metricsCollector = require('./metricsCollector');
 const statsWatcher = require('./statsWatcher');
 const prometheus = require('./prometheus');
 const { createWatchdog } = require('./watchdog');
-const { REQUEST_TIMEOUT_MS, STREAMING_PATH_RE, requestTimeout, requireHost } = require('./routes/middleware');
+const { REQUEST_TIMEOUT_MS, STREAMING_PATH_RE, requestTimeout, requireHost, loggableUrl } = require('./routes/middleware');
 const { getOpenLogStreams, router: containerRoutes } = require('./routes/containers');
 const { router: settingsRoutes } = require('./routes/settings');
 const sessionRoutes = require('./routes/session');
@@ -142,8 +142,9 @@ const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS) || 5000;
 // out SIGTERM routinely takes ten-plus seconds while behaving exactly as designed, and the disk
 // route can shell out to `docker system df`, measured at 40-75s cold on WSL2. Those get the
 // timeout they're actually bounded by as their threshold, so the line still fires when they exceed
-// even that - it just stops firing for working normally.
+// even that - it just stops firing for working normally. A compose log search runs to its own deadline.
 const SLOW_ROUTE_OVERRIDES = [
+  { re: /\/compose\/[^/]+\/logs\/search$/, ms: REQUEST_TIMEOUT_MS },
   { re: /\/containers\/[^/]+\/(start|stop|restart)$/, ms: CONTAINER_ACTION_TIMEOUT_MS },
   { re: /\/disk-usage(\/images)?$/, ms: DISK_USAGE_TIMEOUT_MS },
 ];
@@ -163,7 +164,7 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const tookMs = Date.now() - startedAt;
     if (tookMs >= threshold) {
-      logger.warn('request.slow', { method: req.method, path: req.originalUrl, status: res.statusCode, tookMs, thresholdMs: threshold });
+      logger.warn('request.slow', { method: req.method, path: loggableUrl(req), status: res.statusCode, tookMs, thresholdMs: threshold });
     }
   });
   next();
@@ -360,7 +361,7 @@ app.use('/api', api);
 // otherwise leak the stack trace unless NODE_ENV=production. Four arguments mark this as an
 // error handler; `next` is used for the already-streaming (SSE) case where express must destroy it.
 app.use((err, req, res, next) => {
-  logger.error('request.failed', { method: req.method, path: req.originalUrl, error: err.message });
+  logger.error('request.failed', { method: req.method, path: loggableUrl(req), error: err.message });
   if (res.headersSent) return next(err);
   res.status(err.status || 500).json({ error: err.message });
 });

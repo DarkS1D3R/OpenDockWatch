@@ -26,6 +26,8 @@ const {
   createTailBuffer,
   mergeLogsBefore,
   mergeLogsAfter,
+  logLineMatches,
+  mergeLogSearch,
   parseResourceLimits,
   parseTop,
   DISK_USAGE_TIMEOUT_MS,
@@ -819,6 +821,74 @@ test('mergeLogsAfter', async (t) => {
 
   await t.test('says there is no more when the page is not full', () => {
     assert.equal(mergeLogsAfter([line(11, 'a')], [], AFTER, 5).more, false);
+  });
+});
+
+test('logLineMatches', async (t) => {
+  const line = (text) => `2026-01-01T00:00:01.000000000Z ${text}`;
+
+  await t.test('is a case-insensitive substring match on the message', () => {
+    assert.equal(logLineMatches(line('GET /orders req=AbC123 200'), 'abc123'), true);
+    assert.equal(logLineMatches(line('GET /orders req=xyz 200'), 'abc123'), false);
+  });
+
+  await t.test("never matches the line's own docker timestamp", () => {
+    assert.equal(logLineMatches(line('started'), '2026-01-01'), false);
+    assert.equal(logLineMatches(line('deploy 2026-01-01 done'), '2026-01-01'), true);
+  });
+
+  await t.test('sees through ANSI colour codes, which sit between the letters in the raw text', () => {
+    assert.equal(logLineMatches(line('\x1b[31mERR\x1b[0mOR timeout'), 'error timeout'), true);
+  });
+});
+
+test('mergeLogSearch', async (t) => {
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+  const ok = (containerName, lines, extra = {}) => ({
+    containerId: `${containerName}-id`,
+    containerName,
+    lines,
+    matched: lines.length,
+    ...extra,
+  });
+
+  await t.test("puts every container's matches on one timeline, tagged with where each came from", () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1'), line(4, 'a2')]), ok('worker', [line(2, 'w1'), line(3, 'w2')])], 100);
+    assert.deepEqual(
+      out.matches.map((m) => `${m.containerName}:${m.line.slice(-2)}`),
+      ['api:a1', 'worker:w1', 'worker:w2', 'api:a2']
+    );
+    assert.equal(out.matched, 4);
+    assert.equal(out.truncated, false);
+  });
+
+  await t.test('keeps the newest `limit` across all containers and says it cut some', () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1'), line(4, 'a2')]), ok('worker', [line(2, 'w1'), line(3, 'w2')])], 2);
+    assert.deepEqual(
+      out.matches.map((m) => m.line.slice(-2)),
+      ['w2', 'a2']
+    );
+    assert.equal(out.truncated, true);
+  });
+
+  await t.test('a container that capped its own matches makes the result truncated even under the overall limit', () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1')], { matched: 40 })], 100);
+    assert.equal(out.matched, 40);
+    assert.equal(out.truncated, true);
+  });
+
+  await t.test('reports failures and timeouts beside the matches rather than dropping the rest', () => {
+    const out = mergeLogSearch(
+      [
+        ok('api', [line(1, 'a1')]),
+        { containerId: 'db-id', containerName: 'db', error: 'no such container' },
+        ok('worker', [line(2, 'w1')], { timedOut: true }),
+      ],
+      100
+    );
+    assert.equal(out.matches.length, 2);
+    assert.deepEqual(out.failed, [{ containerId: 'db-id', containerName: 'db', error: 'no such container' }]);
+    assert.deepEqual(out.timedOut, ['worker']);
   });
 });
 

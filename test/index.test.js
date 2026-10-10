@@ -30,6 +30,7 @@ process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
 const { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor } = require('../server/index');
+const { loggableUrl } = require('../server/routes/middleware');
 const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
@@ -298,6 +299,16 @@ test('slowThresholdFor', async (t) => {
     }
     assert.ok(slowThresholdFor('/hosts/local/disk-usage') > 5000);
     assert.ok(slowThresholdFor('/hosts/local/disk-usage/images') > 5000);
+    assert.ok(slowThresholdFor('/hosts/local/compose/shop/logs/search') > 30_000, 'a log search runs to its own 30s deadline');
+  });
+
+  await t.test('request lines mask a log search query, which is often a request id or an email', () => {
+    assert.equal(
+      loggableUrl({ originalUrl: '/api/hosts/h/compose/shop/logs/search?q=jane%40example.com&sinceMinutes=60' }),
+      '/api/hosts/h/compose/shop/logs/search?q=…&sinceMinutes=60'
+    );
+    assert.equal(loggableUrl({ originalUrl: '/api/x?sinceMinutes=60&q=secret' }), '/api/x?sinceMinutes=60&q=…');
+    assert.equal(loggableUrl({ originalUrl: '/api/hosts/h/containers?fresh=1' }), '/api/hosts/h/containers?fresh=1');
   });
 
   await t.test('a route that merely mentions a slow word is not exempted', () => {
@@ -494,6 +505,93 @@ test('GET /hosts/:hostId/containers/:id/logs/history', async (t) => {
     const base = `/api/hosts/${hostId}/containers/abc/logs/history`;
     assert.equal((await admin.get(`${base}?before=${BEFORE}&after=${BEFORE}`)).status, 400);
     assert.equal((await admin.get(`${base}?limit=5`)).status, 400);
+  });
+});
+
+test('GET /hosts/:hostId/compose/:project/logs/search', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const CONTAINERS = [
+    { id: 'apiapiapiapi', name: 'shop-api', composeProject: 'shop' },
+    { id: 'workerworker', name: 'shop-worker', composeProject: 'shop' },
+    { id: 'otherotherot', name: 'other-thing', composeProject: 'other' },
+  ];
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+  const url = (qs) => `/api/hosts/${hostId}/compose/shop/logs/search?${qs}`;
+
+  await t.test('400s without a query, or with one too long to be a real search', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(url(''))).status, 400);
+    assert.equal((await admin.get(url('q=%20%20'))).status, 400);
+    assert.equal((await admin.get(url(`q=${'x'.repeat(201)}`))).status, 400);
+  });
+
+  await t.test('404s for an unknown host and for a project no container belongs to', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(`/api/hosts/${FAKE_HOST_ID}/compose/shop/logs/search?q=x`)).status, 404);
+    assert.equal((await admin.get(`/api/hosts/${hostId}/compose/nonexistent/logs/search?q=x`)).status, 404);
+  });
+
+  await t.test("searches only the project's containers and merges them into one timeline", async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const calls = [];
+    t2.mock.method(docker, 'searchLogs', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      const lines = id === 'apiapiapiapi' ? [line(1, 'req=42 in'), line(3, 'req=42 out')] : [line(2, 'job req=42')];
+      return { lines, matched: lines.length, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const before = Date.now();
+    const res = await admin.get(url('q=req%3D42&sinceMinutes=15'));
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls.map((c) => c.id).sort(), ['apiapiapiapi', 'workerworker']);
+    for (const c of calls) {
+      assert.equal(c.query, 'req=42');
+      assert.equal(c.limit, 500);
+      const sinceMs = Date.parse(c.since);
+      assert.ok(sinceMs >= before - 15 * 60_000 - 1000 && sinceMs <= Date.now() - 15 * 60_000 + 1000, 'since is sinceMinutes ago');
+      assert.ok(c.deadline > Date.now(), 'every container shares a future deadline');
+    }
+    assert.deepEqual(
+      res.body.matches.map((m) => m.containerName),
+      ['shop-api', 'shop-worker', 'shop-api']
+    );
+    assert.equal(res.body.searched, 2);
+    assert.equal(res.body.matched, 3);
+  });
+
+  await t.test('a container that fails is reported, not a failure of the whole search', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    t2.mock.method(docker, 'searchLogs', async (host, id) => {
+      if (id === 'workerworker') throw Object.assign(new Error('boom'), { stderr: 'Error: no such container' });
+      return { lines: [line(1, 'hit')], matched: 1, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=hit'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.matches.length, 1);
+    assert.deepEqual(res.body.failed, [{ containerId: 'workerworker', containerName: 'shop-worker', error: 'Error: no such container' }]);
+  });
+
+  await t.test('clamps the window and the limit', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const calls = [];
+    t2.mock.method(docker, 'searchLogs', async (host, id, opts) => {
+      calls.push(opts);
+      return { lines: [], matched: 0, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=x&sinceMinutes=99999999&limit=99999999'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sinceMinutes, 7 * 24 * 60);
+    assert.equal(calls[0].limit, 2000);
+  });
+
+  await t.test('a viewer can search, the same as they can read a log', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    t2.mock.method(docker, 'searchLogs', async () => ({ lines: [], matched: 0, timedOut: false }));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get(url('q=x'))).status, 200);
   });
 });
 
