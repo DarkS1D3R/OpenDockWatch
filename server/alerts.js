@@ -32,6 +32,21 @@ function wasKilledRecently(hostId, containerId, ts) {
   return killedAt !== undefined && ts - killedAt <= KILL_MEMORY_MS;
 }
 
+// An OOM kill of PID 1 arrives as `oom` then `die` (exit 137) - one incident, so a crash alert right
+// after an oom_killed one is skipped. Short: the two events land within a second of each other.
+const OOM_MEMORY_MS = 10_000;
+const recentOoms = new Map(); // "hostId:containerId" -> ts of the last unmuted oom event
+
+function noteOom(hostId, containerId, ts) {
+  for (const [key, oomAt] of recentOoms) if (ts - oomAt > OOM_MEMORY_MS) recentOoms.delete(key);
+  recentOoms.set(`${hostId}:${containerId}`, ts);
+}
+
+function wasOomKilledRecently(hostId, containerId, ts) {
+  const oomAt = recentOoms.get(`${hostId}:${containerId}`);
+  return oomAt !== undefined && ts - oomAt <= OOM_MEMORY_MS;
+}
+
 // Restart policies that mean "keep this running". A clean exit under `no` or `on-failure` is how a
 // finished job or migration looks, so those stay silent - alerting on them would be every one-shot.
 const KEEP_RUNNING_POLICIES = new Set(['always', 'unless-stopped']);
@@ -288,6 +303,7 @@ function retainContainers(hostId, containerIds) {
 
 function forgetHost(hostId) {
   for (const key of recentKills.keys()) if (key.startsWith(`${hostId}:`)) recentKills.delete(key);
+  for (const key of recentOoms.keys()) if (key.startsWith(`${hostId}:`)) recentOoms.delete(key);
   for (const key of breachStarts.keys()) {
     if (key.startsWith(`${hostId}:`)) {
       breachStarts.delete(key);
@@ -505,6 +521,20 @@ function handleEvent(event) {
 
   if (action === 'kill') noteKill(hostId, containerId, ts);
 
+  // Not every oom kills the container: the kernel may pick a child process and leave PID 1 running,
+  // so the message says a process was killed, and the container_crashed it may lead to is skipped.
+  if (action === 'oom' && !mutedByRule('oom_killed', event)) {
+    noteOom(hostId, containerId, ts);
+    fire({
+      hostId,
+      containerId,
+      containerName,
+      rule: 'oom_killed',
+      severity: 'critical',
+      message: `Container ${containerName || containerId} hit its memory limit and the kernel OOM-killed a process in it`,
+    });
+  }
+
   if (action === 'die') {
     const exitCode = raw && raw.Actor && raw.Actor.Attributes ? raw.Actor.Attributes.exitCode : undefined;
     // parseInt of a present-but-garbled exit code is NaN, not caught by the `: 0` default (which
@@ -522,7 +552,14 @@ function handleEvent(event) {
       const recentManualStop = db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0;
       // mutedByRule only runs in this already-narrow, about-to-fire path - not once per
       // docker-events line - so this is at most one extra rules-table read per real crash.
-      if (!recentManualStop && !mutedByRule('container_crashed', event)) {
+      if (wasOomKilledRecently(hostId, containerId, ts)) {
+        logger.info('alert.superseded', {
+          host: hostId,
+          container: containerName || containerId,
+          rule: 'container_crashed',
+          by: 'oom_killed',
+        });
+      } else if (!recentManualStop && !mutedByRule('container_crashed', event)) {
         fire({
           hostId,
           containerId,

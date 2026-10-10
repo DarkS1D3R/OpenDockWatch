@@ -282,6 +282,109 @@ test('checkCleanExit: unexpected_exit', async (t) => {
   });
 });
 
+test('handleEvent: oom_killed', async (t) => {
+  // recentOoms is module state that outlives each subtest, so every case uses its own container id.
+  const oom = (containerId, ts, extra = {}) => ({
+    hostId: 'h',
+    containerId,
+    containerName: 'web',
+    composeProject: null,
+    action: 'oom',
+    ts,
+    raw: {},
+    ...extra,
+  });
+  const die = (containerId, ts, exitCode = '137') => ({
+    hostId: 'h',
+    containerId,
+    containerName: 'web',
+    composeProject: null,
+    action: 'die',
+    ts,
+    raw: { Actor: { Attributes: { exitCode } } },
+  });
+  const mutingOom = () => [
+    {
+      id: 1,
+      hostId: null,
+      matchType: 'name',
+      matchValue: 'web',
+      cpuThreshold: null,
+      memThreshold: null,
+      sustainMinutes: null,
+      mutedRules: ['oom_killed'],
+    },
+  ];
+
+  await t.test('fires a critical alert on an oom event', () => {
+    const fired = captureFired(t);
+    alerts.handleEvent(oom('oom-1', Date.now()));
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].rule, 'oom_killed');
+    assert.equal(fired[0].severity, 'critical');
+    assert.match(fired[0].message, /web.*OOM-killed/);
+  });
+
+  await t.test('the exit-137 die that follows is not a second, container_crashed alert', () => {
+    const logged = [];
+    t.mock.method(logger, 'info', (event, fields) => logged.push({ event, fields }));
+    const fired = captureFired(t);
+    const ts = Date.now();
+    alerts.handleEvent(oom('oom-2', ts));
+    alerts.handleEvent(die('oom-2', ts + 500));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['oom_killed']
+    );
+    assert.equal(logged.filter((l) => l.event === 'alert.superseded').length, 1);
+  });
+
+  await t.test('a crash long after an oom is a crash of its own', () => {
+    const fired = captureFired(t);
+    const ts = Date.now();
+    alerts.handleEvent(oom('oom-3', ts));
+    alerts.handleEvent(die('oom-3', ts + 60_000, '1'));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['oom_killed', 'container_crashed']
+    );
+  });
+
+  await t.test("an oom on one container does not swallow another container's crash", () => {
+    const fired = captureFired(t);
+    const ts = Date.now();
+    alerts.handleEvent(oom('oom-4a', ts));
+    alerts.handleEvent(die('oom-4b', ts + 500));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['oom_killed', 'container_crashed']
+    );
+  });
+
+  await t.test('muted for a matching container, and then its crash still fires', () => {
+    const fired = captureFired(t, { getContainerAlertRules: mutingOom });
+    const ts = Date.now();
+    alerts.handleEvent(oom('oom-5', ts));
+    alerts.handleEvent(die('oom-5', ts + 500));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['container_crashed']
+    );
+  });
+
+  await t.test('forgetHost drops the remembered oom', () => {
+    const fired = captureFired(t);
+    const ts = Date.now();
+    alerts.handleEvent(oom('oom-6', ts));
+    alerts.forgetHost('h');
+    alerts.handleEvent(die('oom-6', ts + 500));
+    assert.deepEqual(
+      fired.map((a) => a.rule),
+      ['oom_killed', 'container_crashed']
+    );
+  });
+});
+
 test('handleEvent: crash_loop', async (t) => {
   await t.test('fires when the restart count reaches the threshold with no manual restarts', () => {
     const fired = captureFired(t, { countRestartsSince: () => 3, countManualStartsSince: () => 0 });

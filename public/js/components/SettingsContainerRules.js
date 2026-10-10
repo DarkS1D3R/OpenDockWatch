@@ -14,6 +14,7 @@ const EVENT_RULES = [
   { value: 'crash_loop', label: 'Crash loop' },
   { value: 'unhealthy', label: 'Unhealthy' },
   { value: 'unexpected_exit', label: 'Unexpected clean exit' },
+  { value: 'oom_killed', label: 'OOM kill' },
 ];
 
 function blankRule() {
