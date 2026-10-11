@@ -82,8 +82,17 @@ function webhookUrlError(url) {
   return null;
 }
 
+// Reminder interval and a route's escalation delay share one range: whole minutes, up to a day.
+function minutesError(field, value) {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0 || value > alerts.REPEAT_MAX_MINUTES) {
+    return `${field} must be a whole number of minutes from 0 to ${alerts.REPEAT_MAX_MINUTES}`;
+  }
+  return null;
+}
+
 router.put('/settings/webhook', requireAdmin, (req, res) => {
-  const { url = '', format = '', notifyRecovery, mode } = req.body || {};
+  const { url = '', format = '', notifyRecovery, mode, repeatMinutes } = req.body || {};
   const urlError = url ? webhookUrlError(url) : null;
   if (urlError) return res.status(400).json({ error: urlError });
   if (format && format !== 'slack') {
@@ -95,6 +104,8 @@ router.put('/settings/webhook', requireAdmin, (req, res) => {
   if (mode !== undefined && !alerts.WEBHOOK_MODES.has(mode)) {
     return res.status(400).json({ error: 'mode must be "all" or "unmatched"' });
   }
+  const repeatError = minutesError('repeatMinutes', repeatMinutes);
+  if (repeatError) return res.status(400).json({ error: repeatError });
   // Scheme only, never the full URL - webhook URLs embed secrets (Discord token, Slack path, ntfy
   // topic) that have no business in the container's log output. Shared helper, same reason.
   logger.info('settings.webhook.update', {
@@ -103,8 +114,9 @@ router.put('/settings/webhook', requireAdmin, (req, res) => {
     format: format || 'auto',
     notifyRecovery,
     mode,
+    repeatMinutes,
   });
-  res.json(alerts.setWebhookConfig({ url, format, notifyRecovery, mode }));
+  res.json(alerts.setWebhookConfig({ url, format, notifyRecovery, mode, repeatMinutes }));
 });
 
 router.delete('/settings/webhook', requireAdmin, (req, res) => {
@@ -128,7 +140,7 @@ const ROUTE_SEVERITIES = new Set(['warning', 'critical']);
 const ROUTE_NAME_MAX = 60;
 
 function validateWebhookRouteBody(body, hosts) {
-  const { name, url, format, hostId, rules, minSeverity, notifyRecovery, enabled } = body;
+  const { name, url, format, hostId, rules, minSeverity, notifyRecovery, enabled, delayMinutes } = body;
   if (typeof name !== 'string' || !name.trim() || name.trim().length > ROUTE_NAME_MAX)
     return `name is required, up to ${ROUTE_NAME_MAX} characters`;
   if (typeof url !== 'string' || !url) return 'url is required';
@@ -140,6 +152,8 @@ function validateWebhookRouteBody(body, hosts) {
     return `rules must be an array of ${alerts.ALERT_RULES.join('/')}`;
   }
   if (minSeverity !== undefined && !ROUTE_SEVERITIES.has(minSeverity)) return 'minSeverity must be "warning" or "critical"';
+  const delayError = minutesError('delayMinutes', delayMinutes);
+  if (delayError) return delayError;
   for (const [field, val] of [
     ['notifyRecovery', notifyRecovery],
     ['enabled', enabled],
@@ -159,6 +173,7 @@ function normalizeWebhookRouteBody(body) {
     minSeverity: body.minSeverity || 'warning',
     notifyRecovery: !!body.notifyRecovery,
     enabled: body.enabled !== false,
+    delayMinutes: body.delayMinutes || 0,
   };
 }
 

@@ -115,7 +115,8 @@ db.exec(`
     rules TEXT NOT NULL DEFAULT '[]',
     min_severity TEXT NOT NULL DEFAULT 'warning',
     notify_recovery INTEGER NOT NULL DEFAULT 0,
-    enabled INTEGER NOT NULL DEFAULT 1
+    enabled INTEGER NOT NULL DEFAULT 1,
+    delay_minutes INTEGER NOT NULL DEFAULT 0
   );
 
   -- One row per notice per destination ('main' or 'route:<id>'), firing or resolved - the retry
@@ -215,6 +216,17 @@ try {
   /* column already exists */
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_events_host_ts_active ON events (host_id, ts) WHERE cleared_at IS NULL`);
+// A route that only takes alerts still unacknowledged after this long (escalation); 0 is at once.
+try {
+  db.exec('ALTER TABLE webhook_routes ADD COLUMN delay_minutes INTEGER NOT NULL DEFAULT 0');
+} catch {
+  /* column already exists */
+}
+// The reminder/escalation sweep's once-a-minute query; partial, so it stays small however long the
+// alerts table gets. After the ALTER block for the same reason as idx_events_host_ts_active.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_alerts_follow_up ON alerts (ts) WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
+`);
 
 const stmts = {
   insertContainerMetric: db.prepare(`
@@ -253,12 +265,13 @@ const stmts = {
   // Picked up by alerts.js's retry sweep: never-attempted rows (attempts = 0) are deliberately
   // excluded, only actually-tried-and-failed ones retry. sinceTs bounds the lookback so a webhook
   // down for hours doesn't get its whole backlog replayed at once. Oldest first, so a firing notice
-  // goes out before the resolved one that follows it. A cleared alert stops being retried.
+  // goes out before the resolved one that follows it. A cleared alert stops being retried, and a
+  // failed reminder is never retried - the next one is due an interval later anyway.
   getPendingDeliveries: db.prepare(`
     SELECT d.id, d.alert_id AS alertId, d.destination, d.kind, d.ts, d.payload, d.attempts, a.resolved_at AS resolvedAt
     FROM webhook_deliveries d JOIN alerts a ON a.id = d.alert_id
     WHERE d.delivered_at IS NULL AND d.attempts > 0 AND d.attempts < @maxAttempts
-      AND d.ts >= @sinceTs AND a.cleared_at IS NULL
+      AND d.ts >= @sinceTs AND a.cleared_at IS NULL AND d.kind != 'reminder'
     ORDER BY d.ts ASC, d.id ASC
     LIMIT @limit
   `),
@@ -275,6 +288,20 @@ const stmts = {
     ORDER BY ts DESC LIMIT 1
   `),
   markAlertResolved: db.prepare(`UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`),
+  // Candidates for a reminder or an escalation: nobody has acknowledged them, they have not cleared,
+  // and they are still on the Activity tab. Newest first, so alerts.js keeps the newest per rule.
+  getFollowUpAlerts: db.prepare(`
+    SELECT id, ts, host_id AS hostId, container_id AS containerId, container_name AS containerName, rule, severity, message
+    FROM alerts WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
+    ORDER BY ts DESC LIMIT @limit
+  `),
+  // Per destination: when the firing notice arrived (null if it has not) and the last reminder tried.
+  getAlertNotices: db.prepare(`
+    SELECT destination,
+      MAX(CASE WHEN kind = 'firing' THEN delivered_at END) AS firingDeliveredAt,
+      MAX(CASE WHEN kind = 'reminder' THEN ts END) AS lastReminderTs
+    FROM webhook_deliveries WHERE alert_id = ? GROUP BY destination
+  `),
   getRemoteDigest: db.prepare(`
     SELECT digest, error_kind AS errorKind, error, checked_at AS checkedAt FROM image_remote_digests WHERE ref_key = ?
   `),
@@ -285,13 +312,13 @@ const stmts = {
   pruneRemoteDigests: db.prepare(`DELETE FROM image_remote_digests WHERE checked_at < ?`),
   getWebhookRoutes: db.prepare(`SELECT * FROM webhook_routes ORDER BY id ASC`),
   insertWebhookRoute: db.prepare(`
-    INSERT INTO webhook_routes (name, url, format, host_id, rules, min_severity, notify_recovery, enabled)
-    VALUES (@name, @url, @format, @hostId, @rules, @minSeverity, @notifyRecovery, @enabled)
+    INSERT INTO webhook_routes (name, url, format, host_id, rules, min_severity, notify_recovery, enabled, delay_minutes)
+    VALUES (@name, @url, @format, @hostId, @rules, @minSeverity, @notifyRecovery, @enabled, @delayMinutes)
   `),
   updateWebhookRoute: db.prepare(`
     UPDATE webhook_routes
     SET name = @name, url = @url, format = @format, host_id = @hostId, rules = @rules,
-        min_severity = @minSeverity, notify_recovery = @notifyRecovery, enabled = @enabled
+        min_severity = @minSeverity, notify_recovery = @notifyRecovery, enabled = @enabled, delay_minutes = @delayMinutes
     WHERE id = @id
   `),
   deleteWebhookRoute: db.prepare(`DELETE FROM webhook_routes WHERE id = ?`),
@@ -567,6 +594,14 @@ function markAlertResolved(id, ts) {
   return stmts.markAlertResolved.run(ts, id).changes > 0;
 }
 
+function getFollowUpAlerts({ limit = 200 } = {}) {
+  return stmts.getFollowUpAlerts.all({ limit });
+}
+
+function getAlertNotices(alertId) {
+  return stmts.getAlertNotices.all(alertId);
+}
+
 function getRemoteDigest(refKey) {
   return stmts.getRemoteDigest.get(refKey) || null;
 }
@@ -586,6 +621,7 @@ function rowToWebhookRoute(row) {
     minSeverity: row.min_severity,
     notifyRecovery: !!row.notify_recovery,
     enabled: !!row.enabled,
+    delayMinutes: row.delay_minutes || 0,
   };
 }
 
@@ -599,6 +635,7 @@ function webhookRouteParams(route) {
     minSeverity: route.minSeverity || 'warning',
     notifyRecovery: route.notifyRecovery ? 1 : 0,
     enabled: route.enabled === false ? 0 : 1,
+    delayMinutes: route.delayMinutes || 0,
   };
 }
 
@@ -864,6 +901,8 @@ module.exports = {
   getDeliveredDestinations,
   getUnresolvedAlert,
   markAlertResolved,
+  getFollowUpAlerts,
+  getAlertNotices,
   getRemoteDigest,
   setRemoteDigest,
   getWebhookRoutes,

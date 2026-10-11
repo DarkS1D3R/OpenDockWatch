@@ -254,6 +254,9 @@ test('webhook routes', async (t) => {
       { minSeverity: 'info' },
       { hostId: '__no_such_host__' },
       { notifyRecovery: 'yes' },
+      { delayMinutes: -1 },
+      { delayMinutes: 2000 },
+      { delayMinutes: '30' },
       { format: 'teams' },
     ]) {
       const res = await admin.post('/api/settings/webhook-routes').send({ ...body, ...bad });
@@ -268,8 +271,10 @@ test('webhook routes', async (t) => {
     assert.equal(route.name, 'Ops phone');
     assert.deepEqual(route.rules, ['host_unreachable']);
     assert.equal(route.enabled, true, 'a new route is on unless said otherwise');
-    const updated = await admin.put(`/api/settings/webhook-routes/${route.id}`).send({ ...body, enabled: false });
+    assert.equal(route.delayMinutes, 0, 'a new route sends at once unless given a delay');
+    const updated = await admin.put(`/api/settings/webhook-routes/${route.id}`).send({ ...body, enabled: false, delayMinutes: 45 });
     assert.equal(updated.body.find((r) => r.id === route.id).enabled, false);
+    assert.equal(updated.body.find((r) => r.id === route.id).delayMinutes, 45);
     assert.equal((await admin.put('/api/settings/webhook-routes/abc').send(body)).status, 400);
     assert.equal((await admin.put('/api/settings/webhook-routes/999999').send(body)).status, 404);
     assert.equal((await admin.post('/api/settings/webhook-routes/999999/test')).status, 404);
@@ -280,12 +285,23 @@ test('webhook routes', async (t) => {
   await t.test('the main webhook takes notifyRecovery and mode, and validates both', async () => {
     assert.equal((await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: 'on' })).status, 400);
     assert.equal((await admin.put('/api/settings/webhook').send({ url: '', mode: 'some' })).status, 400);
-    const saved = await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: true, mode: 'unmatched' });
+    for (const repeatMinutes of [-1, 1.5, '30', 1441]) {
+      assert.equal(
+        (await admin.put('/api/settings/webhook').send({ url: '', repeatMinutes })).status,
+        400,
+        `repeatMinutes ${repeatMinutes}`
+      );
+    }
+    const saved = await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: true, mode: 'unmatched', repeatMinutes: 30 });
     assert.equal(saved.status, 200);
     assert.equal(saved.body.notifyRecovery, true);
     assert.equal(saved.body.mode, 'unmatched');
+    assert.equal(saved.body.repeatMinutes, 30);
+    const kept = await admin.put('/api/settings/webhook').send({ url: '' });
+    assert.equal(kept.body.repeatMinutes, 30, 'an older client saving only the URL leaves reminders alone');
     const cleared = await admin.delete('/api/settings/webhook');
     assert.equal(cleared.body.mode, 'all');
+    assert.equal(cleared.body.repeatMinutes, 0);
   });
 });
 

@@ -8,7 +8,7 @@ import {
 } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
 import { ALERT_RULES } from '../constants.js';
-import { maskWebhookUrl, routeSummary, blankRoute, routeDraft } from '../lib/webhookRoutes.js';
+import { maskWebhookUrl, routeSummary, blankRoute, routeDraft, routePayload } from '../lib/webhookRoutes.js';
 import ConfirmButton from './ConfirmButton.js';
 
 // The routes half of Settings > Webhook: extra destinations, each taking the alerts its host, rules
@@ -69,7 +69,8 @@ export default {
     submit() {
       return withStatus(this, 'saving', async () => {
         const adding = this.editingId === null;
-        this.setRoutes(adding ? await apiAddWebhookRoute(this.draft) : await apiUpdateWebhookRoute(this.editingId, this.draft));
+        const body = routePayload(this.draft);
+        this.setRoutes(adding ? await apiAddWebhookRoute(body) : await apiUpdateWebhookRoute(this.editingId, body));
         this.cancelEdit();
         this.status = adding ? 'Route added.' : 'Route updated.';
       });
@@ -100,7 +101,8 @@ export default {
       <h4 class="settings-subheading">Routes</h4>
       <p class="muted small">
         Extra destinations. Every enabled route whose filters match gets the alert - not just the
-        first. Leave the rules unticked to take every rule.
+        first. Leave the rules unticked to take every rule. A route with a delay is an escalation: it
+        only hears about alerts nobody acknowledged in time.
       </p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="status" class="muted small" role="status">{{ status }}</p>
@@ -159,6 +161,14 @@ export default {
           </label>
         </div>
       </div>
+      <label class="modal-field">
+        Only after unacknowledged for (minutes, 0 = at once)
+        <input type="number" v-model.number="draft.delayMinutes" min="0" max="1440" step="1" />
+      </label>
+      <p class="muted small">
+        For escalation: with a delay, this route gets an alert only if nobody has acknowledged it by
+        then, and it does not count as having taken the alert away from the main webhook.
+      </p>
       <label class="checkbox-label">
         <input type="checkbox" v-model="draft.notifyRecovery" /> Send a resolved message when the problem clears
       </label>

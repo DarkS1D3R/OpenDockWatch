@@ -27,6 +27,25 @@ test('routeSummary says what a route takes', () => {
   assert.equal(wr.routeSummary({ ...base, hostId: 'gone' }, hosts), 'every rule on gone', 'a host removed since still names something');
 });
 
+test('routeSummary names an escalation delay', () => {
+  const base = { hostId: null, rules: [], minSeverity: 'warning' };
+  assert.equal(wr.routeSummary({ ...base, delayMinutes: 90 }), 'every rule on any host, once unacknowledged for 1h 30m');
+  assert.equal(wr.routeSummary({ ...base, delayMinutes: 0 }), 'every rule on any host');
+});
+
+test('minutesLabel', () => {
+  assert.equal(wr.minutesLabel(30), '30m');
+  assert.equal(wr.minutesLabel(120), '2h');
+  assert.equal(wr.minutesLabel(75), '1h 15m');
+});
+
+test('routePayload turns a cleared or odd delay field into a whole number', () => {
+  assert.equal(wr.routePayload({ ...wr.blankRoute(), delayMinutes: '' }).delayMinutes, 0);
+  assert.equal(wr.routePayload({ ...wr.blankRoute(), delayMinutes: -5 }).delayMinutes, 0);
+  assert.equal(wr.routePayload({ ...wr.blankRoute(), delayMinutes: 29.6 }).delayMinutes, 30);
+  assert.equal(wr.routePayload({ ...wr.blankRoute(), delayMinutes: 15 }).delayMinutes, 15);
+});
+
 test('routeDraft copies, so editing the form never edits the listed route', () => {
   const route = {
     id: 3,

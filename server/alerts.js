@@ -153,6 +153,9 @@ const WEBHOOK_RECOVERY_KEY = 'alertWebhookNotifyRecovery';
 // carve traffic away from it rather than only copying it elsewhere. UI-only; routes are too.
 const WEBHOOK_MODE_KEY = 'alertWebhookMode';
 const WEBHOOK_MODES = new Set(['all', 'unmatched']);
+// Minutes between reminders for a problem nobody has acknowledged; 0 (the default) is off.
+const WEBHOOK_REPEAT_KEY = 'alertRepeatMinutes';
+const REPEAT_MAX_MINUTES = 24 * 60;
 
 const envFlag = (v) => /^(1|true|yes|on)$/i.test(String(v || '').trim());
 
@@ -168,21 +171,30 @@ function getWebhookConfig() {
   const notifyRecovery = dbRecovery !== null ? dbRecovery === '1' : envFlag(process.env.ALERT_WEBHOOK_NOTIFY_RECOVERY);
   const dbMode = db.getSetting(WEBHOOK_MODE_KEY);
   const mode = WEBHOOK_MODES.has(dbMode) ? dbMode : 'all';
-  return { url, format, overridden, notifyRecovery, mode };
+  const repeatMinutes = repeatFrom(db.getSetting(WEBHOOK_REPEAT_KEY) ?? process.env.ALERT_REPEAT_MINUTES);
+  return { url, format, overridden, notifyRecovery, mode, repeatMinutes };
+}
+
+// A whole number of minutes within range, else 0 - a typo in .env must not turn reminders on.
+function repeatFrom(raw) {
+  const n = Number(String(raw ?? '').trim() || 0);
+  return Number.isInteger(n) && n >= 0 && n <= REPEAT_MAX_MINUTES ? n : 0;
 }
 
 // notifyRecovery and mode are left alone when not given, so an older client saving only the URL
 // does not silently switch recovery messages off.
-function setWebhookConfig({ url, format, notifyRecovery, mode }) {
+function setWebhookConfig({ url, format, notifyRecovery, mode, repeatMinutes }) {
   db.setSetting(WEBHOOK_URL_KEY, url || '');
   db.setSetting(WEBHOOK_FORMAT_KEY, format || '');
   if (notifyRecovery !== undefined) db.setSetting(WEBHOOK_RECOVERY_KEY, notifyRecovery ? '1' : '0');
   if (mode !== undefined) db.setSetting(WEBHOOK_MODE_KEY, WEBHOOK_MODES.has(mode) ? mode : 'all');
+  if (repeatMinutes !== undefined) db.setSetting(WEBHOOK_REPEAT_KEY, String(repeatFrom(repeatMinutes)));
   return getWebhookConfig();
 }
 
 function clearWebhookConfig() {
-  for (const key of [WEBHOOK_URL_KEY, WEBHOOK_FORMAT_KEY, WEBHOOK_RECOVERY_KEY, WEBHOOK_MODE_KEY]) db.deleteSetting(key);
+  for (const key of [WEBHOOK_URL_KEY, WEBHOOK_FORMAT_KEY, WEBHOOK_RECOVERY_KEY, WEBHOOK_MODE_KEY, WEBHOOK_REPEAT_KEY])
+    db.deleteSetting(key);
   return getWebhookConfig();
 }
 
@@ -192,6 +204,8 @@ const routeKey = (route) => `route:${route.id}`;
 function routeDestination(route) {
   return { key: routeKey(route), url: route.url, format: route.format, notifyRecovery: route.notifyRecovery };
 }
+
+const isDelayed = (route) => route.delayMinutes > 0;
 
 function mainDestination(main) {
   return { key: MAIN_DESTINATION, url: main.url, format: main.format, notifyRecovery: main.notifyRecovery };
@@ -206,10 +220,10 @@ function routeMatches(route, alert) {
   return true;
 }
 
-// Every destination a firing alert goes to: each matching route, plus the main webhook unless it is
-// set to take only what no route took. Pure - see server/CLAUDE.md for the routing rules.
+// Where a firing alert goes at once: each matching route, plus the main webhook unless it takes only
+// what no route took. A delayed route is left to the follow-up sweep and does not count as taking it.
 function selectDestinations(alert, main, routes) {
-  const out = routes.filter((r) => routeMatches(r, alert)).map(routeDestination);
+  const out = routes.filter((r) => !isDelayed(r) && routeMatches(r, alert)).map(routeDestination);
   if (main.url && (main.mode !== 'unmatched' || out.length === 0)) out.unshift(mainDestination(main));
   return out;
 }
@@ -340,8 +354,8 @@ function loadBreachState() {
   }
 }
 
-// sustained: fire now. endedStart: a breach just ended, and when it began - so the resolve it
-// triggers only closes an alert that breach raised, never an older one.
+// sustained: fire now. start: when the ongoing breach began. endedStart: a breach just ended, and
+// when it began - so the resolve it triggers only closes an alert that breach raised.
 function checkSustained(key, breached, sustainMs, ts) {
   if (!breached) {
     const start = breachStarts.get(key);
@@ -356,7 +370,7 @@ function checkSustained(key, breached, sustainMs, ts) {
     breachStarts.set(key, start);
     db.setBreachStart(key, start);
   }
-  return { sustained: ts - start >= sustainMs, endedStart: null };
+  return { sustained: ts - start >= sustainMs, endedStart: null, start };
 }
 
 // fetch has no default timeout and notify() is fire-and-forget, so a webhook host that accepts
@@ -436,12 +450,12 @@ async function deliverWebhook(rawUrl, alert, format) {
 
 // One notice to one destination. The delivery row is what the retry sweep works from; payload.id
 // is 0 for sendTestAlert's synthetic alert, which intentionally skips that bookkeeping. Never throws.
-async function sendNotice(dest, payload) {
-  const fields = { host: payload.hostId, rule: payload.rule, status: payload.status, destination: dest.key };
+async function sendNotice(dest, payload, kind = payload.status) {
+  const fields = { host: payload.hostId, rule: payload.rule, status: kind, destination: dest.key };
   let deliveryId = null;
   try {
     if (payload.id) {
-      deliveryId = db.insertWebhookDelivery({ alertId: payload.id, destination: dest.key, kind: payload.status, ts: Date.now(), payload });
+      deliveryId = db.insertWebhookDelivery({ alertId: payload.id, destination: dest.key, kind, ts: Date.now(), payload });
     }
     await deliverWebhook(dest.url, payload, dest.format);
     if (deliveryId) db.markDeliveryDelivered(deliveryId);
@@ -569,11 +583,83 @@ async function retryFailedWebhooks() {
   }
 }
 
+// Rules that describe a state, which resolve() closes when it clears. Only these get reminders: a
+// crash or an OOM kill is over by the time anyone reads it, and the Activity badge already holds it.
+const STATEFUL_RULES = new Set(['host_unreachable', 'unhealthy', 'container_cpu', 'container_mem', 'host_cpu', 'host_mem', 'docker_disk']);
+// An escalation route takes an alert once it has been open this long past the route's delay, and no
+// later - so adding a route, or a restart, doesn't page about every old alert at once.
+const ESCALATION_WINDOW_MS = 60 * 60 * 1000;
+const FOLLOW_UP_LIMIT = 200;
+
+const followUpKey = (a) => `${a.hostId}:${a.containerId}:${a.rule}`;
+
+function followUpPayload(alert, now, message, extra) {
+  const { id, hostId, containerId, containerName, rule, severity } = alert;
+  return { id, ts: now, hostId, containerId, containerName, rule, severity, message, status: 'firing', firedAt: alert.ts, ...extra };
+}
+
+// The notices due right now for unacknowledged, unresolved alerts: an escalation to each delayed
+// route whose delay has passed, and a reminder to each destination that got the firing notice once
+// repeatMinutes has passed since it (or the last reminder). Pure - see server/CLAUDE.md.
+function dueFollowUps({ alerts: open, noticesFor, main, routes, now }) {
+  const repeatMs = main.repeatMinutes * 60_000;
+  const delayed = routes.filter((r) => r.enabled && isDelayed(r));
+  const due = [];
+  const seen = new Set();
+  for (const alert of open) {
+    // Newest first, so a stale duplicate from before one alert per breach is skipped.
+    if (seen.has(followUpKey(alert))) continue;
+    seen.add(followUpKey(alert));
+    const age = now - alert.ts;
+    const notices = noticesFor(alert.id);
+    const sentTo = new Set(notices.map((n) => n.destination));
+    for (const route of delayed) {
+      const delayMs = route.delayMinutes * 60_000;
+      if (sentTo.has(routeKey(route)) || age < delayMs || age > delayMs + ESCALATION_WINDOW_MS || !routeMatches(route, alert)) continue;
+      const message = `Unacknowledged for ${formatAge(age)}: ${alert.message}`;
+      due.push({ dest: routeDestination(route), kind: 'firing', payload: followUpPayload(alert, now, message, { escalated: true }) });
+    }
+    if (!repeatMs || !STATEFUL_RULES.has(alert.rule)) continue;
+    for (const n of notices) {
+      if (!n.firingDeliveredAt || now - Math.max(n.firingDeliveredAt, n.lastReminderTs || 0) < repeatMs) continue;
+      const dest = destinationByKey(n.destination, main, routes);
+      if (!dest) continue;
+      const message = `Still unacknowledged after ${formatAge(age)}: ${alert.message}`;
+      due.push({ dest, kind: 'reminder', payload: followUpPayload(alert, now, message, { reminder: true }) });
+    }
+  }
+  return due;
+}
+
+let followingUp = false;
+
+async function sendFollowUps(now = Date.now()) {
+  if (followingUp) return;
+  followingUp = true;
+  try {
+    const main = getWebhookConfig();
+    const routes = db.getWebhookRoutes();
+    // Neither feature on: not even the query runs.
+    if (!main.repeatMinutes && !routes.some((r) => r.enabled && isDelayed(r))) return;
+    const due = dueFollowUps({
+      alerts: db.getFollowUpAlerts({ limit: FOLLOW_UP_LIMIT }),
+      noticesFor: (id) => db.getAlertNotices(id),
+      main,
+      routes,
+      now,
+    });
+    await Promise.all(due.map((d) => sendNotice(d.dest, d.payload, d.kind)));
+  } finally {
+    followingUp = false;
+  }
+}
+
 let retryTimer = null;
 
 function start() {
   retryTimer = setInterval(() => {
     retryFailedWebhooks().catch((err) => logger.error('alert.webhook.retry_sweep_failed', { error: err.message }));
+    sendFollowUps().catch((err) => logger.error('alert.follow_up_failed', { error: err.message }));
   }, WEBHOOK_RETRY_INTERVAL_MS);
   retryTimer.unref();
 }
@@ -614,8 +700,11 @@ async function sendTestAlert({ routeId } = {}) {
   await deliverWebhook(rawUrl, testAlert, format);
 }
 
-function fire({ hostId, containerId, containerName, rule, severity, message }) {
+// openSince: for a rule that describes a state, skip firing while an alert raised at or after this
+// time is still unresolved - one alert per breach, with reminders as the only repeat.
+function fire({ hostId, containerId, containerName, rule, severity, message, openSince }) {
   if (!shouldFire(hostId, containerId, rule)) return;
+  if (openSince !== undefined && db.getUnresolvedAlert({ hostId, containerId, rule, sinceTs: openSince })) return;
   const ts = Date.now();
   const id = db.insertAlert({ ts, hostId, containerId, containerName, rule, severity, message });
   const log = severity === 'critical' ? logger.error : logger.warn;
@@ -793,6 +882,7 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
       rule: 'container_cpu',
       severity: 'warning',
       message: `Container ${containerName || containerId} CPU at ${cpuPerc.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+      openSince: cpu.start,
     });
   } else if (cpu.endedStart !== null && cfg.cpuThreshold > 0) {
     resolve({
@@ -815,6 +905,7 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
       rule: 'container_mem',
       severity: 'warning',
       message: `Container ${containerName || containerId} memory at ${memPerc.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+      openSince: mem.start,
     });
   } else if (mem.endedStart !== null && cfg.memThreshold > 0) {
     resolve({
@@ -847,6 +938,7 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx)
       rule: 'host_cpu',
       severity: 'warning',
       message: `Host ${hostName || hostId} CPU at ${cpuPercent.toFixed(1)}% (threshold ${cfg.cpuThreshold}%)`,
+      openSince: cpu.start,
     });
   } else if (cpu.endedStart !== null && cfg.cpuThreshold > 0) {
     resolve({
@@ -867,6 +959,7 @@ function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx)
       rule: 'host_mem',
       severity: 'warning',
       message: `Host ${hostName || hostId} memory at ${memPercent.toFixed(1)}% (threshold ${cfg.memThreshold}%)`,
+      openSince: mem.start,
     });
   } else if (mem.endedStart !== null && cfg.memThreshold > 0) {
     resolve({
@@ -894,6 +987,7 @@ function handleDiskUsage({ hostId, hostName, rows }, ctx) {
       rule: 'docker_disk',
       severity: 'warning',
       message: `Docker disk usage on ${hostName || hostId} is ${totalGb.toFixed(1)} GB (threshold ${cfg.diskThresholdGb} GB)`,
+      openSince: 0,
     });
   } else {
     resolve({
@@ -930,6 +1024,9 @@ module.exports = {
   sendTestAlert,
   loadBreachState,
   retryFailedWebhooks,
+  dueFollowUps,
+  sendFollowUps,
+  REPEAT_MAX_MINUTES,
   start,
   stop,
 };

@@ -419,6 +419,87 @@ test('webhook delivery queue', async (t) => {
   });
 });
 
+test('reminder and escalation queries', async (t) => {
+  const FHOST = 'db-test-follow-up-host';
+  const insert = (overrides = {}) =>
+    db.insertAlert({
+      ts: (nextTs += 1000),
+      hostId: FHOST,
+      containerId: null,
+      containerName: null,
+      rule: 'host_unreachable',
+      severity: 'critical',
+      message: 'down',
+      ...overrides,
+    });
+  const followUpIds = () =>
+    db
+      .getFollowUpAlerts({ limit: 500 })
+      .filter((a) => a.hostId === FHOST)
+      .map((a) => a.id);
+
+  await t.test('only unacknowledged, unresolved, uncleared alerts are candidates, newest first', () => {
+    const acked = insert();
+    db.ackAlert(acked);
+    const resolved = insert();
+    db.markAlertResolved(resolved, nextTs);
+    const older = insert();
+    const newer = insert({ rule: 'unhealthy', containerId: 'cccccccccccc', containerName: 'web' });
+    assert.deepEqual(followUpIds(), [newer, older]);
+    const row = db.getFollowUpAlerts({ limit: 500 }).find((a) => a.id === newer);
+    assert.deepEqual(
+      { ...row, id: 0, ts: 0 },
+      {
+        id: 0,
+        ts: 0,
+        hostId: FHOST,
+        containerId: 'cccccccccccc',
+        containerName: 'web',
+        rule: 'unhealthy',
+        severity: 'critical',
+        message: 'down',
+      }
+    );
+    db.clearAlerts(FHOST);
+    assert.deepEqual(followUpIds(), [], 'a cleared alert gets no more reminders');
+  });
+
+  await t.test('the partial index serves the sweep query', () => {
+    const plan = db.client
+      .prepare(
+        'EXPLAIN QUERY PLAN SELECT id FROM alerts WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL ORDER BY ts DESC LIMIT 200'
+      )
+      .all()
+      .map((r) => r.detail)
+      .join(' | ');
+    assert.match(plan, /idx_alerts_follow_up/);
+  });
+
+  await t.test('getAlertNotices: when the firing notice arrived, and the last reminder tried, per destination', () => {
+    const id = insert();
+    const add = (destination, kind, ts, delivered) => {
+      const rowId = db.insertWebhookDelivery({ alertId: id, destination, kind, ts, payload: {} });
+      if (delivered) db.markDeliveryDelivered(rowId);
+    };
+    add('main', 'firing', 1000, true);
+    add('main', 'reminder', 5000, true);
+    add('main', 'reminder', 9000, false);
+    add('route:4', 'firing', 1000, false);
+    const notices = Object.fromEntries(db.getAlertNotices(id).map((n) => [n.destination, n]));
+    assert.ok(notices.main.firingDeliveredAt > 0);
+    assert.equal(notices.main.lastReminderTs, 9000, 'a failed reminder still sets the pace - no retry every minute');
+    assert.equal(notices['route:4'].firingDeliveredAt, null, 'never told, so no reminder');
+    assert.equal(notices['route:4'].lastReminderTs, null);
+  });
+
+  await t.test('a failed reminder is never retried by the retry sweep', () => {
+    const id = insert();
+    const rowId = db.insertWebhookDelivery({ alertId: id, destination: 'main', kind: 'reminder', ts: nextTs, payload: {} });
+    db.markDeliveryFailed(rowId);
+    assert.ok(!db.getPendingDeliveries({ maxAttempts: 5, sinceTs: 0, limit: 500 }).some((d) => d.id === rowId));
+  });
+});
+
 test('webhook_routes CRUD', () => {
   const id = db.insertWebhookRoute({ name: 'Ops phone', url: 'ntfy://ntfy.sh/ops', rules: ['host_unreachable'], minSeverity: 'critical' });
   let route = db.getWebhookRoutes().find((r) => r.id === id);
@@ -432,9 +513,11 @@ test('webhook_routes CRUD', () => {
     minSeverity: 'critical',
     notifyRecovery: false,
     enabled: true,
+    delayMinutes: 0,
   });
-  assert.equal(db.updateWebhookRoute(id, { ...route, hostId: 'edge', notifyRecovery: true, enabled: false }), true);
+  assert.equal(db.updateWebhookRoute(id, { ...route, hostId: 'edge', notifyRecovery: true, enabled: false, delayMinutes: 30 }), true);
   route = db.getWebhookRoutes().find((r) => r.id === id);
+  assert.equal(route.delayMinutes, 30);
   assert.equal(route.hostId, 'edge');
   assert.equal(route.notifyRecovery, true);
   assert.equal(route.enabled, false);

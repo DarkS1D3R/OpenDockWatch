@@ -13,6 +13,7 @@ export default {
       format: '',
       notifyRecovery: false,
       mode: 'all',
+      repeatMinutes: 0,
       routeCount: 0,
       overridden: false,
       saving: false,
@@ -34,12 +35,19 @@ export default {
       this.format = config.format;
       this.notifyRecovery = config.notifyRecovery;
       this.mode = config.mode;
+      this.repeatMinutes = config.repeatMinutes;
       this.overridden = config.overridden;
     },
     save() {
       return withStatus(this, 'saving', async () => {
         this.apply(
-          await apiSaveWebhookConfig({ url: this.url, format: this.format, notifyRecovery: this.notifyRecovery, mode: this.mode })
+          await apiSaveWebhookConfig({
+            url: this.url,
+            format: this.format,
+            notifyRecovery: this.notifyRecovery,
+            mode: this.mode,
+            repeatMinutes: Number(this.repeatMinutes) || 0,
+          })
         );
         this.status = 'Saved.';
       });
@@ -81,6 +89,16 @@ export default {
       <p class="muted small">
         For a host coming back, CPU/memory/disk back under threshold, and a health check passing
         again. Crashes and OOM kills are one-off events and have no resolved message.
+      </p>
+      <label class="modal-field">
+        Remind every (minutes, 0 = off)
+        <input type="number" v-model.number="repeatMinutes" min="0" max="1440" step="1" />
+      </label>
+      <p class="muted small">
+        Sends the alert again at this interval while the problem is still there and nobody has
+        acknowledged it - a host still down, a container still unhealthy, a threshold still breached.
+        Goes to the main webhook and every route that got the alert. Acknowledging it in the Activity
+        tab stops the reminders.
       </p>
       <label v-if="routeCount || mode !== 'all'" class="modal-field">
         Main webhook receives

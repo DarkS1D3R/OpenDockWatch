@@ -573,6 +573,7 @@ test('webhook config (DB override vs .env default)', async (t) => {
       overridden: false,
       notifyRecovery: false,
       mode: 'all',
+      repeatMinutes: 0,
     });
   });
 
@@ -582,7 +583,7 @@ test('webhook config (DB override vs .env default)', async (t) => {
     t.after(() => delete process.env.ALERT_WEBHOOK_URL);
 
     const config = alerts.getWebhookConfig();
-    assert.deepEqual(config, { url: '', format: '', overridden: true, notifyRecovery: false, mode: 'all' });
+    assert.deepEqual(config, { url: '', format: '', overridden: true, notifyRecovery: false, mode: 'all', repeatMinutes: 0 });
   });
 
   await t.test('setWebhookConfig persists both keys and clearWebhookConfig removes them', (t) => {
@@ -594,7 +595,7 @@ test('webhook config (DB override vs .env default)', async (t) => {
     });
 
     const saved = alerts.setWebhookConfig({ url: 'discord://1/2', format: '' });
-    assert.deepEqual(saved, { url: 'discord://1/2', format: '', overridden: true, notifyRecovery: false, mode: 'all' });
+    assert.deepEqual(saved, { url: 'discord://1/2', format: '', overridden: true, notifyRecovery: false, mode: 'all', repeatMinutes: 0 });
 
     const withRecovery = alerts.setWebhookConfig({ url: 'discord://1/2', format: '', notifyRecovery: true, mode: 'unmatched' });
     assert.equal(withRecovery.notifyRecovery, true);
@@ -1690,6 +1691,12 @@ test('selectDestinations', async (t) => {
     assert.deepEqual(keys(alerts.selectDestinations(crashAlert, { ...main, url: '' }, [route({ id: 5 })])), ['route:5']);
     assert.deepEqual(alerts.selectDestinations(crashAlert, { ...main, url: '' }, []), []);
   });
+  // An escalation route hears about it later, from the follow-up sweep - and only if nobody acked.
+  await t.test('a delayed route is not sent to at once, and does not take an alert away from main', () => {
+    const delayed = [route({ id: 6, delayMinutes: 30 })];
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, main, delayed)), ['main']);
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, { ...main, mode: 'unmatched' }, delayed)), ['main']);
+  });
 });
 
 test('notify fans an alert out to each destination', async (t) => {
@@ -1808,12 +1815,12 @@ test('a threshold breach that ends resolves only an alert that breach raised', a
   const t0 = 1_800_000_000_000;
   alerts.handleSample(sample(95, t0));
   alerts.handleSample(sample(95, t0 + 70_000));
-  assert.equal(lookups.length, 0, 'still breaching - nothing to resolve yet');
+  assert.equal(lookups.length, 1, "still breaching - only fire()'s check for an alert this breach already raised");
   alerts.handleSample(sample(10, t0 + 80_000));
-  assert.equal(lookups.length, 1);
-  assert.deepEqual(lookups[0], { hostId: 'h-end', containerId: 'c-end', rule: 'container_cpu', sinceTs: t0 });
+  assert.equal(lookups.length, 2);
+  assert.deepEqual(lookups[1], { hostId: 'h-end', containerId: 'c-end', rule: 'container_cpu', sinceTs: t0 });
   alerts.handleSample(sample(10, t0 + 90_000));
-  assert.equal(lookups.length, 1, 'under threshold with no breach in progress is not a recovery');
+  assert.equal(lookups.length, 2, 'under threshold with no breach in progress is not a recovery');
 });
 
 test('a threshold switched off mid-breach does not announce a recovery', (t) => {
@@ -1903,4 +1910,195 @@ test('ALERT_RULES names every rule fire() is called with', () => {
   fired.delete('test'); // sendTestAlert's synthetic alert, never fired or routed
   assert.ok(fired.size >= 10, 'the scan stopped matching fire() calls');
   assert.deepEqual([...fired].sort(), [...alerts.ALERT_RULES].sort());
+});
+
+test('one alert per threshold breach', async (t) => {
+  await t.test('a breach that already raised an open alert does not raise another after the cooldown', (t2) => {
+    const lookups = [];
+    const fired = captureFired(t2, {
+      getSetting: mockThresholdSettings({ cpuThreshold: 80, sustainMinutes: 0 }),
+      getLastAlertFireTs: () => Date.now() - 11 * 60_000,
+      getUnresolvedAlert: (q) => (lookups.push(q), { id: 5, ts: Date.now() - 11 * 60_000, severity: 'warning' }),
+    });
+    const ts = Date.now();
+    alerts.handleSample({ hostId: 'h-once', containerId: 'c-once', containerName: 'web', cpuPerc: 95, memPerc: 0, ts });
+    assert.equal(fired.length, 0);
+    assert.deepEqual(lookups[0], { hostId: 'h-once', containerId: 'c-once', rule: 'container_cpu', sinceTs: ts });
+  });
+
+  await t.test('with no open alert from this breach, it fires as before', (t2) => {
+    const fired = captureFired(t2, {
+      getSetting: mockThresholdSettings({ memThreshold: 80, sustainMinutes: 0 }),
+      getUnresolvedAlert: () => null,
+    });
+    alerts.handleSample({ hostId: 'h-once', containerId: 'c-once2', containerName: 'web', cpuPerc: 0, memPerc: 95, ts: Date.now() });
+    assert.equal(fired.length, 1);
+  });
+
+  await t.test('docker_disk: one alert while over threshold, until it resolves', (t2) => {
+    const lookups = [];
+    const fired = captureFired(t2, {
+      getSetting: mockThresholdSettings({ diskThresholdGb: 10 }),
+      getUnresolvedAlert: (q) => (lookups.push(q), { id: 6, ts: 0, severity: 'warning' }),
+    });
+    alerts.handleDiskUsage({ hostId: 'h-disk', hostName: 'h', rows: [{ size: '50GB' }] });
+    assert.equal(fired.length, 0);
+    assert.equal(lookups[0].sinceTs, 0);
+  });
+
+  await t.test('event rules are not deduplicated - a second crash is a second incident', (t2) => {
+    const lookups = [];
+    const fired = captureFired(t2, { getUnresolvedAlert: (q) => (lookups.push(q), { id: 7 }) });
+    fireDeathEvent('h-crash-twice');
+    assert.equal(fired.length, 1);
+    assert.equal(lookups.length, 0);
+  });
+});
+
+test('webhook config: repeatMinutes', async (t) => {
+  await t.test('off by default, read from .env, and a saved value wins', (t2) => {
+    mockDb(t2, { getSetting: () => null });
+    assert.equal(alerts.getWebhookConfig().repeatMinutes, 0);
+    process.env.ALERT_REPEAT_MINUTES = '45';
+    t2.after(() => delete process.env.ALERT_REPEAT_MINUTES);
+    assert.equal(alerts.getWebhookConfig().repeatMinutes, 45);
+    db.getSetting.mock.mockImplementation((key) => (key === 'alertRepeatMinutes' ? '0' : null));
+    assert.equal(alerts.getWebhookConfig().repeatMinutes, 0, 'an explicit 0 turns off what .env turned on');
+  });
+
+  await t.test('a value that is not a whole number of minutes in range reads as off', (t2) => {
+    for (const raw of ['abc', '-5', '2.5', '5000']) {
+      mockDb(t2, { getSetting: (key) => (key === 'alertRepeatMinutes' ? raw : null) });
+      assert.equal(alerts.getWebhookConfig().repeatMinutes, 0, raw);
+    }
+  });
+});
+
+test('dueFollowUps', async (t) => {
+  const now = 1_900_000_000_000;
+  const MIN = 60_000;
+  const main = { url: 'https://example.com/main', format: '', notifyRecovery: false, mode: 'all', repeatMinutes: 30 };
+  const open = (overrides = {}) => ({
+    id: 1,
+    ts: now - 45 * MIN,
+    hostId: 'edge',
+    containerId: null,
+    containerName: null,
+    rule: 'host_unreachable',
+    severity: 'critical',
+    message: 'Host Edge box became unreachable',
+    ...overrides,
+  });
+  const due = (args) => alerts.dueFollowUps({ main, routes: [], noticesFor: () => [], now, ...args });
+  const told = (destination, firingDeliveredAt, lastReminderTs = null) => ({ destination, firingDeliveredAt, lastReminderTs });
+
+  await t.test('a reminder goes to each destination told about it, once the interval has passed', () => {
+    const out = due({ alerts: [open()], noticesFor: () => [told('main', now - 45 * MIN)] });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].kind, 'reminder');
+    assert.equal(out[0].dest.key, 'main');
+    assert.equal(out[0].payload.message, 'Still unacknowledged after 45m: Host Edge box became unreachable');
+    assert.equal(out[0].payload.status, 'firing');
+    assert.equal(out[0].payload.reminder, true);
+    assert.equal(out[0].payload.firedAt, now - 45 * MIN);
+    assert.equal(out[0].payload.id, 1);
+  });
+
+  await t.test('the interval counts from the last reminder, tried or not', () => {
+    const notices = () => [told('main', now - 45 * MIN, now - 10 * MIN)];
+    assert.deepEqual(due({ alerts: [open()], noticesFor: notices }), []);
+  });
+
+  await t.test('a destination the firing notice never reached gets no reminder - the retry sweep owns it', () => {
+    assert.deepEqual(due({ alerts: [open()], noticesFor: () => [told('main', null)] }), []);
+  });
+
+  await t.test('off, a one-off incident, or a destination since removed: no reminder', () => {
+    const notices = () => [told('main', now - 45 * MIN)];
+    assert.deepEqual(due({ alerts: [open()], noticesFor: notices, main: { ...main, repeatMinutes: 0 } }), []);
+    assert.deepEqual(due({ alerts: [open({ rule: 'container_crashed' })], noticesFor: notices }), []);
+    assert.deepEqual(due({ alerts: [open()], noticesFor: () => [told('route:9', now - 45 * MIN)] }), []);
+  });
+
+  await t.test('only the newest open alert per host, container and rule is followed up', () => {
+    const asked = [];
+    const out = due({
+      alerts: [open({ id: 2 }), open({ id: 1, ts: now - 90 * MIN })],
+      noticesFor: (id) => (asked.push(id), [told('main', now - 45 * MIN)]),
+    });
+    assert.deepEqual(
+      out.map((d) => d.payload.id),
+      [2]
+    );
+    assert.deepEqual(asked, [2]);
+  });
+
+  await t.test('an escalation route takes an alert unacknowledged past its delay', () => {
+    const routes = [route({ id: 4, url: 'ntfy://ntfy.sh/oncall', delayMinutes: 30 })];
+    const out = due({ alerts: [open()], routes, main: { ...main, repeatMinutes: 0 } });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].dest.key, 'route:4');
+    assert.equal(out[0].kind, 'firing', 'an escalation is the first notice to that route, so it is retried like one');
+    assert.equal(out[0].payload.escalated, true);
+    assert.equal(out[0].payload.message, 'Unacknowledged for 45m: Host Edge box became unreachable');
+  });
+
+  await t.test('but not before its delay, not twice, not when its filters do not match, and not when disabled', () => {
+    const base = { alerts: [open()], main: { ...main, repeatMinutes: 0 } };
+    assert.deepEqual(due({ ...base, routes: [route({ id: 4, delayMinutes: 60 })] }), []);
+    assert.deepEqual(due({ ...base, routes: [route({ id: 4, delayMinutes: 30 })], noticesFor: () => [told('route:4', null)] }), []);
+    assert.deepEqual(due({ ...base, routes: [route({ id: 4, delayMinutes: 30, hostId: 'other' })] }), []);
+    assert.deepEqual(due({ ...base, routes: [route({ id: 4, delayMinutes: 30, enabled: false })] }), []);
+  });
+
+  // Adding an escalation route, or restarting after a long outage, must not page about every old alert.
+  await t.test('an alert more than an hour past the delay is not escalated', () => {
+    const routes = [route({ id: 4, delayMinutes: 30 })];
+    assert.deepEqual(due({ alerts: [open({ ts: now - 120 * MIN })], routes, main: { ...main, repeatMinutes: 0 } }), []);
+  });
+
+  await t.test('escalation applies to one-off incidents too - nobody has looked at that crash', () => {
+    const routes = [route({ id: 4, delayMinutes: 30 })];
+    const out = due({ alerts: [open({ rule: 'container_crashed', containerId: 'c1' })], routes, main: { ...main, repeatMinutes: 0 } });
+    assert.equal(out.length, 1);
+  });
+});
+
+test('sendFollowUps', async (t) => {
+  await t.test('with reminders off and no escalation route it does not even query', async (t2) => {
+    let queried = false;
+    mockDb(t2, { getSetting: () => null, getFollowUpAlerts: () => ((queried = true), []), getAlertNotices: () => [] });
+    await alerts.sendFollowUps();
+    assert.equal(queried, false);
+  });
+
+  await t.test('sends what is due and records it as a reminder', async (t2) => {
+    const queued = [];
+    const now = Date.now();
+    mockDb(t2, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'https://example.com/main' : key === 'alertRepeatMinutes' ? '30' : null),
+      getFollowUpAlerts: () => [
+        {
+          id: 3,
+          ts: now - 40 * 60_000,
+          hostId: 'h',
+          containerId: 'c',
+          containerName: 'web',
+          rule: 'unhealthy',
+          severity: 'critical',
+          message: 'web is unhealthy',
+        },
+      ],
+      getAlertNotices: () => [{ destination: 'main', firingDeliveredAt: now - 40 * 60_000, lastReminderTs: null }],
+      insertWebhookDelivery: (row) => (queued.push(row), 1),
+    });
+    const posts = [];
+    stubFetch(t2, async (url, opts) => (posts.push({ url, body: JSON.parse(opts.body) }), { ok: true }));
+    await alerts.sendFollowUps(now);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].kind, 'reminder');
+    assert.equal(queued[0].alertId, 3);
+    assert.equal(posts[0].url, 'https://example.com/main');
+    assert.match(posts[0].body.message, /^Still unacknowledged after 40m: web is unhealthy$/);
+  });
 });

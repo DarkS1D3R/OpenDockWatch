@@ -209,12 +209,12 @@ export async function apiGetWebhookConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook'));
 }
 
-export async function apiSaveWebhookConfig({ url, format, notifyRecovery, mode }) {
+export async function apiSaveWebhookConfig({ url, format, notifyRecovery, mode, repeatMinutes }) {
   return jsonOrThrow(
     await apiFetch('/api/settings/webhook', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, format, notifyRecovery, mode }),
+      body: JSON.stringify({ url, format, notifyRecovery, mode, repeatMinutes }),
     })
   );
 }
