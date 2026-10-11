@@ -226,6 +226,7 @@ export default {
               <div class="alert-row-main">
                 <strong>{{ a.rule }}</strong>
                 <span class="alert-time">{{ formatEventTime(a.ts) }}</span>
+                <span v-if="a.resolved_at" class="alert-resolved">resolved {{ formatEventTime(a.resolved_at) }}</span>
               </div>
               <div class="alert-message">{{ a.message }}</div>
               <div class="alert-row-actions">

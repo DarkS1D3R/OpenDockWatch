@@ -209,12 +209,12 @@ export async function apiGetWebhookConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook'));
 }
 
-export async function apiSaveWebhookConfig(url, format) {
+export async function apiSaveWebhookConfig({ url, format, notifyRecovery, mode }) {
   return jsonOrThrow(
     await apiFetch('/api/settings/webhook', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, format }),
+      body: JSON.stringify({ url, format, notifyRecovery, mode }),
     })
   );
 }
@@ -225,6 +225,38 @@ export async function apiClearWebhookConfig() {
 
 export async function apiTestWebhook() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook/test', { method: 'POST' }));
+}
+
+export async function apiGetWebhookRoutes() {
+  return jsonOrThrow(await apiFetch('/api/settings/webhook-routes'));
+}
+
+export async function apiAddWebhookRoute(route) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/webhook-routes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(route),
+    })
+  );
+}
+
+export async function apiUpdateWebhookRoute(id, route) {
+  return jsonOrThrow(
+    await apiFetch(`/api/settings/webhook-routes/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(route),
+    })
+  );
+}
+
+export async function apiDeleteWebhookRoute(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/webhook-routes/${id}`, { method: 'DELETE' }));
+}
+
+export async function apiTestWebhookRoute(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/webhook-routes/${id}/test`, { method: 'POST' }));
 }
 
 export async function apiGetThresholdConfig() {

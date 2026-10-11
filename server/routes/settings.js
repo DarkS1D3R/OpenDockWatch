@@ -67,21 +67,32 @@ router.get('/settings/webhook', requireAdmin, (req, res) => {
   res.json(alerts.getWebhookConfig());
 });
 
-router.put('/settings/webhook', requireAdmin, (req, res) => {
-  const { url = '', format = '' } = req.body || {};
-  if (url) {
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return res.status(400).json({ error: 'invalid webhook URL' });
-    }
-    if (!ALLOWED_WEBHOOK_SCHEMES.has(parsed.protocol)) {
-      return res.status(400).json({ error: `unsupported scheme "${parsed.protocol}" - use http(s), discord, ntfy, gotify, or gotifys` });
-    }
+// Shared by the main webhook and every route, so the two can't accept different URLs.
+function webhookUrlError(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'invalid webhook URL';
   }
+  if (!ALLOWED_WEBHOOK_SCHEMES.has(parsed.protocol)) {
+    return `unsupported scheme "${parsed.protocol}" - use http(s), discord, ntfy, gotify, or gotifys`;
+  }
+  return null;
+}
+
+router.put('/settings/webhook', requireAdmin, (req, res) => {
+  const { url = '', format = '', notifyRecovery, mode } = req.body || {};
+  const urlError = url ? webhookUrlError(url) : null;
+  if (urlError) return res.status(400).json({ error: urlError });
   if (format && format !== 'slack') {
     return res.status(400).json({ error: 'format must be empty or "slack"' });
+  }
+  if (notifyRecovery !== undefined && typeof notifyRecovery !== 'boolean') {
+    return res.status(400).json({ error: 'notifyRecovery must be true or false' });
+  }
+  if (mode !== undefined && !alerts.WEBHOOK_MODES.has(mode)) {
+    return res.status(400).json({ error: 'mode must be "all" or "unmatched"' });
   }
   // Scheme only, never the full URL - webhook URLs embed secrets (Discord token, Slack path, ntfy
   // topic) that have no business in the container's log output. Shared helper, same reason.
@@ -89,8 +100,10 @@ router.put('/settings/webhook', requireAdmin, (req, res) => {
     user: req.session.username,
     url: url ? alerts.webhookScheme(url) : '(cleared)',
     format: format || 'auto',
+    notifyRecovery,
+    mode,
   });
-  res.json(alerts.setWebhookConfig({ url, format }));
+  res.json(alerts.setWebhookConfig({ url, format, notifyRecovery, mode }));
 });
 
 router.delete('/settings/webhook', requireAdmin, (req, res) => {
@@ -101,6 +114,93 @@ router.delete('/settings/webhook', requireAdmin, (req, res) => {
 router.post('/settings/webhook/test', requireAdmin, async (req, res) => {
   try {
     await alerts.sendTestAlert();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Extra webhook destinations, each taking the alerts its host/rules/severity filters match - every
+// matching route gets the alert, not just the first. See alerts.js's selectDestinations.
+const ALERT_RULE_NAMES = new Set(alerts.ALERT_RULES);
+const ROUTE_SEVERITIES = new Set(['warning', 'critical']);
+const ROUTE_NAME_MAX = 60;
+
+function validateWebhookRouteBody(body, hosts) {
+  const { name, url, format, hostId, rules, minSeverity, notifyRecovery, enabled } = body;
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > ROUTE_NAME_MAX)
+    return `name is required, up to ${ROUTE_NAME_MAX} characters`;
+  if (typeof url !== 'string' || !url) return 'url is required';
+  const urlError = webhookUrlError(url);
+  if (urlError) return urlError;
+  if (format && format !== 'slack') return 'format must be empty or "slack"';
+  if (hostId && !hosts.some((h) => h.id === hostId)) return 'unknown hostId';
+  if (rules !== undefined && (!Array.isArray(rules) || rules.some((r) => !ALERT_RULE_NAMES.has(r)))) {
+    return `rules must be an array of ${alerts.ALERT_RULES.join('/')}`;
+  }
+  if (minSeverity !== undefined && !ROUTE_SEVERITIES.has(minSeverity)) return 'minSeverity must be "warning" or "critical"';
+  for (const [field, val] of [
+    ['notifyRecovery', notifyRecovery],
+    ['enabled', enabled],
+  ]) {
+    if (val !== undefined && typeof val !== 'boolean') return `${field} must be true or false`;
+  }
+  return null;
+}
+
+function normalizeWebhookRouteBody(body) {
+  return {
+    name: body.name.trim(),
+    url: body.url,
+    format: body.format || '',
+    hostId: body.hostId || null,
+    rules: [...new Set(body.rules || [])],
+    minSeverity: body.minSeverity || 'warning',
+    notifyRecovery: !!body.notifyRecovery,
+    enabled: body.enabled !== false,
+  };
+}
+
+router.get('/settings/webhook-routes', requireAdmin, (req, res) => {
+  res.json(db.getWebhookRoutes());
+});
+
+router.post('/settings/webhook-routes', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const err = validateWebhookRouteBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  const route = normalizeWebhookRouteBody(body);
+  const id = db.insertWebhookRoute(route);
+  logger.info('settings.webhook_routes.add', { user: req.session.username, id, url: alerts.webhookScheme(route.url) });
+  res.json(db.getWebhookRoutes());
+});
+
+router.put('/settings/webhook-routes/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  const body = req.body || {};
+  const err = validateWebhookRouteBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  const route = normalizeWebhookRouteBody(body);
+  if (!db.updateWebhookRoute(id, route)) return res.status(404).json({ error: 'no such route' });
+  logger.info('settings.webhook_routes.update', { user: req.session.username, id, url: alerts.webhookScheme(route.url) });
+  res.json(db.getWebhookRoutes());
+});
+
+router.delete('/settings/webhook-routes/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  if (!db.deleteWebhookRoute(id)) return res.status(404).json({ error: 'no such route' });
+  logger.info('settings.webhook_routes.remove', { user: req.session.username, id });
+  res.json(db.getWebhookRoutes());
+});
+
+router.post('/settings/webhook-routes/:id/test', requireAdmin, async (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  if (!db.getWebhookRoutes().some((r) => r.id === id)) return res.status(404).json({ error: 'no such route' });
+  try {
+    await alerts.sendTestAlert({ routeId: id });
     res.json({ ok: true });
   } catch (err) {
     res.status(502).json({ error: err.message });

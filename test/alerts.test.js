@@ -1,4 +1,6 @@
 const test = require('node:test');
+const fs = require('fs');
+const path = require('path');
 const assert = require('node:assert/strict');
 const db = require('../server/db');
 const hosts = require('../server/hosts');
@@ -27,9 +29,15 @@ function mockDb(t, overrides = {}) {
     setBreachStart: () => {},
     deleteBreachStart: () => {},
     getAllBreaches: () => [],
-    markWebhookDelivered: () => {},
-    markWebhookAttemptFailed: () => {},
-    getPendingWebhookRetries: () => [],
+    insertWebhookDelivery: () => 1,
+    markDeliveryDelivered: () => {},
+    markDeliveryFailed: () => {},
+    deleteDelivery: () => {},
+    getPendingDeliveries: () => [],
+    getDeliveredDestinations: () => [],
+    getUnresolvedAlert: () => null,
+    markAlertResolved: () => true,
+    getWebhookRoutes: () => [],
     getContainerAlertRules: () => [],
     insertHostReachability: () => {},
   };
@@ -546,7 +554,13 @@ test('webhook config (DB override vs .env default)', async (t) => {
     });
 
     const config = alerts.getWebhookConfig();
-    assert.deepEqual(config, { url: 'https://example.com/from-env', format: 'slack', overridden: false });
+    assert.deepEqual(config, {
+      url: 'https://example.com/from-env',
+      format: 'slack',
+      overridden: false,
+      notifyRecovery: false,
+      mode: 'all',
+    });
   });
 
   await t.test('a DB row - even an empty one - takes priority over .env', (t) => {
@@ -555,7 +569,7 @@ test('webhook config (DB override vs .env default)', async (t) => {
     t.after(() => delete process.env.ALERT_WEBHOOK_URL);
 
     const config = alerts.getWebhookConfig();
-    assert.deepEqual(config, { url: '', format: '', overridden: true });
+    assert.deepEqual(config, { url: '', format: '', overridden: true, notifyRecovery: false, mode: 'all' });
   });
 
   await t.test('setWebhookConfig persists both keys and clearWebhookConfig removes them', (t) => {
@@ -567,10 +581,28 @@ test('webhook config (DB override vs .env default)', async (t) => {
     });
 
     const saved = alerts.setWebhookConfig({ url: 'discord://1/2', format: '' });
-    assert.deepEqual(saved, { url: 'discord://1/2', format: '', overridden: true });
+    assert.deepEqual(saved, { url: 'discord://1/2', format: '', overridden: true, notifyRecovery: false, mode: 'all' });
+
+    const withRecovery = alerts.setWebhookConfig({ url: 'discord://1/2', format: '', notifyRecovery: true, mode: 'unmatched' });
+    assert.equal(withRecovery.notifyRecovery, true);
+    assert.equal(withRecovery.mode, 'unmatched');
+    // An older client that only sends the URL must not switch recovery messages back off.
+    assert.equal(alerts.setWebhookConfig({ url: 'discord://1/3', format: '' }).notifyRecovery, true);
 
     const cleared = alerts.clearWebhookConfig();
     assert.equal(cleared.overridden, false);
+    assert.equal(cleared.notifyRecovery, false);
+    assert.equal(cleared.mode, 'all');
+  });
+
+  await t.test('ALERT_WEBHOOK_NOTIFY_RECOVERY turns recovery messages on from .env, and a saved value beats it', (t) => {
+    const store = new Map();
+    mockDb(t, { getSetting: (key) => (store.has(key) ? store.get(key) : null) });
+    process.env.ALERT_WEBHOOK_NOTIFY_RECOVERY = 'true';
+    t.after(() => delete process.env.ALERT_WEBHOOK_NOTIFY_RECOVERY);
+    assert.equal(alerts.getWebhookConfig().notifyRecovery, true);
+    store.set('alertWebhookNotifyRecovery', '0');
+    assert.equal(alerts.getWebhookConfig().notifyRecovery, false);
   });
 });
 
@@ -623,13 +655,15 @@ function fireDeathEvent(hostId = 'h') {
   });
 }
 
-test('notify: records delivery outcome against the alert row', async (t) => {
-  await t.test('marks the row delivered on a successful attempt', async (t) => {
+test('notify: records delivery outcome per destination', async (t) => {
+  await t.test('queues a firing notice for the main webhook and marks it delivered on success', async (t) => {
     const delivered = [];
+    const queued = [];
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
       insertAlert: () => 42,
-      markWebhookDelivered: (id) => delivered.push(id),
+      insertWebhookDelivery: (d) => (queued.push(d), 420),
+      markDeliveryDelivered: (id) => delivered.push(id),
     });
     const originalFetch = global.fetch;
     global.fetch = async () => ({ ok: true });
@@ -637,7 +671,12 @@ test('notify: records delivery outcome against the alert row', async (t) => {
 
     fireDeathEvent('h-notify-ok');
     await flushMicrotasks();
-    assert.deepEqual(delivered, [42]);
+    assert.deepEqual(delivered, [420]);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].alertId, 42);
+    assert.equal(queued[0].destination, 'main');
+    assert.equal(queued[0].kind, 'firing');
+    assert.equal(queued[0].payload.status, 'firing', 'the payload is stored as sent, so a retry re-sends the same thing');
   });
 
   await t.test('records a failed attempt (rather than only logging it) so it can be retried later', async (t) => {
@@ -645,7 +684,8 @@ test('notify: records delivery outcome against the alert row', async (t) => {
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
       insertAlert: () => 43,
-      markWebhookAttemptFailed: (id) => failed.push(id),
+      insertWebhookDelivery: () => 430,
+      markDeliveryFailed: (id) => failed.push(id),
     });
     const originalFetch = global.fetch;
     global.fetch = async () => ({ ok: false, status: 500 });
@@ -653,14 +693,39 @@ test('notify: records delivery outcome against the alert row', async (t) => {
 
     fireDeathEvent('h-notify-fail');
     await flushMicrotasks();
-    assert.deepEqual(failed, [43]);
+    assert.deepEqual(failed, [430]);
   });
 });
+
+// A webhook_deliveries row as getPendingDeliveries returns it: the notice exactly as first sent.
+function deliveryRow({ id = 9, attempts = 1, destination = 'main', kind = 'firing', resolvedAt = null, payload = {} } = {}) {
+  return {
+    id,
+    alertId: 100 + id,
+    destination,
+    kind,
+    ts: Date.now(),
+    attempts,
+    resolvedAt,
+    payload: JSON.stringify({
+      id: 100 + id,
+      ts: Date.now(),
+      hostId: 'h',
+      containerId: 'c',
+      containerName: 'web',
+      rule: 'container_cpu',
+      severity: 'warning',
+      message: 'boom',
+      status: kind,
+      ...payload,
+    }),
+  };
+}
 
 test('retryFailedWebhooks', async (t) => {
   await t.test('does nothing when no webhook is currently configured', async (t) => {
     const calls = [];
-    mockDb(t, { getSetting: () => null, getPendingWebhookRetries: () => (calls.push(1), []) });
+    mockDb(t, { getSetting: () => null, getPendingDeliveries: () => (calls.push(1), []) });
     await alerts.retryFailedWebhooks();
     assert.equal(calls.length, 0);
   });
@@ -669,20 +734,8 @@ test('retryFailedWebhooks', async (t) => {
     const delivered = [];
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
-      getPendingWebhookRetries: () => [
-        {
-          id: 7,
-          ts: Date.now(),
-          host_id: 'h',
-          container_id: 'c',
-          container_name: 'web',
-          rule: 'container_cpu',
-          severity: 'warning',
-          message: 'boom',
-          webhook_attempts: 1,
-        },
-      ],
-      markWebhookDelivered: (id) => delivered.push(id),
+      getPendingDeliveries: () => [deliveryRow({ id: 7, attempts: 1 })],
+      markDeliveryDelivered: (id) => delivered.push(id),
     });
     const originalFetch = global.fetch;
     let captured = null;
@@ -701,20 +754,8 @@ test('retryFailedWebhooks', async (t) => {
     const failed = [];
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
-      getPendingWebhookRetries: () => [
-        {
-          id: 8,
-          ts: Date.now(),
-          host_id: 'h',
-          container_id: 'c',
-          container_name: 'web',
-          rule: 'container_cpu',
-          severity: 'warning',
-          message: 'boom',
-          webhook_attempts: 2,
-        },
-      ],
-      markWebhookAttemptFailed: (id) => failed.push(id),
+      getPendingDeliveries: () => [deliveryRow({ id: 8, attempts: 2 })],
+      markDeliveryFailed: (id) => failed.push(id),
     });
     const originalFetch = global.fetch;
     global.fetch = async () => ({ ok: false, status: 500 });
@@ -729,23 +770,11 @@ test('retryFailedWebhooks', async (t) => {
     const delivered = [];
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
-      getPendingWebhookRetries: () => {
+      getPendingDeliveries: () => {
         getPendingCalls += 1;
-        return [
-          {
-            id: 9,
-            ts: Date.now(),
-            host_id: 'h',
-            container_id: 'c',
-            container_name: 'web',
-            rule: 'container_cpu',
-            severity: 'warning',
-            message: 'boom',
-            webhook_attempts: 0,
-          },
-        ];
+        return [deliveryRow({ id: 9, attempts: 0 })];
       },
-      markWebhookDelivered: (id) => delivered.push(id),
+      markDeliveryDelivered: (id) => delivered.push(id),
     });
     const originalFetch = global.fetch;
     let resolveFetch;
@@ -1403,18 +1432,7 @@ function stubFetch(t, impl) {
 }
 
 function pendingRow(overrides = {}) {
-  return {
-    id: 9,
-    ts: Date.now(),
-    host_id: 'h',
-    container_id: 'c',
-    container_name: 'web',
-    rule: 'container_cpu',
-    severity: 'warning',
-    message: 'boom',
-    webhook_attempts: 1,
-    ...overrides,
-  };
+  return deliveryRow({ id: 9, attempts: 1, ...overrides });
 }
 
 function unhealthyEvent() {
@@ -1486,7 +1504,7 @@ test('the webhook URL never reaches a log line', async (t) => {
     const lines = captureLogger(t);
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.gotify : null),
-      getPendingWebhookRetries: () => [pendingRow()],
+      getPendingDeliveries: () => [pendingRow()],
     });
     stubFetch(t, async () => ({ ok: true }));
 
@@ -1506,7 +1524,7 @@ test('the webhook URL never reaches a log line', async (t) => {
     const lines = captureLogger(t);
     mockDb(t, {
       getSetting: (key) => (key === 'alertWebhookUrl' ? SECRET_URLS.discord : null),
-      getPendingWebhookRetries: () => [pendingRow({ webhook_attempts: 3 })],
+      getPendingDeliveries: () => [pendingRow({ attempts: 3 })],
     });
     stubFetch(t, async () => ({ ok: false, status: 502 }));
 
@@ -1604,4 +1622,272 @@ test('the webhook URL never reaches a log line', async (t) => {
       'a message with no credential in it was re-wrapped, trading the original name and stack for nothing'
     );
   });
+});
+
+// --- Routing and resolution -------------------------------------------------------------------
+
+function route(overrides = {}) {
+  return {
+    id: 1,
+    name: 'r',
+    url: 'https://example.com/r',
+    format: '',
+    hostId: null,
+    rules: [],
+    minSeverity: 'warning',
+    notifyRecovery: false,
+    enabled: true,
+    ...overrides,
+  };
+}
+
+const crashAlert = { hostId: 'prod', rule: 'container_crashed', severity: 'critical' };
+
+test('routeMatches', async (t) => {
+  await t.test('an unfiltered route takes everything', () => {
+    assert.equal(alerts.routeMatches(route(), crashAlert), true);
+  });
+  await t.test('host, rules and severity each narrow it', () => {
+    assert.equal(alerts.routeMatches(route({ hostId: 'dev' }), crashAlert), false);
+    assert.equal(alerts.routeMatches(route({ hostId: 'prod' }), crashAlert), true);
+    assert.equal(alerts.routeMatches(route({ rules: ['host_cpu'] }), crashAlert), false);
+    assert.equal(alerts.routeMatches(route({ rules: ['host_cpu', 'container_crashed'] }), crashAlert), true);
+    assert.equal(alerts.routeMatches(route({ minSeverity: 'critical' }), { ...crashAlert, severity: 'warning' }), false);
+    assert.equal(alerts.routeMatches(route({ minSeverity: 'critical' }), crashAlert), true);
+  });
+  await t.test('a disabled route takes nothing', () => {
+    assert.equal(alerts.routeMatches(route({ enabled: false }), crashAlert), false);
+  });
+});
+
+test('selectDestinations', async (t) => {
+  const main = { url: 'discord://1/2', format: '', notifyRecovery: false, mode: 'all' };
+  const keys = (dests) => dests.map((d) => d.key);
+
+  await t.test('every matching route gets it, not just the first, and main gets everything by default', () => {
+    const routes = [route({ id: 1 }), route({ id: 2, hostId: 'dev' }), route({ id: 3, rules: ['container_crashed'] })];
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, main, routes)), ['main', 'route:1', 'route:3']);
+  });
+  await t.test("'unmatched' gives main only what no route took", () => {
+    const unmatched = { ...main, mode: 'unmatched' };
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, unmatched, [route({ id: 4, hostId: 'prod' })])), ['route:4']);
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, unmatched, [route({ id: 4, hostId: 'dev' })])), ['main']);
+  });
+  await t.test('no main URL means routes only, and nothing at all is a valid answer', () => {
+    assert.deepEqual(keys(alerts.selectDestinations(crashAlert, { ...main, url: '' }, [route({ id: 5 })])), ['route:5']);
+    assert.deepEqual(alerts.selectDestinations(crashAlert, { ...main, url: '' }, []), []);
+  });
+});
+
+test('notify fans an alert out to each destination', async (t) => {
+  const urls = [];
+  mockDb(t, {
+    getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+    getWebhookRoutes: () => [
+      route({ id: 1, url: 'https://ops.example.com/hook' }),
+      route({ id: 2, url: 'https://dev.example.com/hook', hostId: 'dev' }),
+    ],
+  });
+  stubFetch(t, async (url) => (urls.push(url), { ok: true }));
+  fireDeathEvent('h-fanout');
+  await flushMicrotasks();
+  assert.deepEqual(urls.sort(), ['https://discord.com/api/webhooks/1/2', 'https://ops.example.com/hook']);
+});
+
+test('resolved notices', async (t) => {
+  const OPEN = { id: 77, ts: Date.now() - 12 * 60_000, severity: 'critical', containerName: null };
+
+  // Records every resolve-side effect: what was marked resolved, which notices were posted where.
+  function setup(t2, { open = OPEN, delivered = ['main'], mainRecovery = true, routes = [], fetchOk = true } = {}) {
+    const resolved = [];
+    const posts = [];
+    const lookups = [];
+    mockDb(t2, {
+      getSetting: (key) =>
+        key === 'alertWebhookUrl' ? 'https://example.com/main' : key === 'alertWebhookNotifyRecovery' ? (mainRecovery ? '1' : '0') : null,
+      getUnresolvedAlert: (q) => (lookups.push(q), open),
+      markAlertResolved: (id) => (resolved.push(id), true),
+      getDeliveredDestinations: () => delivered,
+      getWebhookRoutes: () => routes,
+    });
+    stubFetch(t2, async (url, opts) => (posts.push({ url, body: opts.body }), { ok: fetchOk }));
+    return { resolved, posts, lookups };
+  }
+
+  await t.test('a host coming back resolves its unreachable alert and tells main, which asked to be told', async (t2) => {
+    const s = setup(t2);
+    alerts.handleHostReachability('edge', 'Edge box', true, false);
+    await flushMicrotasks();
+    assert.deepEqual(s.resolved, [77]);
+    assert.deepEqual(s.lookups[0], { hostId: 'edge', containerId: null, rule: 'host_unreachable', sinceTs: 0 });
+    assert.equal(s.posts.length, 1);
+    const body = JSON.parse(s.posts[0].body);
+    assert.equal(body.status, 'resolved');
+    assert.equal(body.id, 77, 'the resolved notice names the alert it closes');
+    assert.equal(body.firedAt, OPEN.ts);
+    assert.match(body.message, /Edge box is reachable again - lasted 12m$/);
+  });
+
+  await t.test('resolution is always recorded, but the notice is opt-in', async (t2) => {
+    const s = setup(t2, { mainRecovery: false });
+    alerts.handleHostReachability('edge', 'Edge box', true, false);
+    await flushMicrotasks();
+    assert.deepEqual(s.resolved, [77]);
+    assert.equal(s.posts.length, 0);
+  });
+
+  await t.test('only destinations the firing notice reached get a resolved one', async (t2) => {
+    const routes = [
+      route({ id: 3, url: 'https://phone.example.com/', notifyRecovery: true }),
+      route({ id: 4, url: 'https://chat.example.com/', notifyRecovery: true }),
+    ];
+    const s = setup(t2, { delivered: ['route:4'], mainRecovery: true, routes });
+    alerts.handleHostReachability('edge', 'Edge box', true, false);
+    await flushMicrotasks();
+    assert.deepEqual(
+      s.posts.map((p) => p.url),
+      ['https://chat.example.com/']
+    );
+  });
+
+  await t.test('nothing open means nothing to resolve and nothing sent', async (t2) => {
+    const s = setup(t2, { open: null });
+    alerts.handleHostReachability('edge', 'Edge box', true, false);
+    await flushMicrotasks();
+    assert.deepEqual(s.resolved, []);
+    assert.equal(s.posts.length, 0);
+  });
+
+  await t.test('a health check passing again resolves the unhealthy alert', async (t2) => {
+    const s = setup(t2, { open: { ...OPEN, containerName: 'web' } });
+    alerts.handleEvent({ hostId: 'h', containerId: 'c1', containerName: 'web', action: 'health_status: healthy', ts: Date.now(), raw: {} });
+    await flushMicrotasks();
+    assert.equal(s.lookups[0].rule, 'unhealthy');
+    assert.equal(s.lookups[0].containerId, 'c1');
+    assert.match(JSON.parse(s.posts[0].body).message, /web is healthy again/);
+  });
+
+  await t.test('docker disk back under its threshold resolves docker_disk', async (t2) => {
+    const s = setup(t2);
+    db.getSetting.mock.mockImplementation((key) =>
+      key === 'alertDiskThresholdGb'
+        ? '50'
+        : key === 'alertWebhookUrl'
+          ? 'https://example.com/main'
+          : key === 'alertWebhookNotifyRecovery'
+            ? '1'
+            : null
+    );
+    alerts.handleDiskUsage({ hostId: 'h', hostName: 'h', rows: [{ size: '10GB' }] });
+    await flushMicrotasks();
+    assert.equal(s.lookups[0].rule, 'docker_disk');
+    assert.match(JSON.parse(s.posts[0].body).message, /back under threshold \(now 9\.3 GB, threshold 50 GB\)/);
+  });
+});
+
+test('a threshold breach that ends resolves only an alert that breach raised', async (t) => {
+  const lookups = [];
+  mockDb(t, {
+    getSetting: mockThresholdSettings({ cpuThreshold: 80, sustainMinutes: 1 }),
+    getUnresolvedAlert: (q) => (lookups.push(q), null),
+  });
+  const sample = (cpuPerc, ts) => ({ hostId: 'h-end', containerId: 'c-end', containerName: 'web', cpuPerc, memPerc: 0, ts });
+  const t0 = 1_800_000_000_000;
+  alerts.handleSample(sample(95, t0));
+  alerts.handleSample(sample(95, t0 + 70_000));
+  assert.equal(lookups.length, 0, 'still breaching - nothing to resolve yet');
+  alerts.handleSample(sample(10, t0 + 80_000));
+  assert.equal(lookups.length, 1);
+  assert.deepEqual(lookups[0], { hostId: 'h-end', containerId: 'c-end', rule: 'container_cpu', sinceTs: t0 });
+  alerts.handleSample(sample(10, t0 + 90_000));
+  assert.equal(lookups.length, 1, 'under threshold with no breach in progress is not a recovery');
+});
+
+test('a threshold switched off mid-breach does not announce a recovery', (t) => {
+  const settings = { cpuThreshold: 80, sustainMinutes: 1 };
+  const lookups = [];
+  mockDb(t, { getSetting: (key) => mockThresholdSettings(settings)(key), getUnresolvedAlert: (q) => (lookups.push(q), null) });
+  const t0 = 1_800_000_100_000;
+  alerts.handleSample({ hostId: 'h-off', containerId: 'c-off', containerName: 'web', cpuPerc: 95, memPerc: 0, ts: t0 });
+  settings.cpuThreshold = 0;
+  alerts.handleSample({ hostId: 'h-off', containerId: 'c-off', containerName: 'web', cpuPerc: 95, memPerc: 0, ts: t0 + 5000 });
+  assert.equal(lookups.length, 0, 'CPU is still high - "back under threshold" would be false');
+});
+
+test('the retry sweep and resolution', async (t) => {
+  await t.test('a firing notice whose alert has since resolved is dropped, not delivered late', async (t2) => {
+    const dropped = [];
+    const urls = [];
+    mockDb(t2, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'discord://1/2' : null),
+      getPendingDeliveries: () => [
+        deliveryRow({ id: 11, resolvedAt: Date.now() }),
+        deliveryRow({ id: 12, kind: 'resolved', resolvedAt: Date.now() }),
+      ],
+      deleteDelivery: (id) => dropped.push(id),
+    });
+    stubFetch(t2, async (url) => (urls.push(url), { ok: true }));
+    await alerts.retryFailedWebhooks();
+    assert.deepEqual(dropped, [11]);
+    assert.equal(urls.length, 1, 'the resolved notice itself still goes out');
+  });
+
+  await t.test('each row retries against its own destination, and one that no longer exists is skipped', async (t2) => {
+    const urls = [];
+    const delivered = [];
+    mockDb(t2, {
+      getSetting: () => null,
+      getWebhookRoutes: () => [
+        route({ id: 6, url: 'https://ops.example.com/hook' }),
+        route({ id: 7, url: 'https://off.example.com/', enabled: false }),
+      ],
+      getPendingDeliveries: () => [
+        deliveryRow({ id: 21, destination: 'route:6' }),
+        deliveryRow({ id: 22, destination: 'route:7' }),
+        deliveryRow({ id: 23, destination: 'main' }),
+      ],
+      markDeliveryDelivered: (id) => delivered.push(id),
+    });
+    stubFetch(t2, async (url) => (urls.push(url), { ok: true }));
+    await alerts.retryFailedWebhooks();
+    assert.deepEqual(urls, ['https://ops.example.com/hook']);
+    assert.deepEqual(delivered, [21]);
+  });
+});
+
+test('buildDelivery labels a resolved notice as resolved, at low priority', async (t) => {
+  const resolved = { hostId: 'h', containerName: 'web', severity: 'critical', message: 'web is healthy again', status: 'resolved' };
+  await t.test('slack and discord text', () => {
+    assert.match(
+      JSON.parse(alerts.buildDelivery('https://hooks.slack.com/services/x', resolved).body).text,
+      /^\*\[opendockwatch\] RESOLVED\*/
+    );
+    assert.match(JSON.parse(alerts.buildDelivery('discord://1/2', resolved).body).content, /RESOLVED/);
+  });
+  await t.test('ntfy and gotify drop the priority rather than paging again', () => {
+    const ntfy = alerts.buildDelivery('ntfy://ntfy.sh/ops', resolved);
+    assert.equal(ntfy.headers.Title, 'opendockwatch: resolved');
+    assert.equal(ntfy.headers.Priority, 'low');
+    assert.equal(JSON.parse(alerts.buildDelivery('gotify://g.example.com/tok', resolved).body).priority, 2);
+  });
+  await t.test('generic JSON carries status, so a receiver can tell the two apart', () => {
+    assert.equal(JSON.parse(alerts.buildDelivery('https://example.com/hook', resolved).body).status, 'resolved');
+  });
+});
+
+test('sendTestAlert can test one route, enabled or not', async (t) => {
+  let captured = null;
+  mockDb(t, { getSetting: () => null, getWebhookRoutes: () => [route({ id: 9, url: 'https://ops.example.com/hook', enabled: false })] });
+  stubFetch(t, async (url) => ((captured = url), { ok: true }));
+  await alerts.sendTestAlert({ routeId: 9 });
+  assert.equal(captured, 'https://ops.example.com/hook');
+  await assert.rejects(() => alerts.sendTestAlert({ routeId: 10 }), /no such webhook route/);
+});
+
+test('ALERT_RULES names every rule fire() is called with', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'alerts.js'), 'utf8');
+  const fired = new Set([...source.matchAll(/rule: '([a-z_]+)',\n\s+severity:/g)].map((m) => m[1]));
+  fired.delete('test'); // sendTestAlert's synthetic alert, never fired or routed
+  assert.ok(fired.size >= 10, 'the scan stopped matching fire() calls');
+  assert.deepEqual([...fired].sort(), [...alerts.ALERT_RULES].sort());
 });

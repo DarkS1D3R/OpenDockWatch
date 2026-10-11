@@ -99,9 +99,40 @@ db.exec(`
     acknowledged INTEGER NOT NULL DEFAULT 0,
     webhook_delivered_at INTEGER,
     webhook_attempts INTEGER NOT NULL DEFAULT 0,
-    cleared_at INTEGER
+    cleared_at INTEGER,
+    resolved_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
+
+  -- Webhook destinations beside the main one (Settings > Webhook). Every enabled route whose host,
+  -- rules and severity filters match gets the alert; rules is a JSON array, empty meaning all.
+  CREATE TABLE IF NOT EXISTS webhook_routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    format TEXT NOT NULL DEFAULT '',
+    host_id TEXT,
+    rules TEXT NOT NULL DEFAULT '[]',
+    min_severity TEXT NOT NULL DEFAULT 'warning',
+    notify_recovery INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1
+  );
+
+  -- One row per notice per destination ('main' or 'route:<id>'), firing or resolved - the retry
+  -- sweep's queue. payload is the alert object exactly as sent, so a retry re-sends the same thing.
+  -- Replaces the webhook_* columns on alerts, which only had room for one destination.
+  CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER NOT NULL,
+    destination TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_alert ON webhook_deliveries (alert_id);
+  CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending ON webhook_deliveries (ts) WHERE delivered_at IS NULL;
 
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -156,6 +187,15 @@ for (const column of ['webhook_delivered_at INTEGER', 'webhook_attempts INTEGER 
   }
 }
 
+// resolved_at does need a backfill: NULL means "still open", and an alert from before resolution was
+// tracked would otherwise be resolved - and announced - by the next unrelated recovery. 0 means unknown.
+try {
+  db.exec('ALTER TABLE alerts ADD COLUMN resolved_at INTEGER');
+  db.exec('UPDATE alerts SET resolved_at = 0');
+} catch {
+  /* column already exists */
+}
+
 // And events' own Clear marker. Its partial index has to be created down here rather than in the
 // schema block: a CREATE INDEX naming a column the ALTER above has just added would throw on an
 // upgrading database, where the block runs against the old table. See server/CLAUDE.md.
@@ -194,18 +234,49 @@ const stmts = {
   // as ackAlert's own WHERE, so "not found" needs no CLEARED_AT_EXEMPT entry. See server/CLAUDE.md.
   getAlertHostId: db.prepare(`SELECT host_id AS hostId FROM alerts WHERE id = ? AND cleared_at IS NULL`),
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
-  markWebhookDelivered: db.prepare(`UPDATE alerts SET webhook_delivered_at = ?, webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
-  markWebhookAttemptFailed: db.prepare(`UPDATE alerts SET webhook_attempts = webhook_attempts + 1 WHERE id = ?`),
-  // Picked up by alerts.js's retry sweep: never-attempted rows (webhook_attempts = 0) are
-  // deliberately excluded, only actually-tried-and-failed ones retry. sinceTs bounds the
-  // lookback so a webhook down for hours doesn't get its whole backlog replayed at once.
-  getPendingWebhookRetries: db.prepare(`
-    SELECT * FROM alerts
-    WHERE webhook_delivered_at IS NULL AND webhook_attempts > 0 AND webhook_attempts < @maxAttempts
-      AND ts >= @sinceTs AND cleared_at IS NULL
-    ORDER BY ts ASC
+  insertWebhookDelivery: db.prepare(`
+    INSERT INTO webhook_deliveries (alert_id, destination, kind, ts, payload) VALUES (@alertId, @destination, @kind, @ts, @payload)
+  `),
+  markDeliveryDelivered: db.prepare(`UPDATE webhook_deliveries SET delivered_at = ?, attempts = attempts + 1 WHERE id = ?`),
+  markDeliveryFailed: db.prepare(`UPDATE webhook_deliveries SET attempts = attempts + 1 WHERE id = ?`),
+  deleteDelivery: db.prepare(`DELETE FROM webhook_deliveries WHERE id = ?`),
+  // Picked up by alerts.js's retry sweep: never-attempted rows (attempts = 0) are deliberately
+  // excluded, only actually-tried-and-failed ones retry. sinceTs bounds the lookback so a webhook
+  // down for hours doesn't get its whole backlog replayed at once. Oldest first, so a firing notice
+  // goes out before the resolved one that follows it. A cleared alert stops being retried.
+  getPendingDeliveries: db.prepare(`
+    SELECT d.id, d.alert_id AS alertId, d.destination, d.kind, d.ts, d.payload, d.attempts, a.resolved_at AS resolvedAt
+    FROM webhook_deliveries d JOIN alerts a ON a.id = d.alert_id
+    WHERE d.delivered_at IS NULL AND d.attempts > 0 AND d.attempts < @maxAttempts
+      AND d.ts >= @sinceTs AND a.cleared_at IS NULL
+    ORDER BY d.ts ASC, d.id ASC
     LIMIT @limit
   `),
+  // Where an alert's firing notice actually arrived - its resolved notice goes to those and no others.
+  getDeliveredDestinations: db.prepare(`
+    SELECT DISTINCT destination FROM webhook_deliveries WHERE alert_id = ? AND kind = 'firing' AND delivered_at IS NOT NULL
+  `),
+  // The newest still-open alert for a (host, container, rule), for alerts.js's resolve(). Ignores
+  // cleared_at deliberately: clearing the Activity tab doesn't un-send the webhook, so the recovery
+  // is still news. "container_id IS @containerId" so a host-level rule (NULL) matches itself.
+  getUnresolvedAlert: db.prepare(`
+    SELECT id, ts, severity, container_name AS containerName FROM alerts
+    WHERE host_id = @hostId AND container_id IS @containerId AND rule = @rule AND resolved_at IS NULL AND ts >= @sinceTs
+    ORDER BY ts DESC LIMIT 1
+  `),
+  markAlertResolved: db.prepare(`UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`),
+  getWebhookRoutes: db.prepare(`SELECT * FROM webhook_routes ORDER BY id ASC`),
+  insertWebhookRoute: db.prepare(`
+    INSERT INTO webhook_routes (name, url, format, host_id, rules, min_severity, notify_recovery, enabled)
+    VALUES (@name, @url, @format, @hostId, @rules, @minSeverity, @notifyRecovery, @enabled)
+  `),
+  updateWebhookRoute: db.prepare(`
+    UPDATE webhook_routes
+    SET name = @name, url = @url, format = @format, host_id = @hostId, rules = @rules,
+        min_severity = @minSeverity, notify_recovery = @notifyRecovery, enabled = @enabled
+    WHERE id = @id
+  `),
+  deleteWebhookRoute: db.prepare(`DELETE FROM webhook_routes WHERE id = ?`),
   setBreachStart: db.prepare(`
     INSERT INTO alert_breaches (key, start_ts) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET start_ts = excluded.start_ts
@@ -289,6 +360,7 @@ const stmts = {
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
   pruneHostReachability: db.prepare(`DELETE FROM host_reachability WHERE ts < ?`),
+  pruneWebhookDeliveries: db.prepare(`DELETE FROM webhook_deliveries WHERE ts < ?`),
   clearEventsByHost: db.prepare(`UPDATE events SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
   clearAlertsByHost: db.prepare(`UPDATE alerts SET cleared_at = ? WHERE host_id = ? AND cleared_at IS NULL`),
   getEvents: db.prepare(`SELECT * FROM events WHERE host_id = ? AND ts >= ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
@@ -444,16 +516,80 @@ function ackAllAlerts(hostId) {
   return stmts.ackAllAlerts.run(hostId).changes;
 }
 
-function markWebhookDelivered(id) {
-  stmts.markWebhookDelivered.run(Date.now(), id);
+function insertWebhookDelivery({ alertId, destination, kind, ts, payload }) {
+  return stmts.insertWebhookDelivery.run({ alertId, destination, kind, ts, payload: JSON.stringify(payload) }).lastInsertRowid;
 }
 
-function markWebhookAttemptFailed(id) {
-  stmts.markWebhookAttemptFailed.run(id);
+function markDeliveryDelivered(id) {
+  stmts.markDeliveryDelivered.run(Date.now(), id);
 }
 
-function getPendingWebhookRetries({ maxAttempts, sinceTs, limit }) {
-  return stmts.getPendingWebhookRetries.all({ maxAttempts, sinceTs, limit });
+function markDeliveryFailed(id) {
+  stmts.markDeliveryFailed.run(id);
+}
+
+function deleteDelivery(id) {
+  stmts.deleteDelivery.run(id);
+}
+
+function getPendingDeliveries({ maxAttempts, sinceTs, limit }) {
+  return stmts.getPendingDeliveries.all({ maxAttempts, sinceTs, limit });
+}
+
+function getDeliveredDestinations(alertId) {
+  return stmts.getDeliveredDestinations.all(alertId).map((r) => r.destination);
+}
+
+function getUnresolvedAlert({ hostId, containerId = null, rule, sinceTs = 0 }) {
+  return stmts.getUnresolvedAlert.get({ hostId, containerId, rule, sinceTs }) || null;
+}
+
+// True only for the call that actually resolved it, so two racing recoveries can't both announce one.
+function markAlertResolved(id, ts) {
+  return stmts.markAlertResolved.run(ts, id).changes > 0;
+}
+
+function rowToWebhookRoute(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    format: row.format,
+    hostId: row.host_id,
+    rules: JSON.parse(row.rules),
+    minSeverity: row.min_severity,
+    notifyRecovery: !!row.notify_recovery,
+    enabled: !!row.enabled,
+  };
+}
+
+function webhookRouteParams(route) {
+  return {
+    name: route.name,
+    url: route.url,
+    format: route.format || '',
+    hostId: route.hostId || null,
+    rules: JSON.stringify(route.rules || []),
+    minSeverity: route.minSeverity || 'warning',
+    notifyRecovery: route.notifyRecovery ? 1 : 0,
+    enabled: route.enabled === false ? 0 : 1,
+  };
+}
+
+function getWebhookRoutes() {
+  return stmts.getWebhookRoutes.all().map(rowToWebhookRoute);
+}
+
+function insertWebhookRoute(route) {
+  return stmts.insertWebhookRoute.run(webhookRouteParams(route)).lastInsertRowid;
+}
+
+function updateWebhookRoute(id, route) {
+  return stmts.updateWebhookRoute.run({ id, ...webhookRouteParams(route) }).changes > 0;
+}
+
+function deleteWebhookRoute(id) {
+  return stmts.deleteWebhookRoute.run(id).changes > 0;
 }
 
 function setBreachStart(key, startTs) {
@@ -678,6 +814,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
     auditLog: stmts.pruneAuditLog.run(now - auditRetentionMs).changes,
     alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
     hostReachability: stmts.pruneHostReachability.run(now - eventsRetentionMs).changes,
+    webhookDeliveries: stmts.pruneWebhookDeliveries.run(now - auditRetentionMs).changes,
   }));
 }
 
@@ -692,9 +829,18 @@ module.exports = {
   ackAlert,
   getAlertHostId,
   ackAllAlerts,
-  markWebhookDelivered,
-  markWebhookAttemptFailed,
-  getPendingWebhookRetries,
+  insertWebhookDelivery,
+  markDeliveryDelivered,
+  markDeliveryFailed,
+  deleteDelivery,
+  getPendingDeliveries,
+  getDeliveredDestinations,
+  getUnresolvedAlert,
+  markAlertResolved,
+  getWebhookRoutes,
+  insertWebhookRoute,
+  updateWebhookRoute,
+  deleteWebhookRoute,
   setBreachStart,
   deleteBreachStart,
   getAllBreaches,

@@ -225,6 +225,69 @@ test('container-rules routes reject an unusable id rather than no-op with a 200'
   });
 });
 
+test('webhook routes', async (t) => {
+  const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+  const body = {
+    name: 'Ops phone',
+    url: 'ntfy://ntfy.sh/ops-topic',
+    rules: ['host_unreachable'],
+    minSeverity: 'critical',
+    notifyRecovery: true,
+  };
+
+  // A GET, so the structural admin-gating walk at the top of this file does not cover it - and the
+  // list carries every route's URL, tokens included.
+  await t.test('a viewer cannot read the route list', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/settings/webhook-routes')).status, 403);
+  });
+
+  await t.test('rejects a bad name, URL, rule, severity, host or flag', async () => {
+    for (const bad of [
+      { name: '' },
+      { name: 'x'.repeat(61) },
+      { url: 'ftp://example.com' },
+      { url: 'not a url' },
+      { rules: ['no_such_rule'] },
+      { rules: 'host_cpu' },
+      { minSeverity: 'info' },
+      { hostId: '__no_such_host__' },
+      { notifyRecovery: 'yes' },
+      { format: 'teams' },
+    ]) {
+      const res = await admin.post('/api/settings/webhook-routes').send({ ...body, ...bad });
+      assert.equal(res.status, 400, `accepted ${JSON.stringify(bad)}`);
+    }
+  });
+
+  await t.test('round-trips add, update and delete, and 400/404s an unusable id', async () => {
+    const added = await admin.post('/api/settings/webhook-routes').send(body);
+    assert.equal(added.status, 200);
+    const route = added.body[added.body.length - 1];
+    assert.equal(route.name, 'Ops phone');
+    assert.deepEqual(route.rules, ['host_unreachable']);
+    assert.equal(route.enabled, true, 'a new route is on unless said otherwise');
+    const updated = await admin.put(`/api/settings/webhook-routes/${route.id}`).send({ ...body, enabled: false });
+    assert.equal(updated.body.find((r) => r.id === route.id).enabled, false);
+    assert.equal((await admin.put('/api/settings/webhook-routes/abc').send(body)).status, 400);
+    assert.equal((await admin.put('/api/settings/webhook-routes/999999').send(body)).status, 404);
+    assert.equal((await admin.post('/api/settings/webhook-routes/999999/test')).status, 404);
+    assert.equal((await admin.delete(`/api/settings/webhook-routes/${route.id}`)).status, 200);
+    assert.equal((await admin.delete(`/api/settings/webhook-routes/${route.id}`)).status, 404);
+  });
+
+  await t.test('the main webhook takes notifyRecovery and mode, and validates both', async () => {
+    assert.equal((await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: 'on' })).status, 400);
+    assert.equal((await admin.put('/api/settings/webhook').send({ url: '', mode: 'some' })).status, 400);
+    const saved = await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: true, mode: 'unmatched' });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.notifyRecovery, true);
+    assert.equal(saved.body.mode, 'unmatched');
+    const cleared = await admin.delete('/api/settings/webhook');
+    assert.equal(cleared.body.mode, 'all');
+  });
+});
+
 test('default view (landing tab) setting', async (t) => {
   await t.test('rejects a value outside the valid views', async () => {
     const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
