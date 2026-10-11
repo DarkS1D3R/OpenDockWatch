@@ -1,12 +1,25 @@
 const test = require('node:test');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const assert = require('node:assert/strict');
+
+// server/db opens a database the moment it's required, even though mockDb below stubs every call
+// this file makes - set before the require, or it opens the real data/opendockwatch.db a container
+// may hold in WAL mode (see test/index.test.js).
+const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-alerts-test-${process.pid}.db`);
+process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
+
 const db = require('../server/db');
 const hosts = require('../server/hosts');
 const logger = require('../server/logger');
 const alerts = require('../server/alerts');
 const docker = require('../server/docker');
+
+test.after(() => {
+  db.close();
+  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + suffix, { force: true });
+});
 
 // Same reasoning as mockDb below: alerts.js calls hosts.loadHosts() through the module object
 // (not a destructured reference), so mocking it here reaches loadBreachState without touching the
