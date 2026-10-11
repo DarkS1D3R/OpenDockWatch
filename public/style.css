@@ -594,6 +594,13 @@ body {
   border-color: var(--accent);
   color: #fff;
 }
+/* Greyed rather than hidden on the Hosts tab, so the topbar doesn't shift when switching to it. The
+   selected filter keeps a neutral fill so it still reads as the one that comes back. */
+.view-toggle button.active:disabled {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  color: var(--muted);
+}
 
 /* The filter box and the sort controls share one row, wrapping the sort under the filter only when
    the pane is too narrow for both. */

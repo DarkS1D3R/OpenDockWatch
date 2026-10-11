@@ -595,10 +595,10 @@ const app = createApp({
           </button>
           <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
         </nav>
-        <div v-if="view !== 'overview'" class="view-toggle" role="group" aria-label="Show containers">
-          <button :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
-          <button :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
-          <button :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
+        <div class="view-toggle" role="group" aria-label="Show containers" :title="view === 'overview' ? 'The Hosts tab shows every host, not containers - this filter applies to the other tabs' : null">
+          <button :disabled="view === 'overview'" :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
+          <button :disabled="view === 'overview'" :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
+          <button :disabled="view === 'overview'" :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
         </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
         <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Settings" :aria-expanded="String(settingsOpen)">⚙ Settings</button>
