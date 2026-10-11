@@ -37,6 +37,7 @@ const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
 const docker = require('../server/docker');
 const metricsCollector = require('../server/metricsCollector');
+const imageUpdates = require('../server/imageUpdates');
 
 test.after(() => {
   db.close();
@@ -1292,6 +1293,46 @@ test('GET /overview', async (t) => {
     const row = (await admin.get('/api/overview')).body.find((r) => r.id === hostId);
     assert.equal(row.status, 'pending');
     assert.equal(probed.mock.callCount(), 0);
+  });
+});
+
+test('image update checks', async (t) => {
+  const hostId = loadHosts()[0].id;
+
+  await t.test('Check now starts a check and answers at once, admin only', async (t2) => {
+    const started = t2.mock.method(imageUpdates, 'checkHost', () => new Promise(() => {}));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.post(`/api/hosts/${hostId}/image-updates/check`)).status, 403);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/image-updates/check`);
+    assert.equal(res.status, 202, 'a check that never finishes must not hold the request open');
+    assert.equal(started.mock.callCount(), 1);
+    assert.equal(started.mock.calls[0].arguments[1].force, true, 'Check now asks the registry again rather than reusing its cache');
+    assert.equal((await admin.post(`/api/hosts/${FAKE_HOST_ID}/image-updates/check`)).status, 404);
+  });
+
+  await t.test('container rows carry the last verdict', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({
+      reachable: true,
+      statsTs: Date.now(),
+      containers: [{ id: 'iuaaaaaaaaaa', name: 'web', state: 'running', image: 'nginx:alpine' }],
+      stats: {},
+    }));
+    t2.mock.method(imageUpdates, 'statusFor', (h, id) => (id === 'iuaaaaaaaaaa' ? { status: 'outdated', checkedAt: 1 } : null));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const row = (await admin.get(`/api/hosts/${hostId}/containers`)).body[0];
+    assert.deepEqual(row.imageUpdate, { status: 'outdated', checkedAt: 1 });
+  });
+
+  await t.test('the check interval setting validates and round-trips', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const hours of [-1, 'daily', 100000]) {
+      assert.equal((await admin.put('/api/settings/image-updates').send({ hours })).status, 400, `accepted ${hours}`);
+    }
+    assert.deepEqual((await admin.put('/api/settings/image-updates').send({ hours: 12 })).body, { hours: 12, overridden: true });
+    assert.deepEqual((await admin.delete('/api/settings/image-updates')).body, { hours: 0, overridden: false });
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/settings/image-updates')).status, 403);
   });
 });
 

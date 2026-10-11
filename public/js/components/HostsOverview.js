@@ -144,6 +144,7 @@ export default {
               <td>
                 {{ containersLabel(row) }}
                 <div v-for="p in containerProblems(row)" :key="p" class="host-problem small">{{ p }}</div>
+                <div v-if="row.imageUpdates" class="image-update-update small">{{ row.imageUpdates }} with a newer image</div>
               </td>
               <td class="muted">{{ cpuLabel(row) }}</td>
               <td class="muted">

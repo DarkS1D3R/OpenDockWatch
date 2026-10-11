@@ -227,6 +227,28 @@ export async function apiTestWebhook() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook/test', { method: 'POST' }));
 }
 
+export async function apiCheckImageUpdates(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/image-updates/check`, { method: 'POST' }));
+}
+
+export async function apiGetImageUpdateConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/image-updates'));
+}
+
+export async function apiSaveImageUpdateConfig(hours) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/image-updates', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hours }),
+    })
+  );
+}
+
+export async function apiClearImageUpdateConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/image-updates', { method: 'DELETE' }));
+}
+
 export async function apiGetWebhookRoutes() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook-routes'));
 }

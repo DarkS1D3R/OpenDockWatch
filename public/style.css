@@ -2530,6 +2530,29 @@ button.log-pane-main-btn.active:hover {
 .route-disabled {
   opacity: 0.6;
 }
+/* Image-update verdicts (lib/imageUpdate.js tones). An available update is news, not a fault, so it
+   takes the accent rather than the warning colour. */
+.image-update-update {
+  color: var(--accent);
+}
+.image-update-ok {
+  color: var(--ok);
+}
+.image-update-muted {
+  color: var(--muted);
+}
+.image-update-badge {
+  color: var(--accent);
+  margin-right: 4px;
+  font-weight: 700;
+}
+.image-digests {
+  display: block;
+  font-family: monospace;
+}
+.image-check-btn {
+  margin-left: 8px;
+}
 .ack-tick {
   display: inline-block;
   margin-top: 2px;

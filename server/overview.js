@@ -27,7 +27,7 @@ function hostStatus({ polled, reachable, openAlerts, containers }) {
   return 'ok';
 }
 
-function hostOverview({ host, snapshot, openAlerts = 0, lastReachability = null }) {
+function hostOverview({ host, snapshot, openAlerts = 0, lastReachability = null, imageUpdates = 0 }) {
   const polled = !!(snapshot && snapshot.ts);
   const reachable = polled ? snapshot.reachable !== false : null;
   // Counted only once a poll has delivered a container list: before that, or while down, zero
@@ -47,6 +47,8 @@ function hostOverview({ host, snapshot, openAlerts = 0, lastReachability = null 
     memUsedBytes: usage ? usage.memUsedBytes : null,
     memTotalBytes: hostInfo ? hostInfo.memTotalBytes || null : null,
     openAlerts,
+    // Not part of status: a newer image is something to plan for, not something wrong.
+    imageUpdates: reachable ? imageUpdates : 0,
   };
   row.status = hostStatus(row);
   return row;

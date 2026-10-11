@@ -18,6 +18,7 @@ const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
+const imageUpdates = require('./imageUpdates');
 const statsWatcher = require('./statsWatcher');
 const prometheus = require('./prometheus');
 const { createWatchdog } = require('./watchdog');
@@ -387,6 +388,7 @@ if (require.main === module) {
     alerts.start();
     eventWatcher.start();
     metricsCollector.start();
+    imageUpdates.start();
     watchdog.start();
     if (VITALS_INTERVAL_MS) {
       // Never the reason the process stays alive - the HTTP server is. Same as watchdog's timer.
@@ -447,6 +449,7 @@ if (require.main === module) {
     watchdog.stop();
     if (vitalsTimer) clearInterval(vitalsTimer);
     metricsCollector.stop();
+    imageUpdates.stop();
     eventWatcher.stop();
     alerts.stop();
 

@@ -8,7 +8,9 @@ const db = require('../db');
 const { computeContainerUptime, computeHostUptime } = require('../uptime');
 const { HISTORY_RANGES } = require('../historyRanges');
 const metricsCollector = require('../metricsCollector');
+const logger = require('../logger');
 const { hostDisplayName, hostOverview } = require('../overview');
+const imageUpdates = require('../imageUpdates');
 const { requireHost, requireContainerId, intParam, dockerError } = require('./middleware');
 const { containersFor, statsFor, hostHistoryFor, topologyFor, dashboardExtrasFor } = require('./dashboardData');
 
@@ -52,9 +54,20 @@ router.get('/overview', (req, res) => {
         snapshot: metricsCollector.getSnapshot(host.id),
         openAlerts: db.countOpenAlerts(host.id),
         lastReachability: db.getLastHostReachability(host.id),
+        imageUpdates: imageUpdates.countOutdated(host.id),
       })
     )
   );
+});
+
+// Starts a check of every container's image on this host against its registry and answers at once:
+// with many images, or a slow registry, it can outlast the request timeout. Results land on the
+// containers' imageUpdate field, which the dashboard poll already carries. Admin-only: it reaches out.
+router.post('/hosts/:hostId/image-updates/check', requireAdmin, requireHost, (req, res) => {
+  const already = imageUpdates.isChecking(req.odwHost.id);
+  imageUpdates.checkHost(req.odwHost, { force: true });
+  logger.info('image_updates.check_requested', { user: req.session.username, host: req.odwHost.id, already });
+  res.status(202).json({ started: true });
 });
 
 router.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {

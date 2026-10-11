@@ -1,11 +1,13 @@
 import { apiGetDefaultView, apiSaveDefaultView, apiClearDefaultView } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
 import { VIEWS } from '../constants.js';
+import SettingsImageUpdates from './SettingsImageUpdates.js';
 
 // The Settings panel's General tab: currently just the default landing tab, env-default +
 // DB-override like the other sections - see server/index.js's getDefaultView.
 export default {
   name: 'SettingsGeneral',
+  components: { SettingsImageUpdates },
   data() {
     return {
       defaultView: 'list',
@@ -63,6 +65,8 @@ export default {
         <button :disabled="saving" @click="save">Save</button>
         <button :disabled="saving || !overridden" @click="clear">Clear override</button>
       </div>
+      <hr />
+      <settings-image-updates></settings-image-updates>
     </div>
   `,
 };

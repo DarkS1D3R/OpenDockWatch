@@ -134,6 +134,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_alert ON webhook_deliveries (alert_id);
   CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending ON webhook_deliveries (ts) WHERE delivered_at IS NULL;
 
+  -- imageUpdates.js's cache of what a registry last said a tag points at (or why it could not
+  -- say), keyed by normalised registry/repository:tag, so a restart doesn't re-ask every registry.
+  CREATE TABLE IF NOT EXISTS image_remote_digests (
+    ref_key TEXT PRIMARY KEY,
+    digest TEXT,
+    error_kind TEXT,
+    error TEXT,
+    checked_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -265,6 +275,14 @@ const stmts = {
     ORDER BY ts DESC LIMIT 1
   `),
   markAlertResolved: db.prepare(`UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`),
+  getRemoteDigest: db.prepare(`
+    SELECT digest, error_kind AS errorKind, error, checked_at AS checkedAt FROM image_remote_digests WHERE ref_key = ?
+  `),
+  upsertRemoteDigest: db.prepare(`
+    INSERT INTO image_remote_digests (ref_key, digest, error_kind, error, checked_at) VALUES (@refKey, @digest, @errorKind, @error, @checkedAt)
+    ON CONFLICT(ref_key) DO UPDATE SET digest = excluded.digest, error_kind = excluded.error_kind, error = excluded.error, checked_at = excluded.checked_at
+  `),
+  pruneRemoteDigests: db.prepare(`DELETE FROM image_remote_digests WHERE checked_at < ?`),
   getWebhookRoutes: db.prepare(`SELECT * FROM webhook_routes ORDER BY id ASC`),
   insertWebhookRoute: db.prepare(`
     INSERT INTO webhook_routes (name, url, format, host_id, rules, min_severity, notify_recovery, enabled)
@@ -549,6 +567,14 @@ function markAlertResolved(id, ts) {
   return stmts.markAlertResolved.run(ts, id).changes > 0;
 }
 
+function getRemoteDigest(refKey) {
+  return stmts.getRemoteDigest.get(refKey) || null;
+}
+
+function setRemoteDigest({ refKey, digest = null, errorKind = null, error = null, checkedAt }) {
+  stmts.upsertRemoteDigest.run({ refKey, digest, errorKind, error, checkedAt });
+}
+
 function rowToWebhookRoute(row) {
   return {
     id: row.id,
@@ -815,6 +841,7 @@ function pruneOld({ metricsRetentionMs, eventsRetentionMs, auditRetentionMs }) {
     alerts: stmts.pruneAlerts.run(now - auditRetentionMs).changes,
     hostReachability: stmts.pruneHostReachability.run(now - eventsRetentionMs).changes,
     webhookDeliveries: stmts.pruneWebhookDeliveries.run(now - auditRetentionMs).changes,
+    remoteDigests: stmts.pruneRemoteDigests.run(now - eventsRetentionMs).changes,
   }));
 }
 
@@ -837,6 +864,8 @@ module.exports = {
   getDeliveredDestinations,
   getUnresolvedAlert,
   markAlertResolved,
+  getRemoteDigest,
+  setRemoteDigest,
   getWebhookRoutes,
   insertWebhookRoute,
   updateWebhookRoute,

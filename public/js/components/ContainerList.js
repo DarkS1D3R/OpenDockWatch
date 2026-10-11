@@ -181,7 +181,7 @@ export default {
               @keydown.space.self.prevent="$emit('select', c.id)"
             >
               <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" aria-hidden="true" v-html="badgeHtml(c)"></span><a v-if="c.url" :href="c.url" target="_blank" rel="noopener noreferrer" class="container-link" title="Open the service's own UI">{{ c.name }} ↗</a><template v-else>{{ c.name }}</template></td>
-              <td class="muted">{{ c.image }}</td>
+              <td class="muted"><span v-if="c.imageUpdate && c.imageUpdate.status === 'outdated'" class="image-update-badge" role="img" aria-label="Newer image available" title="Newer image available">⬆</span>{{ c.image }}</td>
               <td>
                 <div class="status-cell">
                   <span class="status-text" :class="stateClass(c)" :title="c.status">{{ c.status }}</span>

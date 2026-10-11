@@ -10,6 +10,7 @@ const metricsCollector = require('../metricsCollector');
 const { requireHost, dockerError } = require('./middleware');
 const { forgetDashboardCaches } = require('./dashboardData');
 const { VALID_VIEWS } = require('../views');
+const imageUpdates = require('../imageUpdates');
 
 const router = express.Router();
 
@@ -207,6 +208,28 @@ router.post('/settings/webhook-routes/:id/test', requireAdmin, async (req, res) 
   }
 });
 
+// How often to check running images against their registries - 0 is off. Same env-default +
+// DB-override shape as the rest. See imageUpdates.js for why off is the default.
+const IMAGE_CHECK_MAX_HOURS = 24 * 30;
+
+router.get('/settings/image-updates', requireAdmin, (req, res) => {
+  res.json(imageUpdates.getCheckConfig());
+});
+
+router.put('/settings/image-updates', requireAdmin, (req, res) => {
+  const hours = Number((req.body || {}).hours);
+  if (!Number.isFinite(hours) || hours < 0 || hours > IMAGE_CHECK_MAX_HOURS) {
+    return res.status(400).json({ error: `hours must be between 0 (off) and ${IMAGE_CHECK_MAX_HOURS}` });
+  }
+  logger.info('settings.image_updates.update', { user: req.session.username, hours });
+  res.json(imageUpdates.setCheckConfig({ hours }));
+});
+
+router.delete('/settings/image-updates', requireAdmin, (req, res) => {
+  logger.info('settings.image_updates.clear', { user: req.session.username });
+  res.json(imageUpdates.clearCheckConfig());
+});
+
 // Resource-threshold rules (container/host CPU & mem, Docker disk footprint) -
 // same env-default + DB-override + admin-only shape as the webhook settings above.
 const THRESHOLD_FIELDS = ['cpuThreshold', 'memThreshold', 'sustainMinutes', 'diskThresholdGb'];
@@ -289,6 +312,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   metricsCollector.removeHost(updatedHost.id);
   eventWatcher.removeHost(updatedHost.id);
   forgetDashboardCaches(updatedHost.id);
+  imageUpdates.forgetHost(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -303,6 +327,7 @@ router.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   metricsCollector.removeHost(req.params.id);
   eventWatcher.removeHost(req.params.id);
   forgetDashboardCaches(req.params.id);
+  imageUpdates.forgetHost(req.params.id);
   logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
   res.json(updated);
 });

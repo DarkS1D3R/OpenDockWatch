@@ -78,8 +78,17 @@ test('hostOverview', async (t) => {
       memUsedBytes: 2e9,
       memTotalBytes: 8e9,
       openAlerts: 0,
+      imageUpdates: 0,
       status: 'ok',
     });
+  });
+
+  await t.test('image updates are counted but never make a host need a look', () => {
+    const row = hostOverview({ host: LOCAL, snapshot: snapshot(), imageUpdates: 2 });
+    assert.equal(row.imageUpdates, 2);
+    assert.equal(row.status, 'ok');
+    const down = hostOverview({ host: LOCAL, snapshot: snapshot({ reachable: false }), imageUpdates: 2 });
+    assert.equal(down.imageUpdates, 0, 'a down host shows none of its stale figures');
   });
 
   await t.test('the SSH address never leaves the server - only that the host is remote', () => {

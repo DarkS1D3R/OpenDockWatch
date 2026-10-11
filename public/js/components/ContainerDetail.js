@@ -1,9 +1,13 @@
 import { PREVIEW_TAIL } from '../constants.js';
 import { healthColor, healthLabel, formatRatePair } from '../format.js';
-import { logsUrl, apiGetContainerInspect, apiGetContainerTop } from '../api.js';
+import { logsUrl, apiGetContainerInspect, apiGetContainerTop, apiCheckImageUpdates } from '../api.js';
+import { imageUpdateText, checkedAgo, shortDigest } from '../lib/imageUpdate.js';
 import { createLogStream } from '../lib/logStream.js';
 import { decorateLines } from '../lib/logLines.js';
 import { cpuLimitLabel, memoryLimitLabel, pidsLimitLabel } from '../lib/resourceLimits.js';
+
+// Long enough for a host's registry lookups (four at a time, 15s each at worst) to land on a poll.
+const IMAGE_CHECK_WAIT_MS = 90_000;
 
 // The right-hand detail panel for one container: status/stats, `docker inspect` details,
 // start/stop/restart, and the log preview. Stays mounted across container switches; the
@@ -21,6 +25,11 @@ export default {
   data() {
     return {
       containerInspect: null,
+      // Check now answers at once and the verdict arrives on a later poll, so the button stays in its
+      // "Checking" state until this container's checkedAt moves (or IMAGE_CHECK_WAIT_MS passes).
+      imageChecking: false,
+      imageCheckError: null,
+      imageCheckTimer: null,
       // The process list: admin-only, fetched when its section is opened (not polled - a snapshot
       // you refresh by hand is what `top` is for), and refetched when the container changes under it.
       topOpen: false,
@@ -55,8 +64,21 @@ export default {
     canShowTop() {
       return this.isAdmin && this.container.state === 'running';
     },
+    imageUpdate() {
+      return imageUpdateText(this.container.imageUpdate);
+    },
+    // Re-evaluated every poll, since the root replaces the container object each time.
+    imageCheckedAgo() {
+      return checkedAgo(this.container.imageUpdate);
+    },
+    imageCheckedAt() {
+      return this.container.imageUpdate ? this.container.imageUpdate.checkedAt : null;
+    },
   },
   watch: {
+    imageCheckedAt() {
+      this.imageChecking = false;
+    },
     'container.id': {
       immediate: true,
       handler(newId) {
@@ -80,8 +102,21 @@ export default {
   },
   beforeUnmount() {
     this.closeStream();
+    clearTimeout(this.imageCheckTimer);
   },
   methods: {
+    shortDigest,
+    async checkImageNow() {
+      this.imageCheckError = null;
+      try {
+        await apiCheckImageUpdates(this.hostId);
+        this.imageChecking = true;
+        clearTimeout(this.imageCheckTimer);
+        this.imageCheckTimer = setTimeout(() => (this.imageChecking = false), IMAGE_CHECK_WAIT_MS);
+      } catch (err) {
+        this.imageCheckError = err.message;
+      }
+    },
     async fetchInspect(id) {
       try {
         const inspect = await apiGetContainerInspect(this.hostId, id);
@@ -199,6 +234,21 @@ export default {
         <div class="detail-row" v-if="container.health"><span class="label">Health</span><span><span class="health-dot" :style="{ background: healthDotColor(container.health) }"></span> {{ healthTitle(container.health) }}</span></div>
         <div class="detail-row" v-if="container.restartCount1h"><span class="label">Restarts (1h)</span><span>{{ container.restartCount1h }}</span></div>
         <div class="detail-row"><span class="label">Image</span><span>{{ container.image }}</span></div>
+        <div class="detail-row">
+          <span class="label">Image update</span>
+          <span>
+            <span v-if="imageUpdate" :class="'image-update-' + imageUpdate.tone">{{ imageUpdate.text }}</span>
+            <span v-else class="muted">Not checked yet</span>
+            <span v-if="imageCheckedAgo" class="muted small"> · {{ imageCheckedAgo }}</span>
+            <span v-if="container.imageUpdate && container.imageUpdate.status === 'outdated'" class="muted small image-digests">
+              running {{ shortDigest(container.imageUpdate.localDigest) }}, registry has {{ shortDigest(container.imageUpdate.remoteDigest) }}
+            </span>
+            <button v-if="isAdmin" class="small-btn image-check-btn" :disabled="imageChecking" @click="checkImageNow" title="Compare every container's image on this host with its registry now">
+              {{ imageChecking ? 'Checking…' : 'Check now' }}
+            </button>
+            <span v-if="imageCheckError" class="error small" role="alert">{{ imageCheckError }}</span>
+          </span>
+        </div>
         <div v-if="container.url" class="detail-row"><span class="label">Link</span><a :href="container.url" target="_blank" rel="noopener noreferrer">{{ container.url }}</a></div>
         <div class="detail-row">
           <span class="label">CPU</span>

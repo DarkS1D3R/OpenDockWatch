@@ -383,6 +383,49 @@ async function refreshIconHints(host, containers, exec = run) {
   }
 }
 
+// For imageUpdates.js: which image each container actually runs (by id, since its tag may have moved
+// on) and the reference it was started from (Config.Image - `docker ps` shows a bare id once the tag
+// has moved). One batched inspect per host per check, the same shape as the icon hints above.
+function parseContainerImages(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const [id, imageId, configImage] = line.trim().split('\t');
+    if (id && imageId) out.set(id.slice(0, 12), { imageId, configImage: configImage || '' });
+  }
+  return out;
+}
+
+async function getContainerImages(host, containerIds, exec = run) {
+  if (!containerIds.length) return new Map();
+  return parseContainerImages(
+    await exec([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{.Image}}\t{{.Config.Image}}', ...containerIds])
+  );
+}
+
+// RepoDigests per image id: the registry digests the image was pulled as (on the containerd image
+// store, a local build has one too - see server/CLAUDE.md). A line that won't parse is skipped.
+function parseImageRepoDigests(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const tab = line.indexOf('\t');
+    if (tab === -1) continue;
+    try {
+      const digests = JSON.parse(line.slice(tab + 1));
+      out.set(line.slice(0, tab).trim(), Array.isArray(digests) ? digests : []);
+    } catch {
+      /* one bad line costs that image its check, not the whole host's */
+    }
+  }
+  return out;
+}
+
+async function getImageRepoDigests(host, imageIds, exec = run) {
+  if (!imageIds.length) return new Map();
+  return parseImageRepoDigests(
+    await exec([...hostArgs(host), 'image', 'inspect', '--format', '{{.Id}}\t{{json .RepoDigests}}', ...imageIds])
+  );
+}
+
 function iconHintFor(hostId, containerId) {
   return iconHintsCache.get(hostId)?.hints.get(String(containerId).slice(0, 12)) || null;
 }
@@ -1181,6 +1224,10 @@ async function getDiskUsageImages(host) {
 }
 
 module.exports = {
+  parseContainerImages,
+  getContainerImages,
+  parseImageRepoDigests,
+  getImageRepoDigests,
   checkHost,
   testHostConnection,
   forgetHost,
