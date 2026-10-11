@@ -5,6 +5,7 @@ import { imageUpdateText, checkedAgo, shortDigest } from '../lib/imageUpdate.js'
 import { createLogStream } from '../lib/logStream.js';
 import { decorateLines } from '../lib/logLines.js';
 import { cpuLimitLabel, memoryLimitLabel, pidsLimitLabel } from '../lib/resourceLimits.js';
+import { healthcheckSummary, healthcheckSchedule, checkResult, checkRunTime, checkAgo } from '../lib/healthcheck.js';
 
 // Long enough for a host's registry lookups (four at a time, 15s each at worst) to land on a poll.
 const IMAGE_CHECK_WAIT_MS = 90_000;
@@ -25,6 +26,7 @@ export default {
   data() {
     return {
       containerInspect: null,
+      refreshingInspect: false,
       // Check now answers at once and the verdict arrives on a later poll, so the button stays in its
       // "Checking" state until this container's checkedAt moves (or IMAGE_CHECK_WAIT_MS passes).
       imageChecking: false,
@@ -74,10 +76,24 @@ export default {
     imageCheckedAt() {
       return this.container.imageUpdate ? this.container.imageUpdate.checkedAt : null;
     },
+    healthcheck() {
+      return this.containerInspect ? this.containerInspect.healthcheck : null;
+    },
+    healthSummary() {
+      return healthcheckSummary(this.healthcheck);
+    },
+    healthSchedule() {
+      return healthcheckSchedule(this.healthcheck);
+    },
   },
   watch: {
     imageCheckedAt() {
       this.imageChecking = false;
+    },
+    // Inspect is fetched once per selection, so a health change on the poll refetches it - that is
+    // the moment the healthcheck results are worth reading again.
+    'container.health'(now, before) {
+      if (now !== before && this.containerInspect) this.fetchInspect(this.container.id);
     },
     'container.id': {
       immediate: true,
@@ -115,6 +131,17 @@ export default {
         this.imageCheckTimer = setTimeout(() => (this.imageChecking = false), IMAGE_CHECK_WAIT_MS);
       } catch (err) {
         this.imageCheckError = err.message;
+      }
+    },
+    checkResult,
+    checkRunTime,
+    checkAgo,
+    async refreshInspect() {
+      this.refreshingInspect = true;
+      try {
+        await this.fetchInspect(this.container.id);
+      } finally {
+        this.refreshingInspect = false;
       }
     },
     async fetchInspect(id) {
@@ -270,6 +297,25 @@ export default {
         <template v-if="containerInspect">
           <div class="detail-row"><span class="label">Created</span><span>{{ fmtCreated(containerInspect.createdAt) }}</span></div>
           <div class="detail-row"><span class="label">Restart Policy</span><span>{{ fmtRestartPolicy(containerInspect) }}</span></div>
+
+          <details v-if="healthcheck" class="inspect-section" :open="healthcheck.status === 'unhealthy'">
+            <summary>Healthcheck <span v-if="healthSummary" :class="'health-summary-' + healthSummary.tone">· {{ healthSummary.text }}</span></summary>
+            <div class="inspect-list healthcheck-list">
+              <div class="muted small">{{ healthSchedule }}</div>
+              <div v-if="healthcheck.command" class="inspect-line mono">{{ healthcheck.command }}</div>
+              <div v-else-if="healthcheck.commandMasked" class="muted small">The check's command is visible to admin accounts only.</div>
+              <button class="small-btn" :disabled="refreshingInspect" @click.prevent="refreshInspect">{{ refreshingInspect ? 'Loading…' : 'Refresh' }}</button>
+              <div v-if="!healthcheck.log.length" class="muted small">No results yet - the first check runs one interval after start.</div>
+              <div v-for="(entry, i) in healthcheck.log" :key="entry.start + i" class="health-entry">
+                <div class="health-entry-head small">
+                  <span :class="'health-result-' + checkResult(entry).tone">{{ checkResult(entry).text }}</span>
+                  <span class="muted" :title="new Date(entry.start).toLocaleString()">{{ checkAgo(entry) }} · ran {{ checkRunTime(entry) }}</span>
+                </div>
+                <pre v-if="entry.output" class="health-output mono">{{ entry.output }}</pre>
+                <div v-else class="muted small">No output</div>
+              </div>
+            </div>
+          </details>
 
           <details v-if="canShowTop" class="inspect-section" :open="topOpen" @toggle="onTopToggle">
             <summary>Processes<template v-if="top"> ({{ top.rows.length }})</template></summary>

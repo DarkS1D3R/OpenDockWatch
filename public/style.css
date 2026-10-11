@@ -1456,6 +1456,40 @@ table.containers td:nth-child(7) {
   font-size: 12px;
   word-break: break-all;
 }
+.healthcheck-list {
+  max-height: 360px;
+  font-size: 12px;
+  align-items: flex-start;
+}
+.health-entry {
+  align-self: stretch;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+.health-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.health-output {
+  margin: 4px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.health-summary-ok,
+.health-result-ok {
+  color: var(--ok);
+}
+.health-summary-warn {
+  color: var(--warn);
+}
+.health-summary-bad,
+.health-result-bad {
+  color: var(--danger);
+}
 .mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }

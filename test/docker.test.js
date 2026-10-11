@@ -21,6 +21,8 @@ const {
   computeIoRates,
   parseDiskUsageImages,
   maskEnvValues,
+  maskInspectForViewer,
+  parseHealthcheck,
   containerCounts,
   dockerCommandError,
   createTailBuffer,
@@ -518,6 +520,111 @@ test('parseDiskUsageImages', async (t) => {
   await t.test('returns an empty array when there are no images', () => {
     assert.deepEqual(parseDiskUsageImages({ Images: [] }), []);
     assert.deepEqual(parseDiskUsageImages({}), []);
+  });
+});
+
+// The shape `docker inspect` returns for a postgres container with a compose healthcheck.
+function inspectWithHealth(overrides = {}) {
+  return {
+    Config: {
+      Healthcheck: { Test: ['CMD-SHELL', 'pg_isready -U shop'], Interval: 5e9, Timeout: 3e9, Retries: 5 },
+    },
+    State: {
+      Health: {
+        Status: 'unhealthy',
+        FailingStreak: 2,
+        Log: [
+          {
+            Start: '2026-10-12T00:05:20.862747223+02:00',
+            End: '2026-10-12T00:05:20.915959721+02:00',
+            ExitCode: 0,
+            Output: '/var/run/postgresql:5432 - accepting connections\n',
+          },
+          {
+            Start: '2026-10-12T00:05:25.916455022+02:00',
+            End: '2026-10-12T00:05:28.916455022+02:00',
+            ExitCode: -1,
+            Output: 'Health check exceeded timeout (3s)',
+          },
+          {
+            Start: '2026-10-12T00:05:31.970792790+02:00',
+            End: '2026-10-12T00:05:32.046690157+02:00',
+            ExitCode: 2,
+            Output: '/var/run/postgresql:5432 - no response\n',
+          },
+        ],
+      },
+    },
+    ...overrides,
+  };
+}
+
+test('parseHealthcheck', async (t) => {
+  await t.test('reads the configured check and its results, newest first, in milliseconds', () => {
+    const hc = parseHealthcheck(inspectWithHealth());
+    assert.equal(hc.status, 'unhealthy');
+    assert.equal(hc.failingStreak, 2);
+    assert.equal(hc.command, 'pg_isready -U shop');
+    assert.equal(hc.intervalMs, 5000);
+    assert.equal(hc.timeoutMs, 3000);
+    assert.equal(hc.retries, 5);
+    assert.deepEqual(
+      hc.log.map((e) => e.exitCode),
+      [2, -1, 0]
+    );
+    assert.equal(hc.log[0].output, '/var/run/postgresql:5432 - no response', 'trailing newline trimmed');
+  });
+
+  await t.test('fills in docker defaults for the fields a HEALTHCHECK left out', () => {
+    const hc = parseHealthcheck(inspectWithHealth({ Config: { Healthcheck: { Test: ['CMD', 'curl', '-f', 'http://localhost/'] } } }));
+    assert.equal(hc.command, 'curl -f http://localhost/');
+    assert.equal(hc.intervalMs, 30_000);
+    assert.equal(hc.timeoutMs, 30_000);
+    assert.equal(hc.startPeriodMs, 0);
+    assert.equal(hc.retries, 3);
+  });
+
+  await t.test('is null with no healthcheck, or one disabled with NONE', () => {
+    assert.equal(parseHealthcheck({ Config: {}, State: {} }), null);
+    assert.equal(parseHealthcheck({ Config: { Healthcheck: { Test: ['NONE'] } }, State: {} }), null);
+  });
+
+  await t.test('a configured check with no results yet has an empty log', () => {
+    const hc = parseHealthcheck({
+      Config: { Healthcheck: { Test: ['CMD-SHELL', 'true'] } },
+      State: { Health: { Status: 'starting', FailingStreak: 0, Log: null } },
+    });
+    assert.equal(hc.status, 'starting');
+    assert.deepEqual(hc.log, []);
+  });
+
+  await t.test('caps a long output', () => {
+    const raw = inspectWithHealth();
+    raw.State.Health.Log = [{ Start: 'a', End: 'b', ExitCode: 1, Output: 'x'.repeat(10_000) }];
+    assert.equal(parseHealthcheck(raw).log[0].output.length, 4097);
+  });
+});
+
+test('maskInspectForViewer', async (t) => {
+  const inspect = { env: ['DB_PASSWORD=hunter2'], healthcheck: parseHealthcheck(inspectWithHealth()) };
+
+  await t.test('withholds the healthcheck command but keeps its results', () => {
+    const out = maskInspectForViewer(inspect);
+    assert.equal(out.healthcheck.command, null);
+    assert.equal(out.healthcheck.commandMasked, true);
+    assert.equal(out.healthcheck.log.length, 3);
+    assert.ok(!JSON.stringify(out).includes('pg_isready'));
+  });
+
+  await t.test('masks env values as before, and leaves the original untouched', () => {
+    const out = maskInspectForViewer(inspect);
+    assert.deepEqual(out.env, ['DB_PASSWORD=••••••']);
+    assert.equal(out.envMasked, true);
+    assert.equal(inspect.healthcheck.command, 'pg_isready -U shop');
+  });
+
+  await t.test('a container with no healthcheck stays null', () => {
+    assert.equal(maskInspectForViewer({ env: [], healthcheck: null }).healthcheck, null);
   });
 });
 

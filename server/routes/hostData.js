@@ -1,7 +1,7 @@
 const express = require('express');
 const { loadHosts } = require('../hosts');
 const { requireAdmin } = require('../auth');
-const { checkHost, getHostInfo, getDiskUsage, getDiskUsageImages, getContainerInspect, maskEnvValues } = require('../docker');
+const { checkHost, getHostInfo, getDiskUsage, getDiskUsageImages, getContainerInspect, maskInspectForViewer } = require('../docker');
 // The module object for getContainerTop, so test/index.test.js can stub it without a daemon.
 const docker = require('../docker');
 const db = require('../db');
@@ -96,14 +96,14 @@ router.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
 });
 
 // The viewer role means "can't change anything", not "can read every secret on every host" - and
-// Config.Env is where DB passwords and API keys live. Viewers get variable names with the values
-// masked, flagged by envMasked so the UI can say so rather than look like the values are blank.
+// Config.Env is where DB passwords and API keys live. Viewers get env names without values and no
+// healthcheck command (maskInspectForViewer), flagged so the UI can say why rather than look blank.
 router.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId, async (req, res) => {
   const host = req.odwHost;
   try {
     const inspect = await getContainerInspect(host, req.params.id);
     if (req.session.role === 'admin') return res.json(inspect);
-    res.json({ ...inspect, env: maskEnvValues(inspect.env), envMasked: true });
+    res.json(maskInspectForViewer(inspect));
   } catch (err) {
     dockerError(res, err);
   }

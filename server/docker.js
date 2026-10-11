@@ -812,11 +812,50 @@ async function getRestartPolicy(host, id) {
   }
 }
 
+// Docker's defaults for a HEALTHCHECK that leaves a field out, which inspect reports as 0.
+const HEALTHCHECK_DEFAULTS = { intervalMs: 30_000, timeoutMs: 30_000, startPeriodMs: 0, retries: 3 };
+const HEALTHCHECK_OUTPUT_MAX = 4096;
+
+function healthcheckCommand(test) {
+  if (!Array.isArray(test) || !test.length) return null;
+  if (test[0] === 'CMD-SHELL') return test.slice(1).join(' ');
+  if (test[0] === 'CMD') return test.slice(1).join(' ');
+  return null;
+}
+
+// The configured check and its last results (docker keeps five), newest first, or null when the
+// container has no healthcheck (none set, or disabled with `NONE`). Durations in inspect are
+// nanoseconds. Pure and exported for testing, like the other inspect parsing.
+function parseHealthcheck(raw) {
+  const cfg = raw?.Config?.Healthcheck || null;
+  const state = raw?.State?.Health || null;
+  const disabled = Array.isArray(cfg?.Test) && cfg.Test[0] === 'NONE';
+  if (disabled || (!cfg && !state)) return null;
+  const ms = (ns, fallback) => (typeof ns === 'number' && ns > 0 ? Math.round(ns / 1e6) : fallback);
+  const output = (s) => {
+    const text = String(s || '').trimEnd();
+    return text.length > HEALTHCHECK_OUTPUT_MAX ? text.slice(0, HEALTHCHECK_OUTPUT_MAX) + '…' : text;
+  };
+  return {
+    status: state?.Status || null,
+    failingStreak: state?.FailingStreak || 0,
+    command: healthcheckCommand(cfg?.Test),
+    intervalMs: ms(cfg?.Interval, HEALTHCHECK_DEFAULTS.intervalMs),
+    timeoutMs: ms(cfg?.Timeout, HEALTHCHECK_DEFAULTS.timeoutMs),
+    startPeriodMs: ms(cfg?.StartPeriod, HEALTHCHECK_DEFAULTS.startPeriodMs),
+    retries: cfg?.Retries > 0 ? cfg.Retries : HEALTHCHECK_DEFAULTS.retries,
+    log: (state?.Log || [])
+      .map((entry) => ({ start: entry.Start, end: entry.End, exitCode: entry.ExitCode, output: output(entry.Output) }))
+      .reverse(),
+  };
+}
+
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
   return {
     limits: parseResourceLimits(raw.HostConfig),
+    healthcheck: parseHealthcheck(raw),
     createdAt: raw.Created,
     restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
     restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
@@ -880,6 +919,14 @@ function maskEnvValues(env) {
     const value = entry.slice(idx + 1);
     return `${entry.slice(0, idx)}=${value ? ENV_MASK : ''}`;
   });
+}
+
+// What a viewer session gets from inspect: env values masked, and the healthcheck command left out -
+// it is a command line like any other (`mysqladmin ping -p...`), which is why Processes is admin-only.
+// The check's output stays: it is what the container printed, and viewers can read its logs.
+function maskInspectForViewer(inspect) {
+  const healthcheck = inspect.healthcheck ? { ...inspect.healthcheck, command: null, commandMasked: true } : null;
+  return { ...inspect, env: maskEnvValues(inspect.env), envMasked: true, healthcheck };
 }
 
 // docker stop/restart wait out a 10s SIGTERM grace before SIGKILL - the same length as
@@ -1269,6 +1316,8 @@ module.exports = {
   getContainerTop,
   parseTop,
   maskEnvValues,
+  maskInspectForViewer,
+  parseHealthcheck,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,
