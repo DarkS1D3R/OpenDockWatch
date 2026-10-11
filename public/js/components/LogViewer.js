@@ -16,6 +16,7 @@ import {
   appendPage,
   seekCursorFor,
 } from '../lib/logHistory.js';
+import { JUMP_PRESETS, toLocalInputValue, parseLocalInputValue, jumpError, utcOffsetLabel } from '../lib/logJump.js';
 import LogMatchPane from './LogMatchPane.js';
 
 // How little of the log body the match strip may leave behind. The body's floor, so it stays here
@@ -74,6 +75,11 @@ export default {
       // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
       // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
+      // "Go to time": the picker's popover, its datetime-local value and why a value was refused.
+      jumpMenuOpen: false,
+      jumpValue: '',
+      jumpErrorText: null,
+      jumpPresets: JUMP_PRESETS,
       // Which matching line the search-hits box is parked on, held as that line's id rather than
       // its position - the buffer trims from the front while tailing, so a position stops meaning
       // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
@@ -398,7 +404,7 @@ export default {
       try {
         const page = await apiGetLogHistory(this.hostId, this.containerId, { after: seekCursorFor(tsMs) }, LOG_PAGE_LINES);
         if (gen !== this._streamGen) return;
-        if (!page.lines.length) return this.seekFailed('No log lines found around that time - the log may have been rotated');
+        if (!page.lines.length) return this.seekFailed('No log lines from that time on - showing the latest instead');
         this.lines = appendPage([], page.lines, this.maxLines).lines;
         this.atBottom = false;
         // A short page means the window already reaches the present, so go live straight away.
@@ -635,10 +641,35 @@ export default {
     // Closes the compact level dropdown on an outside click - clicks on the menu itself or its
     // toggle button are excluded so ticking several levels in a row doesn't close it after each one.
     onDocumentClick(e) {
-      if (!this.levelsMenuOpen) return;
-      if (this.$refs.levelsMenuWrap && !this.$refs.levelsMenuWrap.contains(e.target)) {
+      if (this.levelsMenuOpen && this.$refs.levelsMenuWrap && !this.$refs.levelsMenuWrap.contains(e.target)) {
         this.levelsMenuOpen = false;
       }
+      if (this.jumpMenuOpen && this.$refs.jumpMenuWrap && !this.$refs.jumpMenuWrap.contains(e.target)) {
+        this.jumpMenuOpen = false;
+      }
+    },
+    // Opens on ten minutes ago, the usual question; a value typed earlier is kept.
+    toggleJumpMenu() {
+      this.jumpMenuOpen = !this.jumpMenuOpen;
+      this.jumpErrorText = null;
+      if (this.jumpMenuOpen && !this.jumpValue) this.jumpValue = toLocalInputValue(Date.now() - 10 * 60_000);
+    },
+    jumpBack(ms) {
+      this.jumpTo(Date.now() - ms);
+    },
+    jumpFromInput() {
+      this.jumpTo(parseLocalInputValue(this.jumpValue));
+    },
+    // The same path as an alert's Logs button: switch to All, then open the window at that time.
+    jumpTo(tsMs) {
+      this.jumpErrorText = jumpError(tsMs);
+      if (this.jumpErrorText) return;
+      this.jumpMenuOpen = false;
+      this.tail = 'all';
+      this.seek(tsMs);
+    },
+    utcOffset() {
+      return utcOffsetLabel(Date.now());
     },
     toggleFullscreen() {
       this.$emit('update:fullscreen', !this.fullscreen);
@@ -723,6 +754,30 @@ export default {
             >
               ☰ <span class="btn-label">Matches</span>
             </button>
+          </div>
+          <div class="log-jump-wrap" ref="jumpMenuWrap">
+            <button
+              class="small-btn"
+              :class="{ active: jumpMenuOpen }" :aria-expanded="String(jumpMenuOpen)"
+              @click="toggleJumpMenu"
+              title="Open the log at a moment in the past - ten minutes before a crash, say"
+            >
+              <span class="btn-icon">⏱</span> <span class="btn-label">Go to</span>
+            </button>
+            <div v-if="jumpMenuOpen" class="log-jump-menu" @keydown.escape="jumpMenuOpen = false">
+              <div class="log-jump-presets">
+                <button v-for="p in jumpPresets" :key="p.label" class="small-btn" @click="jumpBack(p.ms)">{{ p.label }}</button>
+              </div>
+              <div class="log-jump-row">
+                <label class="log-jump-field">
+                  From
+                  <input type="datetime-local" step="1" v-model="jumpValue" @keydown.enter="jumpFromInput" />
+                </label>
+                <button class="small-btn" @click="jumpFromInput">Go</button>
+              </div>
+              <div v-if="jumpErrorText" class="error small" role="alert">{{ jumpErrorText }}</div>
+              <div class="muted small">Your local time ({{ utcOffset() }}). Opens a minute before it; scroll either way from there, or ↓ Latest to go live.</div>
+            </div>
           </div>
           <select :value="tail" aria-label="Lines to load" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
             <option :value="1000">1000</option>

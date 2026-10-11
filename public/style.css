@@ -1936,6 +1936,41 @@ table.containers td:nth-child(7) {
   display: none;
   position: relative;
 }
+.log-jump-wrap {
+  position: relative;
+}
+.log-jump-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 3;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+.log-jump-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.log-jump-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.log-jump-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
 .log-levels-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -2025,6 +2060,54 @@ table.containers td:nth-child(7) {
     color: transparent;
   }
   .log-filter-input-wrap input:focus {
+    width: 140px;
+    padding-right: 22px;
+  }
+}
+
+/* Go to added ~36px, which took two panes side by side on a 1600px screen (~596px each) from
+   one control row to two. Halving the gaps buys back ~40px - measured: the strip needed 580px
+   before the button and 616px after it. */
+@container log-panel (max-width: 620px) {
+  .log-panel-controls {
+    gap: 4px;
+  }
+}
+
+/* The standalone viewer reaches each tier earlier: on top of the shared controls it carries
+   Matches/Fullscreen/Wrap/Close, and since Go to it needs 1224px at full size, 961px with labels
+   hidden and 841px with the level dropdown (2px sweep). See public/CLAUDE.md. */
+@container log-panel (max-width: 1230px) {
+  .log-panel:not(.embedded) .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .log-panel:not(.embedded) .log-panel-controls input {
+    width: 150px;
+  }
+}
+@container log-panel (max-width: 965px) {
+  .log-panel:not(.embedded) .log-level-toggle-full {
+    display: none;
+  }
+  .log-panel:not(.embedded) .log-level-toggle-compact {
+    display: block;
+  }
+}
+@container log-panel (max-width: 845px) {
+  .log-panel:not(.embedded) .log-filter-input-wrap input {
+    width: 26px;
+    padding-right: 4px;
+    transition: width 0.15s ease;
+  }
+  .log-panel:not(.embedded) .log-filter-input-wrap input::placeholder {
+    color: transparent;
+  }
+  .log-panel:not(.embedded) .log-filter-input-wrap input:focus {
     width: 140px;
     padding-right: 22px;
   }
