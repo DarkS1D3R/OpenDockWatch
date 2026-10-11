@@ -102,7 +102,7 @@ test('clearEvents hides events without losing the restart history', async (t) =>
     hostId,
     containerId: CONTAINER,
     containerName: 'web',
-    action: 'restart',
+    action: 'start',
     ts: (nextTs += 1000),
     rawJson: '{}',
     ...overrides,
@@ -110,7 +110,7 @@ test('clearEvents hides events without losing the restart history', async (t) =>
 
   await t.test('cleared events leave the feed, scoped to one host', () => {
     db.insertEvent(event(CLEAR_HOST));
-    db.insertEvent(event(CLEAR_HOST, { action: 'start' }));
+    db.insertEvent(event(CLEAR_HOST));
     db.insertEvent(event(OTHER_HOST));
 
     assert.equal(db.getEvents(CLEAR_HOST).length, 2);
@@ -131,6 +131,14 @@ test('clearEvents hides events without losing the restart history', async (t) =>
     db.insertEvent(event(CLEAR_HOST, { action: 'die' }));
     assert.equal(db.getEvents(CLEAR_HOST).length, 1);
     assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2, 'a die is not a restart');
+  });
+
+  // `docker restart` sends restart beside its start, and Podman does for every restart - counting
+  // both is how one restart read as two (and a single Podman auto-restart neared the crash loop).
+  await t.test('a restart event beside its start is not counted again', () => {
+    db.insertEvent(event(CLEAR_HOST, { action: 'restart' }));
+    assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2);
+    assert.equal(db.getRestartCountsByContainer(CLEAR_HOST, 0).get(CONTAINER), 2);
   });
 
   // The plain (host_id, ts) index would walk every cleared row to answer this, which right after a

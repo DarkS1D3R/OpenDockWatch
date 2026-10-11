@@ -340,11 +340,11 @@ const stmts = {
   // list must not reset crash-loop detection or walk the restart column back to zero.
   countRestartsSince: db.prepare(`
     SELECT COUNT(*) AS n FROM events
-    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action IN ('start', 'restart')
+    WHERE host_id = ? AND container_id = ? AND ts >= ? AND action = 'start'
   `),
   countRestartsByContainerSince: db.prepare(`
     SELECT container_id AS containerId, COUNT(*) AS n FROM events
-    WHERE host_id = ? AND ts >= ? AND action IN ('start', 'restart')
+    WHERE host_id = ? AND ts >= ? AND action = 'start'
     GROUP BY container_id
   `),
   // Same cleared_at exemption as the two restart counters above, and the same reason: an uptime

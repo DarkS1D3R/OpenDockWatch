@@ -38,7 +38,9 @@ function hostOverview({ host, snapshot, openAlerts = 0, lastReachability = null,
   const row = {
     id: host.id,
     name: hostDisplayName(host, snapshot),
-    remote: !!host.dockerHost,
+    remote: !!host.dockerHost && host.dockerHost.startsWith('ssh://'),
+    // Last known, kept while down - the engine doesn't change because the host went away.
+    engine: (snapshot && snapshot.hostInfo && snapshot.hostInfo.engine) || null,
     polled,
     reachable,
     downSince: reachable === false && lastReachability && !lastReachability.reachable ? lastReachability.ts : null,

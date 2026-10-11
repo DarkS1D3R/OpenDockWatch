@@ -22,6 +22,13 @@ const {
   parseDiskUsageImages,
   maskEnvValues,
   maskInspectForViewer,
+  engineFromComponents,
+  isSshHost,
+  parseHealthStatuses,
+  healthTransitions,
+  refreshPodmanHealth,
+  trackedHealth,
+  markHealthDirty,
   parseHealthcheck,
   containerCounts,
   dockerCommandError,
@@ -1081,5 +1088,109 @@ test('parseTop', async (t) => {
     const top = parseTop('PID CMD\n1 ' + 'x'.repeat(5000));
     assert.ok(top.rows[0][1].length <= 1001);
     assert.ok(top.rows[0][1].endsWith('…'));
+  });
+});
+
+test('engineFromComponents', async (t) => {
+  await t.test('Podman lists itself as the Podman Engine component', () => {
+    assert.equal(engineFromComponents('Podman Engine|Conmon|OCI Runtime (crun)|'), 'podman');
+  });
+  await t.test('Docker, or nothing readable, is docker', () => {
+    assert.equal(engineFromComponents('Engine|containerd|runc|docker-init|'), 'docker');
+    assert.equal(engineFromComponents(''), 'docker');
+    assert.equal(engineFromComponents(undefined), 'docker');
+  });
+});
+
+test('isSshHost: only ssh:// pays a handshake - a unix:// socket is local', () => {
+  assert.equal(isSshHost({ dockerHost: 'ssh://deploy@prod.example.com' }), true);
+  assert.equal(isSshHost({ dockerHost: 'unix:///run/podman/podman.sock' }), false);
+  assert.equal(isSshHost({ dockerHost: null }), false);
+  assert.equal(isSshHost(null), false);
+});
+
+test('Podman health', async (t) => {
+  await t.test('parseHealthStatuses keeps containers that have a healthcheck', () => {
+    const raw =
+      'e67e2c16ce972ed4d1c6609cef4a3f64\thealthy\n6de8a26eac183e2ac25df61f33f6033\tunhealthy\nc145ca0bddaf55f8f71825da1057a5c8\t\n';
+    assert.deepEqual(
+      [...parseHealthStatuses(raw)],
+      [
+        ['e67e2c16ce97', 'healthy'],
+        ['6de8a26eac18', 'unhealthy'],
+      ]
+    );
+  });
+
+  await t.test('healthTransitions announces a change to healthy or unhealthy, not a first sighting or starting', () => {
+    const before = new Map([
+      ['a', 'starting'],
+      ['b', 'healthy'],
+      ['c', 'unhealthy'],
+      ['d', 'healthy'],
+    ]);
+    const after = new Map([
+      ['a', 'unhealthy'],
+      ['b', 'healthy'],
+      ['c', 'healthy'],
+      ['d', 'starting'],
+      ['e', 'unhealthy'],
+    ]);
+    assert.deepEqual(healthTransitions(before, after), [
+      { id: 'a', status: 'unhealthy' },
+      { id: 'c', status: 'healthy' },
+    ]);
+  });
+
+  const host = { id: 'pm-health', dockerHost: 'unix:///run/podman/podman.sock' };
+  const running = (id) => ({ id, state: 'running' });
+
+  await t.test('refreshPodmanHealth reads health once per running set, and again when marked dirty', async () => {
+    const calls = [];
+    let reply = 'aaaaaaaaaaaa\tstarting\n';
+    const exec = async (args) => (calls.push(args), reply);
+    const changes = [];
+    const opts = { exec, engine: 'podman' };
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa'), { id: 'bbbbbbbbbbbb', state: 'exited' }], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(-1), ['aaaaaaaaaaaa'], 'only running containers are inspected');
+    assert.ok(
+      calls[0].includes('{{.Id}}\t{{with index .State "Health"}}{{.Status}}{{end}}'),
+      'a missing Health key must not fail the batch'
+    );
+    assert.equal(trackedHealth(host.id, 'aaaaaaaaaaaa'), 'starting');
+
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa')], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 1, 'same running set and nothing new: no inspect');
+
+    markHealthDirty(host.id);
+    reply = 'aaaaaaaaaaaa\tunhealthy\n';
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa')], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(changes, [{ id: 'aaaaaaaaaaaa', status: 'unhealthy' }]);
+    assert.equal(trackedHealth(host.id, 'aaaaaaaaaaaa'), 'unhealthy');
+  });
+
+  await t.test('a Docker host is never inspected for health - its list already carries it', async () => {
+    let called = false;
+    await refreshPodmanHealth({ id: 'dk-health' }, [running('cccccccccccc')], () => {}, {
+      exec: async () => ((called = true), ''),
+      engine: 'docker',
+    });
+    assert.equal(called, false);
+  });
+
+  await t.test('a failed inspect leaves the host dirty, so the next poll tries again', async () => {
+    const h = { id: 'pm-health-fail' };
+    let attempts = 0;
+    const exec = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('daemon busy');
+      return 'dddddddddddd\thealthy\n';
+    };
+    await assert.rejects(refreshPodmanHealth(h, [running('dddddddddddd')], () => {}, { exec, engine: 'podman' }));
+    await refreshPodmanHealth(h, [running('dddddddddddd')], () => {}, { exec, engine: 'podman' });
+    assert.equal(attempts, 2);
+    assert.equal(trackedHealth(h.id, 'dddddddddddd'), 'healthy');
   });
 });

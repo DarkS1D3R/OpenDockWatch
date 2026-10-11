@@ -70,6 +70,7 @@ test('hostOverview', async (t) => {
       id: 'local',
       name: 'shop-01',
       remote: false,
+      engine: null,
       polled: true,
       reachable: true,
       downSince: null,
@@ -95,6 +96,16 @@ test('hostOverview', async (t) => {
     const row = hostOverview({ host: REMOTE, snapshot: snapshot() });
     assert.equal(row.remote, true);
     assert.ok(!JSON.stringify(row).includes('deploy@'), 'the docker host URL carries a user name and address');
+  });
+
+  await t.test('the engine comes from host info, and a unix:// socket is not remote', () => {
+    const podman = hostOverview({
+      host: { id: 'pm', dockerHost: 'unix:///run/podman/podman.sock' },
+      snapshot: snapshot({ hostInfo: { memTotalBytes: 8e9, engine: 'podman' } }),
+    });
+    assert.equal(podman.engine, 'podman');
+    assert.equal(podman.remote, false, 'a socket on this machine is not reached over SSH');
+    assert.ok(!JSON.stringify(podman).includes('podman.sock'), 'the socket path stays on the server too');
   });
 
   await t.test('a host with no snapshot yet is pending, with nothing guessed', () => {

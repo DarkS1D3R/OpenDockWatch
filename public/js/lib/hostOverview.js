@@ -8,6 +8,14 @@ const STATUS_ORDER = { down: 0, warning: 1, pending: 2, ok: 3 };
 
 export const STATUS_LABELS = { down: 'Unreachable', warning: 'Needs a look', pending: 'Waiting for first poll', ok: 'OK' };
 
+// "Podman 5.8.7" or "Docker 29.1.3"; a host whose engine isn't known yet shows the bare version.
+export function engineLabel(info) {
+  if (!info || !info.serverVersion) return '';
+  if (info.engine === 'podman') return `Podman ${info.serverVersion}`;
+  if (info.engine === 'docker') return `Docker ${info.serverVersion}`;
+  return info.serverVersion;
+}
+
 // Worst first, so a problem is on the top row however many hosts there are. Ties keep hosts.json order.
 export function sortOverviewRows(rows) {
   return rows

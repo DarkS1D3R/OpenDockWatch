@@ -38,6 +38,23 @@ test('parseStatsLine', async (t) => {
     assert.deepEqual(row.sample, statsRowToSample(ROW));
   });
 
+  // Copied from a Podman 5.8 stream, which alternates these with real rows for the same container.
+  await t.test('skips a placeholder row, so it cannot overwrite the last real sample', () => {
+    const placeholder = {
+      BlockIO: '--',
+      CPUPerc: '--',
+      Container: '05bd2675c6dd68c827af2b618e86526efbc5f0a0b16575986dbec727dacc3ef7',
+      ID: '',
+      MemPerc: '--',
+      MemUsage: '-- / --',
+      Name: '--',
+      NetIO: '--',
+      PIDs: '--',
+    };
+    assert.equal(parseStatsLine(JSON.stringify(placeholder)), null);
+    assert.ok(parseStatsLine(JSON.stringify({ ...placeholder, CPUPerc: '0.00%', MemUsage: '204KiB / 15.24GiB' })));
+  });
+
   await t.test('strips the erase-display escape that opens each refresh', () => {
     const row = parseStatsLine(`${ESC}[J${ESC}[H${JSON.stringify(ROW)}`);
     assert.deepEqual(row.sample, statsRowToSample(ROW));

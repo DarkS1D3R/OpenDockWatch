@@ -294,7 +294,7 @@ router.post('/settings/hosts', requireAdmin, (req, res) => {
     return res.status(400).json({ error: `a host with id "${id}" already exists` });
   }
   if (!isValidDockerHostUrl(dockerHost)) {
-    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+    return res.status(400).json({ error: 'dockerHost must be an ssh:// URL, a unix:///path socket, or blank for the local socket' });
   }
   if (!dockerHost && hasLocalHost(hosts)) {
     return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });
@@ -314,7 +314,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'unknown host' });
   const { name, dockerHost } = req.body || {};
   if (!isValidDockerHostUrl(dockerHost)) {
-    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+    return res.status(400).json({ error: 'dockerHost must be an ssh:// URL, a unix:///path socket, or blank for the local socket' });
   }
   if (!dockerHost && hasLocalHost(hosts, req.params.id)) {
     return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });

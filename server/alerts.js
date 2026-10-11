@@ -712,10 +712,22 @@ function fire({ hostId, containerId, containerName, rule, severity, message, ope
   notify({ id, ts, hostId, containerId, containerName, rule, severity, message });
 }
 
+// `podman stop` sends no kill event, so on Podman the tell is what happens next: a clean exit the
+// restart policy brings straight back was not asked for; one that stays stopped was `podman stop`.
+const PODMAN_RESTART_WAIT_MS = 3000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function restartedByPolicy(host, containerId, wait) {
+  await wait(PODMAN_RESTART_WAIT_MS);
+  const status = await docker.getContainerStatus(host, containerId);
+  return status === 'running' || status === 'restarting';
+}
+
 // A container that exited 0 when it was meant to stay up: restart policy `always`/`unless-stopped`,
 // and nobody asked it to stop (no audit row from this app, no kill event from docker). Exported for
 // testing, since handleEvent can only fire-and-forget it.
-async function checkCleanExit(event) {
+async function checkCleanExit(event, { wait = sleep } = {}) {
   const { hostId, containerId, containerName, ts } = event;
   if (db.countManualStopsSince(hostId, containerId, ts - MANUAL_STOP_GRACE_MS) > 0) return;
   if (wasKilledRecently(hostId, containerId, ts)) return;
@@ -723,6 +735,7 @@ async function checkCleanExit(event) {
   if (!host) return;
   const policy = await docker.getRestartPolicy(host, containerId);
   if (!KEEP_RUNNING_POLICIES.has(policy)) return;
+  if (docker.hostEngine(hostId) === 'podman' && !(await restartedByPolicy(host, containerId, wait))) return;
   if (mutedByRule('unexpected_exit', event)) return;
   fire({
     hostId,
@@ -791,7 +804,9 @@ function handleEvent(event) {
     }
   }
 
-  if (action === 'start' || action === 'restart') {
+  // Start only: Docker sends restart beside start for `docker restart`, and Podman for every
+  // restart, so counting both made one restart read as two. See server/CLAUDE.md.
+  if (action === 'start') {
     const sinceTs = ts - CRASH_LOOP_WINDOW_MS;
     const count = db.countRestartsSince(hostId, containerId, sinceTs);
     // Exclude restarts the user triggered themselves (e.g. clicking Restart a few

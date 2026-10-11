@@ -132,6 +132,7 @@ export default {
             >
               <td>
                 <span class="host-name">{{ row.name }}</span> <span v-if="row.remote" class="host-kind muted" title="Reached over SSH">SSH</span>
+                <span v-if="row.engine === 'podman'" class="host-kind muted" title="A Podman engine, through its Docker-compatible API">Podman</span>
                 <span v-if="row.id === selectedHostId" class="visually-hidden"> (selected)</span>
               </td>
               <td>

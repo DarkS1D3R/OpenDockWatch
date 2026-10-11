@@ -72,3 +72,10 @@ test('downForLabel', () => {
   assert.equal(ov.downForLabel(row('a', 'down', { downSince: null }), now), null);
   assert.equal(ov.downForLabel(row('a', 'ok', { downSince: now - 60_000 }), now), null);
 });
+
+test('engineLabel names the engine beside its version', () => {
+  assert.equal(ov.engineLabel({ engine: 'podman', serverVersion: '5.8.7' }), 'Podman 5.8.7');
+  assert.equal(ov.engineLabel({ engine: 'docker', serverVersion: '29.1.3' }), 'Docker 29.1.3');
+  assert.equal(ov.engineLabel({ serverVersion: '29.1.3' }), '29.1.3', 'not detected yet: the bare version, as before');
+  assert.equal(ov.engineLabel(null), '');
+});

@@ -155,15 +155,18 @@ test('checkCleanExit: unexpected_exit', async (t) => {
     raw: { Actor: { Attributes: { exitCode: '0' } } },
     ...extra,
   });
-  const setup = (t2, { policy = 'always', dbOverrides = {} } = {}) => {
+  const setup = (t2, { policy = 'always', dbOverrides = {}, engine = 'docker', statusAfter = null } = {}) => {
     const fired = captureFired(t2, dbOverrides);
     const inspected = [];
+    const statusChecks = [];
     t2.mock.method(hosts, 'getHost', (id) => (id === 'h' ? { id: 'h', dockerHost: null } : undefined));
     t2.mock.method(docker, 'getRestartPolicy', async (host, id) => {
       inspected.push(id);
       return policy;
     });
-    return { fired, inspected };
+    t2.mock.method(docker, 'hostEngine', () => engine);
+    t2.mock.method(docker, 'getContainerStatus', async (host, id) => (statusChecks.push(id), statusAfter));
+    return { fired, inspected, statusChecks };
   };
 
   await t.test('fires for a container whose restart policy is always, and names the policy', async (t2) => {
@@ -174,6 +177,24 @@ test('checkCleanExit: unexpected_exit', async (t) => {
     assert.equal(fired[0].severity, 'warning');
     assert.match(fired[0].message, /exited cleanly/);
     assert.match(fired[0].message, /"always"/);
+  });
+
+  // `podman stop` sends no kill event, so on Podman the test is whether the policy brought it back.
+  await t.test('on Podman, fires only when the restart policy brought the container straight back', async (t2) => {
+    const noWait = { wait: async () => {} };
+    const restarted = setup(t2, { engine: 'podman', statusAfter: 'running' });
+    await alerts.checkCleanExit(cleanDie(), noWait);
+    assert.equal(restarted.fired.length, 1);
+    const stopped = setup(t2, { engine: 'podman', statusAfter: 'exited' });
+    await alerts.checkCleanExit(cleanDie(), noWait);
+    assert.equal(stopped.fired.length, 0, 'it stayed stopped: that was podman stop from a terminal');
+  });
+
+  await t.test('on Docker the kill event already answers that, so no second look is taken', async (t2) => {
+    const { fired, statusChecks } = setup(t2, { engine: 'docker' });
+    await alerts.checkCleanExit(cleanDie());
+    assert.equal(fired.length, 1);
+    assert.equal(statusChecks.length, 0);
   });
 
   await t.test('fires for unless-stopped too', async (t2) => {
@@ -431,6 +452,15 @@ test('handleEvent: crash_loop', async (t) => {
     alerts.handleEvent({ hostId: 'h', containerId: 'c', containerName: 'web', action: 'start', ts: Date.now(), raw: {} });
     assert.equal(fired.length, 1);
     assert.match(fired[0].message, /restarted 3 times/);
+  });
+
+  // The restart event beside a start is the same restart; only the start is counted and evaluated.
+  await t.test('a restart event is not evaluated on its own - its start already was', () => {
+    let counted = 0;
+    const fired = captureFired(t, { countRestartsSince: () => (counted++, 9), countManualStartsSince: () => 0 });
+    alerts.handleEvent({ hostId: 'h', containerId: 'c', containerName: 'web', action: 'restart', ts: Date.now(), raw: {} });
+    assert.equal(fired.length, 0);
+    assert.equal(counted, 0);
   });
 });
 

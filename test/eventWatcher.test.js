@@ -12,7 +12,7 @@ const TEST_DB_PATH = path.join(os.tmpdir(), `opendockwatch-eventwatcher-test-${p
 process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const eventWatcher = require('../server/eventWatcher');
-const { parseEventLine, ingestEvent, broadcaster } = eventWatcher;
+const { parseEventLine, ingestEvent, broadcaster, isBareHealthEvent, healthTransitionEvent } = eventWatcher;
 const db = require('../server/db');
 const docker = require('../server/docker');
 const alerts = require('../server/alerts');
@@ -245,5 +245,73 @@ test('stream lifecycle', async (t) => {
   await t.test('a spawn error does not take the process down', (t2) => {
     const s = withFakeStream(t2, 'ew-error');
     assert.doesNotThrow(() => s.child().emit('error', new Error('docker: not found')));
+  });
+});
+
+// Shapes copied from a real Podman 5.8 compat event stream.
+test('Podman events', async (t) => {
+  const host = { id: 'pm' };
+  const line = (action, extra = {}) =>
+    JSON.stringify({
+      Type: 'container',
+      Action: action,
+      Actor: {
+        ID: '05bd2675c6dd68c827af2b618e86526efbc5f0a0b16575986dbec727dacc3ef7',
+        Attributes: { name: 'shop-web', podId: '', ...extra },
+      },
+      time: 1791759637,
+    });
+
+  await t.test("init and cleanup, Podman's steps around every start and exit, are dropped", () => {
+    assert.equal(parseEventLine(line('init'), host), null);
+    assert.equal(parseEventLine(line('cleanup'), host), null);
+    assert.equal(parseEventLine(line('exec'), host), null, 'its exec is what Docker sends as exec_*');
+    assert.equal(parseEventLine(line('start'), host).action, 'start');
+  });
+
+  // The uptime report reads destroy to know a container is gone.
+  await t.test("Podman's remove is stored as Docker's destroy, and no other action is renamed", () => {
+    assert.equal(parseEventLine(line('remove'), host).action, 'destroy');
+    assert.equal(parseEventLine(line('constructor'), host).action, 'constructor');
+  });
+
+  await t.test("a bare health_status is recognised; Docker's own form is not bare", () => {
+    assert.equal(isBareHealthEvent(parseEventLine(line('health_status'), host)), true);
+    assert.equal(isBareHealthEvent(parseEventLine(line('health_status: unhealthy'), host)), false);
+  });
+
+  await t.test('healthTransitionEvent reads like the event Docker would have sent', () => {
+    const e = healthTransitionEvent(host, { id: '05bd2675c6dd', name: 'shop-web', composeProject: 'shop' }, 'unhealthy', 1234);
+    assert.deepEqual(
+      { ...e, raw: undefined },
+      {
+        hostId: 'pm',
+        containerId: '05bd2675c6dd',
+        containerName: 'shop-web',
+        composeProject: 'shop',
+        action: 'health_status: unhealthy',
+        ts: 1234,
+        raw: undefined,
+      }
+    );
+    assert.equal(e.raw.Action, 'health_status: unhealthy');
+  });
+
+  await t.test('the stream does not store a bare health event or a noise action, and marks health to re-read', async (t2) => {
+    const dirty = [];
+    t2.mock.method(docker, 'markHealthDirty', (hostId) => dirty.push(hostId));
+    const s = withFakeStream(t2, 'ew-podman');
+    const id = 'ewpodman0001';
+    const raw = (action) => ({ Type: 'container', Action: action, Actor: { ID: id, Attributes: { name: 'web' } }, time: 1700000100 });
+    s.child().stdout.emit(
+      'data',
+      Buffer.from(['health_status', 'init', 'start', 'cleanup'].map((a) => JSON.stringify(raw(a))).join('\n') + '\n')
+    );
+    const actions = db.client
+      .prepare('SELECT action FROM events WHERE container_id = ?')
+      .all(id)
+      .map((r) => r.action);
+    assert.deepEqual(actions, ['start']);
+    assert.deepEqual(dirty, ['ew-podman', 'ew-podman'], 'the bare health event and the start both ask for a re-read');
   });
 });

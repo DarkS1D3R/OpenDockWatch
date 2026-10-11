@@ -13,8 +13,13 @@ function hostArgs(host) {
   return host && host.dockerHost ? ['-H', host.dockerHost] : [];
 }
 
+// A unix:// socket (a mounted Podman socket, say) is on this machine; only ssh:// pays a handshake.
+function isSshHost(host) {
+  return !!(host && host.dockerHost && host.dockerHost.startsWith('ssh://'));
+}
+
 function checkTimeoutMs(host) {
-  return host && host.dockerHost ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
+  return isSshHost(host) ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
 }
 
 // execFile's own `timeout` only sends SIGTERM, and a `docker` CLI wedged on a dead daemon/ssh
@@ -174,19 +179,35 @@ function containerCounts(containers) {
 
 // Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
 // cache here rather than in a wrapper keeps the two from disagreeing about what was last fetched.
+// `docker info` does not say which engine answered; `docker version` lists Podman's as a component
+// named "Podman Engine". Pure and exported for testing.
+function engineFromComponents(names) {
+  return /(^|\|)\s*podman/i.test(String(names || '')) ? 'podman' : 'docker';
+}
+
 async function getHostInfo(host) {
-  const stdout = await run([...hostArgs(host), 'info', '--format', '{{json .}}']);
+  const [stdout, components] = await Promise.all([
+    run([...hostArgs(host), 'info', '--format', '{{json .}}']),
+    // Best effort: an engine we can't name is treated as Docker, which is what it was before.
+    run([...hostArgs(host), 'version', '--format', '{{range .Server.Components}}{{.Name}}|{{end}}']).catch(() => ''),
+  ]);
   const raw = JSON.parse(stdout);
   const info = {
     ncpu: raw.NCPU,
     memTotalBytes: raw.MemTotal,
     serverVersion: raw.ServerVersion,
+    engine: engineFromComponents(components),
     containers: raw.Containers,
     containersRunning: raw.ContainersRunning,
     hostname: raw.Name,
   };
   hostInfoCache.set(host.id, { ts: Date.now(), info });
   return info;
+}
+
+// The engine a host last reported, stale or not - it only changes if someone swaps the daemon.
+function hostEngine(hostId) {
+  return hostInfoCache.get(hostId)?.info.engine || null;
 }
 
 // Why the last probe failed, kept per host so the reason survives the boolean this returns.
@@ -292,7 +313,7 @@ async function listContainers(host) {
         image: raw.Image,
         status: raw.Status,
         state: raw.State,
-        health: parseHealth(raw.Status),
+        health: parseHealth(raw.Status) || (raw.State === 'running' ? trackedHealth(host.id, raw.ID) : null),
         ports: raw.Ports,
         networks,
         composeProject: labels['com.docker.compose.project'] || null,
@@ -426,6 +447,94 @@ async function getImageRepoDigests(host, imageIds, exec = run) {
   );
 }
 
+// Podman leaves health out of `docker ps`'s Status and sends its health events with no result, so
+// for a Podman host health is read with one batched inspect - when the running set changes or
+// Podman reports a check ran (markHealthDirty). See server/CLAUDE.md.
+const healthState = new Map(); // hostId -> { signature, dirty, statuses: Map(shortId -> status) }
+// `index`, not `.State.Health`: the CLI templates over a map, and a container with no healthcheck
+// has no Health key - the dotted form errors and fails the whole batch (seen against Podman 5.8).
+const HEALTH_FORMAT = '{{.Id}}\t{{with index .State "Health"}}{{.Status}}{{end}}';
+const healthInFlight = new Set();
+
+function healthEntry(hostId) {
+  let entry = healthState.get(hostId);
+  if (!entry) {
+    entry = { signature: null, dirty: false, statuses: new Map() };
+    healthState.set(hostId, entry);
+  }
+  return entry;
+}
+
+function markHealthDirty(hostId) {
+  healthEntry(hostId).dirty = true;
+}
+
+function trackedHealth(hostId, containerId) {
+  return healthState.get(hostId)?.statuses.get(String(containerId).slice(0, 12)) || null;
+}
+
+// `<id>\t<status>` lines -> Map(shortId -> status); a container with no healthcheck has an empty
+// status and is left out. Pure and exported for testing.
+function parseHealthStatuses(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const [id, status] = line.trim().split('\t');
+    if (id && status) out.set(id.slice(0, 12), status.trim());
+  }
+  return out;
+}
+
+// What changed between two status maps, as the transitions Docker itself would have sent an event
+// for: to healthy or unhealthy. "starting" is recorded but not announced, and a container seen for
+// the first time is not a transition. Pure and exported for testing.
+function healthTransitions(before, after) {
+  const out = [];
+  for (const [id, status] of after) {
+    const prev = before.get(id);
+    if (prev !== undefined && prev !== status && (status === 'healthy' || status === 'unhealthy')) out.push({ id, status });
+  }
+  return out;
+}
+
+// Podman hosts only, one inspect per host at a time, never awaited by the poll. onTransition gets
+// each change so it can be ingested as the health event Podman's stream did not carry. exec/engine for tests.
+async function refreshPodmanHealth(host, containers, onTransition, { exec = run, engine = hostEngine(host.id) } = {}) {
+  if (engine !== 'podman') return;
+  const entry = healthEntry(host.id);
+  const ids = containers
+    .filter((c) => c.state === 'running')
+    .map((c) => c.id)
+    .sort();
+  const signature = ids.join(',');
+  if (signature === entry.signature && !entry.dirty) return;
+  if (healthInFlight.has(host.id)) return;
+  healthInFlight.add(host.id);
+  entry.dirty = false;
+  try {
+    const raw = ids.length ? await exec([...hostArgs(host), 'inspect', '--format', HEALTH_FORMAT, ...ids]) : '';
+    const statuses = parseHealthStatuses(raw);
+    const changes = healthTransitions(entry.statuses, statuses);
+    entry.statuses = statuses;
+    entry.signature = signature;
+    for (const change of changes) onTransition(change);
+  } catch (err) {
+    entry.dirty = true;
+    throw err;
+  } finally {
+    healthInFlight.delete(host.id);
+  }
+}
+
+// For unexpected_exit on Podman, whose `podman stop` sends no kill event: whether the container
+// is running again (its restart policy brought it back) or stayed stopped. null if unknown.
+async function getContainerStatus(host, id) {
+  try {
+    return (await run([...hostArgs(host), 'inspect', '--format', '{{.State.Status}}', id])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function iconHintFor(hostId, containerId) {
   return iconHintsCache.get(hostId)?.hints.get(String(containerId).slice(0, 12)) || null;
 }
@@ -510,6 +619,9 @@ function parseStatsLine(line) {
     return null;
   }
   if (!raw || typeof raw.Container !== 'string' || !raw.Container) return null;
+  // A placeholder row (every figure '--') carries nothing, and must not overwrite the last real
+  // one: Podman's stream alternates them with real rows for the same container.
+  if (raw.CPUPerc === '--' && String(raw.MemUsage || '').startsWith('--')) return null;
   return { id: raw.Container.slice(0, 12), sample: statsRowToSample(raw) };
 }
 
@@ -732,6 +844,7 @@ function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
   iconHintsCache.delete(hostId);
   hostInfoCache.delete(hostId);
+  healthState.delete(hostId);
   lastCheckErrors.delete(hostId);
 }
 
@@ -1311,6 +1424,15 @@ module.exports = {
   cachedHostInfo,
   containerCounts,
   getContainerInspect,
+  getContainerStatus,
+  isSshHost,
+  engineFromComponents,
+  hostEngine,
+  markHealthDirty,
+  trackedHealth,
+  parseHealthStatuses,
+  healthTransitions,
+  refreshPodmanHealth,
   parseResourceLimits,
   getRestartPolicy,
   getContainerTop,
