@@ -8,6 +8,7 @@ const db = require('../db');
 const { computeContainerUptime, computeHostUptime } = require('../uptime');
 const { HISTORY_RANGES } = require('../historyRanges');
 const metricsCollector = require('../metricsCollector');
+const { hostDisplayName, hostOverview } = require('../overview');
 const { requireHost, requireContainerId, intParam, dockerError } = require('./middleware');
 const { containersFor, statsFor, hostHistoryFor, topologyFor, dashboardExtrasFor } = require('./dashboardData');
 
@@ -22,8 +23,7 @@ router.get('/hosts', async (req, res) => {
     hosts.map(async (h) => {
       const snapshot = metricsCollector.getSnapshot(h.id);
       if (snapshot && snapshot.ts) {
-        const name = h.name || (!h.dockerHost && snapshot.hostInfo ? snapshot.hostInfo.hostname : null) || h.id;
-        return { id: h.id, name, reachable: snapshot.reachable };
+        return { id: h.id, name: hostDisplayName(h, snapshot), reachable: snapshot.reachable };
       }
       const reachable = await checkHost(h);
       let name = h.name;
@@ -40,6 +40,21 @@ router.get('/hosts', async (req, res) => {
     })
   );
   res.json(results);
+});
+
+// The all-hosts overview: one row per configured host, memory and sqlite only - unlike /hosts above,
+// it never probes a host the collector has not polled yet; that row just reads 'pending'.
+router.get('/overview', (req, res) => {
+  res.json(
+    loadHosts().map((host) =>
+      hostOverview({
+        host,
+        snapshot: metricsCollector.getSnapshot(host.id),
+        openAlerts: db.countOpenAlerts(host.id),
+        lastReachability: db.getLastHostReachability(host.id),
+      })
+    )
+  );
 });
 
 router.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {

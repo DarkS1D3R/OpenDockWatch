@@ -10,6 +10,7 @@ import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
 import UptimeReport from './components/UptimeReport.js';
+import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
@@ -89,6 +90,7 @@ const app = createApp({
     FlowView,
     LogsView,
     UptimeReport,
+    HostsOverview,
   },
   data() {
     return {
@@ -107,7 +109,7 @@ const app = createApp({
       actionInFlight: {},
       groupActionInFlight: {},
 
-      view: 'list', // 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
+      view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -421,15 +423,14 @@ const app = createApp({
     async setView(v) {
       this.view = v;
       if (v !== 'flow') this.flowFullscreen = false;
-      // The host card itself unmounts on the way into Logs (v-if="... && view !== 'logs'"), so
-      // nothing would be left to clear this - and .layout stays hidden while it's true, which is
-      // the blank-screen bug this guards against. Reset on every switch, not just into Logs: a
-      // fullscreen host card has no reason to survive a tab change in general.
+      // The host card only renders in List/Flow, so it unmounts on the way anywhere else with
+      // nothing left to clear this - and .layout stays hidden while it's true, which is the
+      // blank-screen bug this guards against. A fullscreen host card has no reason to survive a tab change.
       this.hostCardFullscreen = false;
       // The bottom Log Viewer belongs to List/Flow (via the detail panel's button). Closing it
       // on the way into a view that can't open it releases its connection - logViewerOpen is a
       // v-if, so this unmounts and stops the stream. See detailPanelVisible for the budget.
-      if (v === 'logs' || v === 'activity' || v === 'uptime') this.closeLogViewer();
+      if (v !== 'list' && v !== 'flow') this.closeLogViewer();
       if (v === 'flow') await this.fetchTopology();
     },
     async fetchContainers({ fresh = false } = {}) {
@@ -499,6 +500,12 @@ const app = createApp({
         delete next[groupName];
         this.groupActionInFlight = next;
       }
+    },
+    // A row on the Hosts tab: switch to that host (if it isn't already the one selected), then to the
+    // view the row asked for - List for the row itself, Activity for its open-alerts count.
+    async openHost({ id, view }) {
+      if (id !== this.selectedHostId) this.selectHost(id);
+      await this.setView(view);
     },
     selectContainerById(id) {
       this.settingsOpen = false;
@@ -579,6 +586,7 @@ const app = createApp({
           </option>
         </select>
         <nav class="view-toggle" aria-label="Views">
+          <button :class="{active: view==='overview'}" :aria-current="view==='overview' ? 'page' : null" @click="setView('overview')" title="Every host at a glance">Hosts</button>
           <button :class="{active: view==='list'}" :aria-current="view==='list' ? 'page' : null" @click="setView('list')">List</button>
           <button :class="{active: view==='flow'}" :aria-current="view==='flow' ? 'page' : null" @click="setView('flow')">Flow</button>
           <button :class="{active: view==='logs'}" :aria-current="view==='logs' ? 'page' : null" @click="setView('logs')">Logs</button>
@@ -587,7 +595,7 @@ const app = createApp({
           </button>
           <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
         </nav>
-        <div class="view-toggle" role="group" aria-label="Show containers">
+        <div v-if="view !== 'overview'" class="view-toggle" role="group" aria-label="Show containers">
           <button :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
           <button :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
           <button :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
@@ -600,7 +608,7 @@ const app = createApp({
       <p v-if="containersError" class="error" role="alert">{{ containersError }}</p>
 
       <host-card
-        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && view !== 'logs' && view !== 'activity' && view !== 'uptime'"
+        v-if="hostInfo && !logViewerFullscreen && !flowFullscreen && (view === 'list' || view === 'flow')"
         :host-info="hostInfo"
         :host-name="currentHostName"
         :host-id="selectedHostId"
@@ -667,6 +675,8 @@ const app = createApp({
           ></activity-view>
 
           <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
+
+          <hosts-overview v-if="view === 'overview'" :selected-host-id="selectedHostId" @open-host="openHost"></hosts-overview>
         </main>
 
         <container-detail

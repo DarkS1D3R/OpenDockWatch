@@ -27,7 +27,7 @@ const DISK_DUTY_FACTOR = 4;
 const DISK_BACKOFF_STEPS = 6;
 const DISK_BACKOFF_MAX_MS = 3_600_000;
 
-const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
+const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, usage, reachable, ts }
 const hostStates = new Map(); // hostId -> { pollState, diskState } - lets addHost/removeHost target one host
 const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
 const globalTimers = [];
@@ -105,6 +105,7 @@ function markUnreachable(snapshot, host, wasReachable) {
   snapshot.containers = [];
   snapshot.stats = {};
   snapshot.hostInfo = null;
+  snapshot.usage = null;
   snapshot.statsTs = undefined;
   // On the transition only, never per poll: the alert says "became unreachable" and stops there,
   // but "timed out after 20000ms" and "Permission denied (publickey)" call for entirely different
@@ -135,6 +136,7 @@ async function pollHost(host) {
     stats: prev ? prev.stats : {},
     hostInfo: prev ? prev.hostInfo : null,
     diskUsage: prev ? prev.diskUsage : null,
+    usage: prev ? prev.usage : null,
     statsTs: prev ? prev.statsTs : undefined,
     reachable: wasReachable,
     ts: Date.now(),
@@ -271,6 +273,8 @@ async function pollHost(host) {
         : null;
 
     db.insertMetrics(samples, hostSample);
+    // The same figures the host CPU/RAM alerts judge, kept for GET /overview's one row per host.
+    snapshot.usage = hostSample ? { cpuPercent: hostSample.cpuPercent, memUsedBytes: memSum } : null;
     // One settings+rules read for the whole poll rather than one per container - resolved lazily so
     // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
     const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);

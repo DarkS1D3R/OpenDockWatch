@@ -1,13 +1,6 @@
 import { apiGetDefaultView, apiSaveDefaultView, apiClearDefaultView } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
-
-const VIEWS = [
-  { value: 'list', label: 'List' },
-  { value: 'flow', label: 'Flow' },
-  { value: 'logs', label: 'Logs' },
-  { value: 'activity', label: 'Activity' },
-  { value: 'uptime', label: 'Uptime' },
-];
+import { VIEWS } from '../constants.js';
 
 // The Settings panel's General tab: currently just the default landing tab, env-default +
 // DB-override like the other sections - see server/index.js's getDefaultView.

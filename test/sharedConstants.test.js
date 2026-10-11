@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 const docker = require('../server/docker');
 const { HISTORY_RANGES } = require('../server/historyRanges');
+const { VALID_VIEWS } = require('../server/views');
 
 // Two tables forked between server (CommonJS) and public/js/** (native ES modules, no build step
 // to share a single file across that boundary) - each pair kept identical here instead of by hand,
@@ -32,4 +33,13 @@ test('history range bucket widths stay identical to HISTORY_RANGES', async () =>
   for (const [key, bucketMs] of Object.entries(HISTORY_RANGE_BUCKET_MS)) {
     assert.equal(bucketMs, HISTORY_RANGES[key].bucketMs, `${key}: HISTORY_RANGE_BUCKET_MS should match HISTORY_RANGES`);
   }
+});
+
+// A view the server accepts but the select never offers can't be chosen; the reverse 400s on Save.
+test('the default-tab choices stay identical between server and client', async () => {
+  const { VIEWS } = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'constants.js')));
+  assert.deepEqual(
+    VIEWS.map((v) => v.value),
+    [...VALID_VIEWS]
+  );
 });

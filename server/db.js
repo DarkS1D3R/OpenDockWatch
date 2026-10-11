@@ -282,6 +282,7 @@ const stmts = {
   insertHostReachability: db.prepare(`INSERT INTO host_reachability (host_id, ts, reachable) VALUES (?, ?, ?)`),
   getHostReachabilityTransitions: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? AND ts >= ? ORDER BY ts ASC`),
   getHostReachabilitySeed: db.prepare(`SELECT reachable FROM host_reachability WHERE host_id = ? AND ts < ? ORDER BY ts DESC LIMIT 1`),
+  getLastHostReachability: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? ORDER BY ts DESC LIMIT 1`),
   pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
   pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
   pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
@@ -517,6 +518,12 @@ function getHostReachabilitySeed(hostId, beforeTs) {
   return row ? !!row.reachable : null;
 }
 
+// The overview's "down since": the newest transition, with its time - the seed above only carries the flag.
+function getLastHostReachability(hostId) {
+  const row = stmts.getLastHostReachability.get(hostId);
+  return row ? { ts: row.ts, reachable: !!row.reachable } : null;
+}
+
 function countManualStopsSince(hostId, containerId, sinceTs) {
   return stmts.countManualStopsSince.get(hostId, containerId, sinceTs).n;
 }
@@ -700,6 +707,7 @@ module.exports = {
   insertHostReachability,
   getHostReachabilityTransitions,
   getHostReachabilitySeed,
+  getLastHostReachability,
   countManualStopsSince,
   countManualStartsSince,
   getEvents,

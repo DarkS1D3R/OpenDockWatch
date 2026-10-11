@@ -9,12 +9,12 @@ const eventWatcher = require('../eventWatcher');
 const metricsCollector = require('../metricsCollector');
 const { requireHost, dockerError } = require('./middleware');
 const { forgetDashboardCaches } = require('./dashboardData');
+const { VALID_VIEWS } = require('../views');
 
 const router = express.Router();
 
 // The tab the app lands on after login - env default + DB override. Not admin-gated: /session
 // hands it to every role, so a viewer's landing tab matches the configured default.
-const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity', 'uptime']);
 const DEFAULT_VIEW_KEY = 'defaultView';
 const FALLBACK_VIEW = 'list';
 
@@ -46,7 +46,7 @@ router.get('/settings/default-view', requireAdmin, (req, res) => {
 router.put('/settings/default-view', requireAdmin, (req, res) => {
   const { defaultView } = req.body || {};
   if (!VALID_VIEWS.has(defaultView)) {
-    return res.status(400).json({ error: 'defaultView must be one of list, flow, logs, activity' });
+    return res.status(400).json({ error: `defaultView must be one of ${[...VALID_VIEWS].join(', ')}` });
   }
   db.setSetting(DEFAULT_VIEW_KEY, defaultView);
   logger.info('settings.default_view.update', { user: req.session.username, defaultView });

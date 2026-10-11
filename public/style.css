@@ -2703,6 +2703,86 @@ table.uptime-table tr:last-child td {
 .uptime-removed-row {
   opacity: 0.7;
 }
+
+/* The Hosts tab (HostsOverview.js). Same auto-layout table as the Uptime report, for the same reason:
+   table.containers' nth-child widths are List view's. A down or warning row gets a left accent, the
+   same inset shadow the Activity rows use, so a problem host stands out before its row is read. */
+.hosts-summary {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+.hosts-summary-problem {
+  color: var(--warn);
+}
+table.hosts-table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.hosts-table th,
+table.hosts-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: top;
+}
+table.hosts-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+table.hosts-table tr:last-child td {
+  border-bottom: none;
+}
+.host-row-down td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.host-row-warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.host-row-down td:not(:first-child):not(:nth-child(2)) {
+  opacity: 0.6;
+}
+.hosts-table .small {
+  font-size: 12px;
+}
+.host-name {
+  font-weight: 600;
+}
+.host-kind {
+  margin-left: 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.host-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.host-problem {
+  color: var(--warn);
+}
+.host-row-down .host-status {
+  color: var(--danger);
+}
+.host-row-warning .host-status {
+  color: var(--warn);
+}
+.host-alerts-btn {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
 .alert-row-actions {
   display: flex;
   flex-wrap: wrap;

@@ -57,6 +57,10 @@ export async function apiGetHosts() {
   return jsonOrThrow(await apiFetch('/api/hosts'));
 }
 
+export async function apiGetOverview() {
+  return jsonOrThrow(await apiFetch('/api/overview'));
+}
+
 // fresh bypasses the server's snapshot for the one case where up-to-POLL_MS staleness is visible
 // to the user: the refetch right after a start/stop/restart.
 export async function apiGetContainers(hostId, { fresh = false } = {}) {

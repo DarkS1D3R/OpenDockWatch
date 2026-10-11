@@ -226,7 +226,7 @@ test('container-rules routes reject an unusable id rather than no-op with a 200'
 });
 
 test('default view (landing tab) setting', async (t) => {
-  await t.test('rejects a value outside list/flow/logs/activity', async () => {
+  await t.test('rejects a value outside the valid views', async () => {
     const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     assert.equal((await agent.put('/api/settings/default-view').send({ defaultView: 'nonsense' })).status, 400);
   });
@@ -244,6 +244,16 @@ test('default view (landing tab) setting', async (t) => {
     const cleared = await admin.delete('/api/settings/default-view');
     assert.deepEqual(cleared.body, { defaultView: 'list', overridden: false });
     assert.equal((await admin.get('/api/session')).body.defaultView, 'list');
+  });
+
+  await t.test('the Hosts overview can be the landing tab', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.deepEqual((await admin.put('/api/settings/default-view').send({ defaultView: 'overview' })).body, {
+      defaultView: 'overview',
+      overridden: true,
+    });
+    assert.equal((await admin.get('/api/session')).body.defaultView, 'overview');
+    await admin.delete('/api/settings/default-view');
   });
 
   await t.test('only an admin can change it, though any role can read the resolved value via /session', async () => {
@@ -1154,6 +1164,74 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
 
 // Pure db/computation like /events beside it - reconstructed from durable history, not sampled, so
 // this seeds events/host_reachability rows directly rather than mocking anything docker-shaped.
+test('GET /overview', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const SNAPSHOT = {
+    ts: Date.now(),
+    statsTs: Date.now(),
+    reachable: true,
+    containers: [
+      { id: 'ovaaaaaaaaaa', name: 'web', state: 'running', health: 'unhealthy', composeProject: 'shop' },
+      { id: 'ovbbbbbbbbbb', name: 'db', state: 'exited', health: null, composeProject: 'shop' },
+    ],
+    stats: {},
+    hostInfo: { ncpu: 4, memTotalBytes: 8e9, hostname: 'shop-01' },
+    usage: { cpuPercent: 3.5, memUsedBytes: 1e9 },
+  };
+
+  await t.test('one row per configured host, from the snapshot and sqlite, with no docker call', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', (id) => (id === hostId ? SNAPSHOT : null));
+    const probed = t2.mock.method(docker, 'checkHost', () => Promise.resolve(true));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const res = await viewer.get('/api/overview');
+    assert.equal(res.status, 200, 'a read-only overview is for every role');
+    assert.equal(res.body.length, loadHosts().length);
+    assert.equal(probed.mock.callCount(), 0, 'unlike /hosts, the overview never probes a host');
+
+    const row = res.body.find((r) => r.id === hostId);
+    assert.deepEqual(row.containers, { total: 2, running: 1, unhealthy: 1, restarting: 0 });
+    assert.equal(row.cpuPercent, 3.5);
+    assert.equal(row.memTotalBytes, 8e9);
+    assert.equal(row.openAlerts, db.countOpenAlerts(hostId));
+    assert.equal(row.status, 'warning', 'an unhealthy container needs a look');
+  });
+
+  await t.test('counts only open alerts on that host', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', (id) => (id === hostId ? SNAPSHOT : null));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const before = (await admin.get('/api/overview')).body.find((r) => r.id === hostId).openAlerts;
+    db.insertAlert({
+      ts: Date.now(),
+      hostId,
+      containerId: null,
+      containerName: null,
+      rule: 'host_cpu',
+      severity: 'warning',
+      message: 'overview test',
+    });
+    db.insertAlert({
+      ts: Date.now(),
+      hostId: '__overview_other_host__',
+      containerId: null,
+      containerName: null,
+      rule: 'host_cpu',
+      severity: 'warning',
+      message: 'elsewhere',
+    });
+    const after = (await admin.get('/api/overview')).body.find((r) => r.id === hostId).openAlerts;
+    assert.equal(after, before + 1);
+  });
+
+  await t.test('a host with no snapshot yet reads pending rather than being probed', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => null);
+    const probed = t2.mock.method(docker, 'checkHost', () => Promise.resolve(true));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const row = (await admin.get('/api/overview')).body.find((r) => r.id === hostId);
+    assert.equal(row.status, 'pending');
+    assert.equal(probed.mock.callCount(), 0);
+  });
+});
+
 test('GET /hosts/:hostId/uptime', async (t) => {
   const hostId = loadHosts()[0].id;
   const CONTAINER = 'uptimeaaaaaa';

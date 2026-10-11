@@ -1,4 +1,14 @@
 export const POLL_MS = 5000;
+// The topbar's tabs, in order, as the Settings default-tab select offers them. Mirrors VALID_VIEWS
+// in server/views.js, enforced by test/sharedConstants.test.js.
+export const VIEWS = [
+  { value: 'overview', label: 'Hosts' },
+  { value: 'list', label: 'List' },
+  { value: 'flow', label: 'Flow' },
+  { value: 'logs', label: 'Logs' },
+  { value: 'activity', label: 'Activity' },
+  { value: 'uptime', label: 'Uptime' },
+];
 // Ceiling for the poll loop's failure backoff. A host unreachable for an hour isn't worth six
 // requests every five seconds, but the loop must never stop entirely or the dashboard sits on
 // stale data after the host comes back.
