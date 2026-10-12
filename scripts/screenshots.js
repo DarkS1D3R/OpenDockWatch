@@ -8,7 +8,7 @@ const URL = process.env.SCREENSHOT_URL || 'http://localhost:3100';
 const USER = process.env.SCREENSHOT_USER || 'demo';
 const PASS = process.env.SCREENSHOT_PASS;
 const OUT = process.env.SCREENSHOT_OUT || path.join(__dirname, '..', 'screenshots');
-const WARM_MS = Number(process.env.SCREENSHOT_WARM_MS || 360_000);
+const WARM_MS = Number(process.env.SCREENSHOT_WARM_MS || 1_800_000);
 const SCALE = Number(process.env.SCREENSHOT_SCALE || 1);
 
 // 1920x1300. Wide because the details panel is a fixed 520px and at 1600 it squeezed the table
@@ -82,7 +82,7 @@ async function main() {
   }
 
   // The row sparklines come from a client-side buffer that starts empty on load and fills over
-  // ~2 minutes. The host card's 30-minute chart is server-persisted, so it survives the reload.
+  // ~2 minutes. The host card's 30-minute chart is server-persisted; the 30-minute default lets it fill.
   console.log(`warming the row sparkline buffer (${Math.round(WARM_MS / 1000)}s)`);
   await page.waitForTimeout(WARM_MS);
 
@@ -208,7 +208,7 @@ async function main() {
     await ack.click();
     await page.waitForTimeout(1200);
   }
-  await page.locator('input[placeholder="Search events…"]').fill('demo-shop-cache');
+  await page.locator('input[placeholder="Search events…"]').fill('demo-shop-flaky');
   await page.waitForTimeout(1200);
   await shot('activity-view');
 

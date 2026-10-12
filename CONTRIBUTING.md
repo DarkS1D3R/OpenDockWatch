@@ -48,17 +48,18 @@ It refuses to run against a host whose containers aren't the demo ones, so a str
 private container names in the README. `SCREENSHOT_URL` (default `http://localhost:3100`),
 `SCREENSHOT_USER` (default `demo`), `SCREENSHOT_OUT` and `SCREENSHOT_SCALE` are the other knobs.
 
-It waits a couple of minutes before the first shot on purpose: the row sparklines fill from an
+It waits 30 minutes before the first shot on purpose: the row sparklines fill from an
 in-memory buffer that starts empty on page load, and the host card's chart covers 30 minutes, so
 leave the stack running a while before shooting or those charts render as slivers. `SCREENSHOT_SCALE=2`
 renders at 2x for a hidpi-crisp result, at approximately four times the file size — the committed
-set is 1x, which keeps all nine under 2MB.
+set is 1x, which keeps all ten to about 2.3MB.
 
 Settings that matter when retaking the set:
 
-- **Warm-up is 6 minutes** (`SCREENSHOT_WARM_MS`, default 360000). The old 135s left the host
-  card's chart and the metrics modal looking thin. Start the stack, wait, then run the script;
-  a fresh data directory (`rm -rf data/*` on the throwaway mount) avoids stale history.
+- **Warm-up is 30 minutes** (`SCREENSHOT_WARM_MS`, default 1800000), the span of the host card's
+  chart, so every chart shows a full window of history. The earlier 135s and then 6 minutes left
+  the charts looking thin. A fresh data directory (`rm -rf data/*` on the throwaway mount) avoids
+  stale history.
 - **The Logs tab shot opens four panes** (shop-api, shop-worker, blog-api, shop-payments) in
   Multi mode. One pane undersells the tab, whose point is side-by-side, timestamp-synced logs.
   The script clicks "Multi" first because a remembered single-pane choice would otherwise stick.
