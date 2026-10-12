@@ -639,10 +639,18 @@ async function sendFollowUps(now = Date.now()) {
   try {
     const main = getWebhookConfig();
     const routes = db.getWebhookRoutes();
+    const delayed = routes.filter((r) => r.enabled && isDelayed(r));
     // Neither feature on: not even the query runs.
-    if (!main.repeatMinutes && !routes.some((r) => r.enabled && isDelayed(r))) return;
+    if (!main.repeatMinutes && !delayed.length) return;
+    // Reminders want stateful alerts at any age; past the longest escalation window nothing else can
+    // be due, and leaving those out keeps old incidents from crowding a long outage out of the limit.
+    const longestDelayMs = Math.max(0, ...delayed.map((r) => r.delayMinutes)) * 60_000;
     const due = dueFollowUps({
-      alerts: db.getFollowUpAlerts({ limit: FOLLOW_UP_LIMIT }),
+      alerts: db.getFollowUpAlerts({
+        statefulRules: main.repeatMinutes ? [...STATEFUL_RULES] : [],
+        incidentSince: delayed.length ? now - longestDelayMs - ESCALATION_WINDOW_MS : now + 1,
+        limit: FOLLOW_UP_LIMIT,
+      }),
       noticesFor: (id) => db.getAlertNotices(id),
       main,
       routes,

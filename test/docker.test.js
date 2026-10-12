@@ -27,6 +27,8 @@ const {
   parseHealthStatuses,
   healthTransitions,
   refreshPodmanHealth,
+  inspectFound,
+  getContainerImages,
   trackedHealth,
   markHealthDirty,
   parseHealthcheck,
@@ -1180,6 +1182,18 @@ test('Podman health', async (t) => {
     assert.equal(called, false);
   });
 
+  await t.test('a container removed mid-batch costs only itself, not the whole read', async () => {
+    const h = { id: 'pm-health-gone' };
+    const exec = async () => {
+      throw Object.assign(new Error('Command failed'), {
+        stdout: 'eeeeeeeeeeee\tunhealthy\n',
+        stderr: 'Error: no such object: ffffffffffff\n',
+      });
+    };
+    await refreshPodmanHealth(h, [running('eeeeeeeeeeee'), running('ffffffffffff')], () => {}, { exec, engine: 'podman' });
+    assert.equal(trackedHealth(h.id, 'eeeeeeeeeeee'), 'unhealthy');
+  });
+
   await t.test('a failed inspect leaves the host dirty, so the next poll tries again', async () => {
     const h = { id: 'pm-health-fail' };
     let attempts = 0;
@@ -1192,5 +1206,34 @@ test('Podman health', async (t) => {
     await refreshPodmanHealth(h, [running('dddddddddddd')], () => {}, { exec, engine: 'podman' });
     assert.equal(attempts, 2);
     assert.equal(trackedHealth(h.id, 'dddddddddddd'), 'healthy');
+  });
+});
+
+test('inspectFound', async (t) => {
+  const failing = (fields) => async () => {
+    throw Object.assign(new Error('Command failed'), fields);
+  };
+
+  await t.test('keeps what docker printed when the only problem is an object that is gone', async () => {
+    // Verified against a real daemon: the found container's line on stdout, exit 1, this on stderr.
+    const out = await inspectFound(failing({ stdout: 'aaaa\n', stderr: 'error: no such object: deadbeef0000\n' }), []);
+    assert.equal(out, 'aaaa\n');
+    const images = await inspectFound(
+      failing({ stdout: 'sha256:1\n', stderr: 'Error response from daemon: No such image: sha256:0\n' }),
+      []
+    );
+    assert.equal(images, 'sha256:1\n');
+  });
+
+  await t.test('still throws for anything else: no output, a timeout, or another error', async () => {
+    await assert.rejects(inspectFound(failing({ stdout: '', stderr: 'Error: No such object: x' }), []));
+    await assert.rejects(inspectFound(failing({ stdout: 'aaaa\n', stderr: 'no such object: x', timedOut: true }), []));
+    await assert.rejects(inspectFound(failing({ stdout: 'aaaa\n', stderr: 'permission denied' }), []));
+  });
+
+  await t.test('getContainerImages keeps the containers it did find', async () => {
+    const exec = failing({ stdout: 'aaaaaaaaaaaa1111\tsha256:img\tnginx:alpine\n', stderr: 'error: no such object: bbbbbbbbbbbb\n' });
+    const images = await getContainerImages({ id: 'h' }, ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], exec);
+    assert.deepEqual([...images.keys()], ['aaaaaaaaaaaa']);
   });
 });

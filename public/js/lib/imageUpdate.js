@@ -9,6 +9,7 @@ const UNKNOWN_TEXT = {
   no_tag: 'Runs an image by id, with no tag to check',
   no_local_digest: 'No registry digest is recorded for this image',
   rate_limited: 'Registry rate limit reached - the next check will try again',
+  local_registry: "On a registry at localhost - that is the Docker host's own, which OpenDockWatch cannot reach",
 };
 
 // { text, tone } where tone is 'update' | 'ok' | 'muted', or null for a container never checked.

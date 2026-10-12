@@ -683,6 +683,40 @@ test('GET /hosts/:hostId/compose/:project/logs/search', async (t) => {
     const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
     assert.equal((await viewer.get(url('q=x'))).status, 200);
   });
+
+  await t.test("uses the collector's container list when there is one, with no docker call", async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({ statsTs: Date.now(), containers: CONTAINERS }));
+    const listed = t2.mock.method(docker, 'listContainers', async () => []);
+    t2.mock.method(docker, 'searchLogs', async () => ({ lines: [], matched: 0, timedOut: false }));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=x'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.searched, 2);
+    assert.equal(listed.mock.callCount(), 0);
+  });
+
+  // Each search holds docker slots for up to its whole deadline, and a viewer can start one.
+  await t.test('only two searches run at once; a third is told to wait, and the slots come back', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    let release;
+    const gate = new Promise((r) => (release = r));
+    let started = 0;
+    t2.mock.method(docker, 'searchLogs', async () => {
+      started += 1;
+      await gate;
+      return { lines: [], matched: 0, timedOut: false };
+    });
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const first = viewer.get(url('q=a')).then((r) => r);
+    const second = viewer.get(url('q=b')).then((r) => r);
+    while (started < 4) await new Promise((r) => setTimeout(r, 5));
+    const third = await viewer.get(url('q=c'));
+    assert.equal(third.status, 429);
+    assert.match(third.body.error, /try again/);
+    release();
+    assert.deepEqual([(await first).status, (await second).status], [200, 200]);
+    assert.equal((await viewer.get(url('q=d'))).status, 200, 'finished searches free their place');
+  });
 });
 
 // The process list carries full command lines, which is where credentials end up - so, like

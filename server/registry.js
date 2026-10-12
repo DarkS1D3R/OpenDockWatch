@@ -1,7 +1,7 @@
 // Asks a registry what digest a tag points at now, with one HEAD request (plus an anonymous token
 // fetch where the registry wants one). HEAD, not GET: Docker Hub counts manifest GETs against its
 // pull rate limit and HEADs not. No credentials are read or sent. See server/CLAUDE.md.
-const { registryApiHost } = require('./imageRef');
+const { registryApiHost, isLoopbackRegistry } = require('./imageRef');
 
 const REGISTRY_TIMEOUT_MS = 15_000;
 
@@ -34,7 +34,7 @@ function parseBearerChallenge(header) {
 
 // A local registry is almost always plain http, as docker itself assumes for localhost.
 function schemeFor(host) {
-  return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) ? 'http' : 'https';
+  return isLoopbackRegistry(host) ? 'http' : 'https';
 }
 
 async function fetchToken(challenge, repository, fetchImpl) {
@@ -84,6 +84,8 @@ async function getRemoteDigest(parsed, { fetchImpl = fetch } = {}) {
   } catch (err) {
     if (err instanceof RegistryError) throw err;
     if (err.name === 'TimeoutError') throw new RegistryError('error', `registry did not answer within ${REGISTRY_TIMEOUT_MS / 1000}s`);
+    // Inside a container, localhost is OpenDockWatch's own, not the Docker host's.
+    if (isLoopbackRegistry(host)) throw new RegistryError('local_registry', 'a registry on localhost, which OpenDockWatch cannot reach');
     throw new RegistryError('error', `registry unreachable: ${err.cause ? err.cause.code || err.cause.message : err.message}`);
   }
 }

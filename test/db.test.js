@@ -446,6 +446,23 @@ test('reminder and escalation queries', async (t) => {
       .filter((a) => a.hostId === FHOST)
       .map((a) => a.id);
 
+  await t.test('a stateful rule is a candidate at any age, anything else only from incidentSince', () => {
+    const outage = insert({ ts: 1000 });
+    const oldCrash = insert({ ts: 2000, rule: 'container_crashed', containerId: 'dddddddddddd' });
+    const recentCrash = insert({ ts: 9_000_000_000_000, rule: 'container_crashed', containerId: 'dddddddddddd' });
+    const ids = (opts) =>
+      db
+        .getFollowUpAlerts({ limit: 500, ...opts })
+        .filter((a) => a.hostId === FHOST)
+        .map((a) => a.id);
+    const remindable = ids({ statefulRules: ['host_unreachable'], incidentSince: 5_000_000_000_000 });
+    assert.ok(remindable.includes(outage), 'an old outage still gets reminders');
+    assert.ok(remindable.includes(recentCrash));
+    assert.ok(!remindable.includes(oldCrash), 'an incident past every escalation window is left out');
+    assert.deepEqual(ids({ statefulRules: [], incidentSince: 5_000_000_000_000 }), [recentCrash]);
+    for (const id of [outage, oldCrash, recentCrash]) db.ackAlert(id);
+  });
+
   await t.test('only unacknowledged, unresolved, uncleared alerts are candidates, newest first', () => {
     const acked = insert();
     db.ackAlert(acked);

@@ -60,6 +60,14 @@ test('getRemoteDigest', async (t) => {
     assert.equal(f.calls[0].url, 'http://localhost:5000/v2/shop/manifests/v1', 'a local registry is plain http, as docker assumes');
   });
 
+  await t.test('an unreachable localhost registry says why rather than a bare connection error', async () => {
+    const f = fakeFetch([Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })]);
+    await assert.rejects(getRemoteDigest(parseImageRef('localhost:5000/shop:v1'), { fetchImpl: f.impl }), (err) => {
+      assert.equal(err.kind, 'local_registry');
+      return true;
+    });
+  });
+
   const kindOf = async (script) => {
     const f = fakeFetch(script);
     try {

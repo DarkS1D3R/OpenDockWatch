@@ -8,7 +8,7 @@ const docker = require('./docker');
 const registry = require('./registry');
 const metricsCollector = require('./metricsCollector');
 const { loadHosts } = require('./hosts');
-const { parseImageRef, refKey, digestsForRepo } = require('./imageRef');
+const { parseImageRef, refKey, digestsForRepo, isLoopbackRegistry } = require('./imageRef');
 const { mapLimit } = require('./composeGroup');
 
 const CHECK_HOURS_KEY = 'imageUpdateCheckHours';
@@ -22,7 +22,8 @@ const REUSE_FRACTION = 0.9;
 
 const results = new Map(); // hostId -> Map(containerId -> result)
 const lastRun = new Map(); // hostId -> ts the last periodic check was due from
-const inFlight = new Map(); // hostId -> promise of the check running now
+const inFlight = new Map(); // hostId -> { promise, force } for the check running now
+const forceQueued = new Map(); // hostId -> host, a Check now that arrived while a cached check ran
 let timer = null;
 
 // .env default + Settings override, like every other setting here. 0 (the default) means no
@@ -48,11 +49,14 @@ function clearCheckConfig() {
 const unknown = (reason, message, checkedAt) => ({ status: 'unknown', reason, message, checkedAt });
 
 // Before asking a registry: whether this container's image can be checked at all, and which local
-// digests a registry answer would be compared with. Pure.
-function checkableImage(configImage, repoDigests) {
+// digests a registry answer would be compared with. sshHost: localhost there is the remote's. Pure.
+function checkableImage(configImage, repoDigests, { sshHost = false } = {}) {
   const parsed = parseImageRef(configImage);
   if (!parsed) return { skip: unknown('no_tag', 'runs an image by id, with no tag to check') };
   if (parsed.digest) return { skip: unknown('pinned', 'pinned to a digest, so it never changes') };
+  if (sshHost && isLoopbackRegistry(parsed.registry)) {
+    return { skip: unknown('local_registry', "a registry on the remote host's own localhost, which OpenDockWatch cannot reach") };
+  }
   const local = digestsForRepo(repoDigests, parsed);
   if (!local.length) return { skip: unknown('no_local_digest', 'no registry digest is recorded for this image') };
   return { parsed, key: refKey(parsed), local };
@@ -94,8 +98,9 @@ async function runCheck(host, { force }) {
   const repoDigests = await docker.getImageRepoDigests(host, imageIds);
 
   const checks = new Map();
+  const sshHost = docker.isSshHost(host);
   for (const [containerId, { imageId, configImage }] of images) {
-    checks.set(containerId, checkableImage(configImage, repoDigests.get(imageId)));
+    checks.set(containerId, checkableImage(configImage, repoDigests.get(imageId), { sshHost }));
   }
   // One registry question per distinct tag, however many containers run it.
   const byKey = new Map();
@@ -122,21 +127,32 @@ async function runCheck(host, { force }) {
   return counts;
 }
 
-// One check per host at a time; a second caller shares the first's promise. Never rejects.
+// One check per host at a time; a second caller shares the first's promise. Never rejects. A forced
+// check arriving during an unforced one would get the cached answers it exists to bypass, so it is
+// queued to run straight after instead.
 function checkHost(host, { force = false } = {}) {
-  if (inFlight.has(host.id)) return inFlight.get(host.id);
-  const p = runCheck(host, { force })
+  const running = inFlight.get(host.id);
+  if (running) {
+    if (force && !running.force) forceQueued.set(host.id, host);
+    return running.promise;
+  }
+  const promise = runCheck(host, { force })
     .catch((err) => {
       logger.warn('image_updates.check_failed', { host: host.id, error: err.stderr || err.message });
       return null;
     })
-    .finally(() => inFlight.delete(host.id));
-  inFlight.set(host.id, p);
-  return p;
+    .finally(() => {
+      inFlight.delete(host.id);
+      const queued = forceQueued.get(host.id);
+      forceQueued.delete(host.id);
+      if (queued) checkHost(queued, { force: true });
+    });
+  inFlight.set(host.id, { promise, force });
+  return promise;
 }
 
 function isChecking(hostId) {
-  return inFlight.has(hostId);
+  return inFlight.has(hostId) || forceQueued.has(hostId);
 }
 
 // Runs every TICK_MS and starts whichever hosts are due. Sequential: an image check is never urgent,
@@ -180,6 +196,7 @@ function countOutdated(hostId) {
 function forgetHost(hostId) {
   results.delete(hostId);
   lastRun.delete(hostId);
+  forceQueued.delete(hostId);
 }
 
 module.exports = {

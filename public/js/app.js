@@ -122,6 +122,7 @@ const app = createApp({
       containerMetricsHistory: {},
 
       alerts: [],
+      alertActionError: null,
 
       selectedContainerId: null,
       // Independent of selectedContainerId: opening a row's metrics shouldn't also open the
@@ -262,6 +263,7 @@ const app = createApp({
       this.hostMetricsHistory = [];
       this.containerMetricsHistory = {};
       this.alerts = [];
+      this.alertActionError = null;
       this.stopPolling();
       this.fetchHostInfo();
       this.fetchDiskUsage();
@@ -376,31 +378,35 @@ const app = createApp({
         /* disk usage is best-effort */
       }
     },
-    async ackAlertAction(alert) {
+    // A failed ack or clear used to be swallowed, which left the list unchanged with nothing saying
+    // why - read as "the button does nothing". The Activity tab shows this until the next success.
+    async alertAction(verb, fn) {
       try {
+        await fn();
+        this.alertActionError = null;
+      } catch (err) {
+        this.alertActionError = `Could not ${verb}: ${err.message}`;
+      }
+    },
+    ackAlertAction(alert) {
+      return this.alertAction('acknowledge the alert', async () => {
         await apiAckAlert(alert.id);
         alert.acknowledged = 1;
-      } catch {
-        /* best-effort */
-      }
+      });
     },
-    async ackAllAlertsAction() {
+    ackAllAlertsAction() {
       if (!this.selectedHostId) return;
-      try {
+      return this.alertAction('acknowledge the alerts', async () => {
         await apiAckAllAlerts(this.selectedHostId);
         for (const a of this.alerts) a.acknowledged = 1;
-      } catch {
-        /* best-effort */
-      }
+      });
     },
-    async clearAlertsAction() {
+    clearAlertsAction() {
       if (!this.selectedHostId) return;
-      try {
+      return this.alertAction('clear the alerts', async () => {
         await apiClearAlerts(this.selectedHostId);
         this.alerts = [];
-      } catch {
-        /* best-effort */
-      }
+      });
     },
     recordMetricsSample() {
       const currentIds = new Set(this.containers.map((c) => c.id));
@@ -666,6 +672,7 @@ const app = createApp({
             v-if="view === 'activity'"
             :host-id="selectedHostId"
             :alerts="alerts"
+            :alert-action-error="alertActionError"
             :is-admin="isAdmin"
             :container-ids="containerIds"
             @open-logs="openLogsAt"

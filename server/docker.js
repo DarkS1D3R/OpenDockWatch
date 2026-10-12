@@ -116,7 +116,7 @@ function poolStats() {
 // matters. `docker system df` timed out every 60s for weeks on a WSL2 host and looked exactly like
 // a broken daemon in the log. Pure and separate from spawnDocker so it's unit-testable without
 // mocking child_process, same as the CLI-output parsers further down this file.
-function dockerCommandError(err, args, timeoutMs, stderr) {
+function dockerCommandError(err, args, timeoutMs, stderr, stdout) {
   if (err.killed || err.signal === 'SIGTERM' || err.signal === 'SIGKILL') {
     const timedOut = new Error(`docker ${args.join(' ')} timed out after ${timeoutMs}ms`);
     timedOut.timedOut = true;
@@ -124,7 +124,20 @@ function dockerCommandError(err, args, timeoutMs, stderr) {
     return timedOut;
   }
   err.stderr = stderr;
+  err.stdout = stdout;
   return err;
+}
+
+// `docker inspect a b c` prints every object it found and exits 1 naming one that is gone - a
+// container removed since the list was read. That one's absence is the answer, not a reason to
+// throw away the rest of the batch. Anything else still throws.
+async function inspectFound(exec, args) {
+  try {
+    return await exec(args);
+  } catch (err) {
+    if (!err.timedOut && err.stdout && /no such (object|container|image)/i.test(err.stderr || '')) return err.stdout;
+    throw err;
+  }
 }
 
 function spawnDocker(args, timeoutMs, withStderr = false) {
@@ -132,7 +145,7 @@ function spawnDocker(args, timeoutMs, withStderr = false) {
     let killTimer = null;
     const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 25 * 1024 * 1024 }, (err, stdout, stderr) => {
       clearTimeout(killTimer);
-      if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr));
+      if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr, stdout));
       resolve(withStderr ? { stdout, stderr } : stdout);
     });
     killTimer = setTimeout(() => {
@@ -419,7 +432,7 @@ function parseContainerImages(raw) {
 async function getContainerImages(host, containerIds, exec = run) {
   if (!containerIds.length) return new Map();
   return parseContainerImages(
-    await exec([...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{.Image}}\t{{.Config.Image}}', ...containerIds])
+    await inspectFound(exec, [...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{.Image}}\t{{.Config.Image}}', ...containerIds])
   );
 }
 
@@ -443,7 +456,7 @@ function parseImageRepoDigests(raw) {
 async function getImageRepoDigests(host, imageIds, exec = run) {
   if (!imageIds.length) return new Map();
   return parseImageRepoDigests(
-    await exec([...hostArgs(host), 'image', 'inspect', '--format', '{{.Id}}\t{{json .RepoDigests}}', ...imageIds])
+    await inspectFound(exec, [...hostArgs(host), 'image', 'inspect', '--format', '{{.Id}}\t{{json .RepoDigests}}', ...imageIds])
   );
 }
 
@@ -511,7 +524,7 @@ async function refreshPodmanHealth(host, containers, onTransition, { exec = run,
   healthInFlight.add(host.id);
   entry.dirty = false;
   try {
-    const raw = ids.length ? await exec([...hostArgs(host), 'inspect', '--format', HEALTH_FORMAT, ...ids]) : '';
+    const raw = ids.length ? await inspectFound(exec, [...hostArgs(host), 'inspect', '--format', HEALTH_FORMAT, ...ids]) : '';
     const statuses = parseHealthStatuses(raw);
     const changes = healthTransitions(entry.statuses, statuses);
     entry.statuses = statuses;
@@ -1384,6 +1397,7 @@ async function getDiskUsageImages(host) {
 }
 
 module.exports = {
+  inspectFound,
   parseContainerImages,
   getContainerImages,
   parseImageRepoDigests,

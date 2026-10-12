@@ -18,7 +18,7 @@ test('imageUpdateText', async (t) => {
     assert.deepEqual(iu.imageUpdateText({ status: 'current' }), { text: 'Up to date', tone: 'ok' });
   });
   await t.test('every reason the server can give has its own wording', () => {
-    for (const reason of ['not_found', 'pinned', 'no_tag', 'no_local_digest', 'rate_limited']) {
+    for (const reason of ['not_found', 'pinned', 'no_tag', 'no_local_digest', 'rate_limited', 'local_registry']) {
       const { text, tone } = iu.imageUpdateText({ status: 'unknown', reason });
       assert.equal(tone, 'muted');
       assert.ok(!text.startsWith('Could not check'), `${reason} fell through to the generic message`);

@@ -36,6 +36,15 @@ test('checkableImage decides what can be checked before any registry is asked', 
     assert.equal(imageUpdates.checkableImage('myorg/app:dev', []).skip.reason, 'no_local_digest');
     assert.equal(imageUpdates.checkableImage('myorg/app:dev', [`other/app@${OLD}`]).skip.reason, 'no_local_digest');
   });
+  await t.test("a localhost registry is not asked for an SSH host: that localhost is the remote's", () => {
+    const digests = [`localhost:5000/shop@${OLD}`];
+    assert.equal(imageUpdates.checkableImage('localhost:5000/shop:v1', digests, { sshHost: true }).skip.reason, 'local_registry');
+    assert.equal(
+      imageUpdates.checkableImage('localhost:5000/shop:v1', digests).key,
+      'localhost:5000/shop:v1',
+      'a local host may still reach it'
+    );
+  });
 });
 
 test('compareDigests', () => {
@@ -135,6 +144,21 @@ test('checkHost', async (t) => {
     const [a, b] = await Promise.all([imageUpdates.checkHost(HOST), imageUpdates.checkHost(HOST)]);
     assert.equal(a, b);
     assert.equal(s.asked.filter((r) => r === 'library/nginx').length, 1);
+  });
+
+  await t.test('Check now during a scheduled check runs again afterwards, past the cache', async (t2) => {
+    const cache = new Map([
+      ['docker.io/library/nginx:alpine', { digest: OLD, errorKind: null, error: null, checkedAt: Date.now() - 60_000 }],
+    ]);
+    const s = stub(t2, { cache });
+    const scheduled = imageUpdates.checkHost(HOST);
+    const forced = imageUpdates.checkHost(HOST, { force: true });
+    assert.equal(forced, scheduled, 'the caller still gets the running check');
+    await scheduled;
+    while (imageUpdates.isChecking(HOST.id)) await new Promise((r) => setTimeout(r, 5));
+    // The scheduled check answered nginx from the cache; only the forced one that followed asked.
+    assert.equal(s.asked.filter((r) => r === 'library/nginx').length, 1);
+    assert.equal(imageUpdates.statusFor(HOST.id, 'aaaaaaaaaaaa').status, 'outdated');
   });
 
   await t.test('an unreachable host is skipped, and a failing inspect never rejects', async (t2) => {

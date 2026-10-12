@@ -288,11 +288,13 @@ const stmts = {
     ORDER BY ts DESC LIMIT 1
   `),
   markAlertResolved: db.prepare(`UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`),
-  // Candidates for a reminder or an escalation: nobody has acknowledged them, they have not cleared,
-  // and they are still on the Activity tab. Newest first, so alerts.js keeps the newest per rule.
+  // Candidates for a reminder or an escalation: unacknowledged, unresolved, uncleared, and either a
+  // rule reminders apply to or recent enough to escalate - incidents never resolve, so without that
+  // they pile up and crowd a long outage out of the LIMIT. Newest first. See server/CLAUDE.md.
   getFollowUpAlerts: db.prepare(`
     SELECT id, ts, host_id AS hostId, container_id AS containerId, container_name AS containerName, rule, severity, message
     FROM alerts WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
+      AND (rule IN (SELECT value FROM json_each(@statefulRules)) OR ts >= @incidentSince)
     ORDER BY ts DESC LIMIT @limit
   `),
   // Per destination: when the firing notice arrived (null if it has not) and the last reminder tried.
@@ -594,8 +596,9 @@ function markAlertResolved(id, ts) {
   return stmts.markAlertResolved.run(ts, id).changes > 0;
 }
 
-function getFollowUpAlerts({ limit = 200 } = {}) {
-  return stmts.getFollowUpAlerts.all({ limit });
+// statefulRules are wanted at any age; anything else only from incidentSince on (0: everything).
+function getFollowUpAlerts({ statefulRules = [], incidentSince = 0, limit = 200 } = {}) {
+  return stmts.getFollowUpAlerts.all({ statefulRules: JSON.stringify(statefulRules), incidentSince, limit });
 }
 
 function getAlertNotices(alertId) {

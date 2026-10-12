@@ -2102,6 +2102,30 @@ test('sendFollowUps', async (t) => {
     assert.equal(queried, false);
   });
 
+  await t.test('asks only for what can be due: stateful rules for reminders, incidents inside the escalation window', async (t2) => {
+    const asked = [];
+    const now = 10_000_000;
+    const route = { id: 1, enabled: true, delayMinutes: 30, rules: [], hostId: null, minSeverity: 'warning', url: 'https://example.com/r' };
+    let repeat = '15';
+    mockDb(t2, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'https://example.com/main' : key === 'alertRepeatMinutes' ? repeat : null),
+      getWebhookRoutes: () => [route],
+      getFollowUpAlerts: (opts) => (asked.push(opts), []),
+      getAlertNotices: () => [],
+    });
+    await alerts.sendFollowUps(now);
+    assert.ok(asked[0].statefulRules.includes('host_unreachable'));
+    assert.ok(!asked[0].statefulRules.includes('container_crashed'));
+    assert.equal(asked[0].incidentSince, now - 30 * 60_000 - 60 * 60_000);
+    repeat = '0';
+    await alerts.sendFollowUps(now);
+    assert.deepEqual(asked[1].statefulRules, [], 'with reminders off, stateful alerts only matter inside the window too');
+    route.enabled = false;
+    repeat = '15';
+    await alerts.sendFollowUps(now);
+    assert.ok(asked[2].incidentSince > now, 'no escalation route: no incident can be due');
+  });
+
   await t.test('sends what is due and records it as a reminder', async (t2) => {
     const queued = [];
     const now = Date.now();

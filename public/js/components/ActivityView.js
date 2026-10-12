@@ -16,6 +16,8 @@ export default {
   props: {
     hostId: { type: String, required: true },
     alerts: { type: Array, default: () => [] },
+    // The last failed acknowledge or clear (app.js owns those actions), shown above the list.
+    alertActionError: { type: String, default: null },
     isAdmin: { type: Boolean, default: false },
     // Ids of the containers that exist on this host right now - an alert for one that has since been
     // removed or recreated has no log left to jump to.
@@ -30,6 +32,7 @@ export default {
       alertRuleFilter: '',
       eventActionFilter: '',
       events: [],
+      eventsActionError: null,
       alertsAtTop: true,
       eventsAtTop: true,
       // Measured, not guessed - see updateWrapHeight.
@@ -70,6 +73,7 @@ export default {
   },
   watch: {
     hostId() {
+      this.eventsActionError = null;
       this.loadEvents();
     },
   },
@@ -141,8 +145,9 @@ export default {
       try {
         await apiClearEvents(this.hostId);
         this.events = [];
-      } catch {
-        /* best-effort */
+        this.eventsActionError = null;
+      } catch (err) {
+        this.eventsActionError = `Could not clear the events: ${err.message}`;
       }
     },
     formatEventTime(ts) {
@@ -219,6 +224,7 @@ export default {
           <input type="text" v-model="alertSearch" placeholder="Search alerts…" aria-label="Search alerts" class="activity-search" />
           <button aria-label="Clear alert search" v-if="alertSearch" class="filter-clear-btn" @click="alertSearch = ''" title="Clear search">✕</button>
         </div>
+        <p v-if="alertActionError" class="error" role="alert">{{ alertActionError }}</p>
         <p v-if="!searchedAlerts.length" class="muted">{{ alerts.length ? 'No matching alerts.' : 'No alerts.' }}</p>
         <div v-else class="activity-list-wrap">
           <div class="activity-list" ref="alertsListView" @scroll="onAlertsScroll">
@@ -279,6 +285,7 @@ export default {
           <input type="text" v-model="eventSearch" placeholder="Search events…" aria-label="Search events" class="activity-search" />
           <button aria-label="Clear event search" v-if="eventSearch" class="filter-clear-btn" @click="eventSearch = ''" title="Clear search">✕</button>
         </div>
+        <p v-if="eventsActionError" class="error" role="alert">{{ eventsActionError }}</p>
         <p v-if="!searchedEvents.length" class="muted">{{ events.length ? 'No matching events.' : 'No events yet.' }}</p>
         <div v-else class="activity-list-wrap">
           <div class="activity-list" ref="eventsListView" @scroll="onEventsScroll">

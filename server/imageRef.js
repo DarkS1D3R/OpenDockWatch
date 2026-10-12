@@ -45,6 +45,12 @@ function parseImageRef(ref) {
   return { registry, repository: path, tag: tag || (digest ? null : 'latest'), digest };
 }
 
+// localhost:5000 and the like: a registry on the Docker host's own loopback, which is only the same
+// machine as OpenDockWatch when OpenDockWatch runs there outside a container.
+function isLoopbackRegistry(registry) {
+  return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(registry);
+}
+
 // The registry host to actually talk to - Docker Hub's API does not live at docker.io.
 function registryApiHost(registry) {
   return registry === DOCKER_HUB ? 'registry-1.docker.io' : registry;
@@ -66,4 +72,4 @@ function digestsForRepo(repoDigests, parsed) {
   return out;
 }
 
-module.exports = { parseImageRef, registryApiHost, refKey, digestsForRepo, DOCKER_HUB };
+module.exports = { parseImageRef, registryApiHost, isLoopbackRegistry, refKey, digestsForRepo, DOCKER_HUB };
