@@ -38,7 +38,10 @@ FROM node:24-alpine
 
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 
-RUN apk add --no-cache openssh-client
+# apk upgrade: the node base image is rebuilt on Node releases, not Alpine security fixes, so it
+# can ship a patched-upstream package for weeks (zlib 1.3.2-r0, CVE-2026-85091). Every build
+# picks up whatever Alpine has fixed since.
+RUN apk upgrade --no-cache && apk add --no-cache openssh-client
 
 # `docker -H ssh://...` just shells out to the system `ssh` binary, so it inherits this
 # unmodified. Without it, every one of metricsCollector's ~4 docker calls per host per 5s poll
