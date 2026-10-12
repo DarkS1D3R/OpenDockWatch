@@ -126,6 +126,7 @@ test('pollHost reachability', async (t) => {
     stub(t2, {});
     await metricsCollector.pollHost(HOST);
     assert.equal(metricsCollector.getSnapshot(HOST.id).containers.length, 1);
+    assert.ok(metricsCollector.getSnapshot(HOST.id).usage, 'a good poll keeps the host usage for /overview');
     t2.mock.restoreAll();
 
     const s = stub(t2, { list: false, stat: false, info: false });
@@ -136,6 +137,7 @@ test('pollHost reachability', async (t) => {
     assert.deepEqual(snap.containers, [], 'an unreachable host has nothing on the way, unlike a slow one');
     assert.deepEqual(snap.stats, {});
     assert.equal(snap.hostInfo, null);
+    assert.equal(snap.usage, null, 'the overview must not show a down host still using CPU');
   });
 
   // The old probe answered one question with one call, so a single failing call could not be
@@ -418,6 +420,8 @@ test('pollHost writes container samples and the host row together', async (t) =>
     assert.equal(hostSample.hostId, HOST.id);
     assert.equal(hostSample.cpuPercent, 5, '20% across 4 cpus');
     assert.equal(hostSample.memUsedBytes, 256 * 1024 ** 2);
+    // GET /overview reads the same figures off the snapshot, so it agrees with the host alerts.
+    assert.deepEqual(metricsCollector.getSnapshot(HOST.id).usage, { cpuPercent: 5, memUsedBytes: 256 * 1024 ** 2 });
   });
 
   // The row is built before the write so it can go in the transaction; the alerting it feeds has
@@ -441,5 +445,6 @@ test('pollHost writes container samples and the host row together', async (t) =>
     assert.equal(s.writes[0].hostSample, null);
     assert.equal(s.writes[0].samples.length, 1);
     assert.equal(s.hostAlerts.length, 0, 'a host alert with no cpu count would divide by zero');
+    assert.equal(metricsCollector.getSnapshot(HOST.id).usage, null);
   });
 });

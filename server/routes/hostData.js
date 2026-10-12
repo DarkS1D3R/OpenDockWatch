@@ -1,13 +1,16 @@
 const express = require('express');
 const { loadHosts } = require('../hosts');
 const { requireAdmin } = require('../auth');
-const { checkHost, getHostInfo, getDiskUsage, getDiskUsageImages, getContainerInspect, maskEnvValues } = require('../docker');
+const { checkHost, getHostInfo, getDiskUsage, getDiskUsageImages, getContainerInspect, maskInspectForViewer } = require('../docker');
 // The module object for getContainerTop, so test/index.test.js can stub it without a daemon.
 const docker = require('../docker');
 const db = require('../db');
 const { computeContainerUptime, computeHostUptime } = require('../uptime');
 const { HISTORY_RANGES } = require('../historyRanges');
 const metricsCollector = require('../metricsCollector');
+const logger = require('../logger');
+const { hostDisplayName, hostOverview } = require('../overview');
+const imageUpdates = require('../imageUpdates');
 const { requireHost, requireContainerId, intParam, dockerError } = require('./middleware');
 const { containersFor, statsFor, hostHistoryFor, topologyFor, dashboardExtrasFor } = require('./dashboardData');
 
@@ -22,8 +25,7 @@ router.get('/hosts', async (req, res) => {
     hosts.map(async (h) => {
       const snapshot = metricsCollector.getSnapshot(h.id);
       if (snapshot && snapshot.ts) {
-        const name = h.name || (!h.dockerHost && snapshot.hostInfo ? snapshot.hostInfo.hostname : null) || h.id;
-        return { id: h.id, name, reachable: snapshot.reachable };
+        return { id: h.id, name: hostDisplayName(h, snapshot), reachable: snapshot.reachable };
       }
       const reachable = await checkHost(h);
       let name = h.name;
@@ -40,6 +42,32 @@ router.get('/hosts', async (req, res) => {
     })
   );
   res.json(results);
+});
+
+// The all-hosts overview: one row per configured host, memory and sqlite only - unlike /hosts above,
+// it never probes a host the collector has not polled yet; that row just reads 'pending'.
+router.get('/overview', (req, res) => {
+  res.json(
+    loadHosts().map((host) =>
+      hostOverview({
+        host,
+        snapshot: metricsCollector.getSnapshot(host.id),
+        openAlerts: db.countOpenAlerts(host.id),
+        lastReachability: db.getLastHostReachability(host.id),
+        imageUpdates: imageUpdates.countOutdated(host.id),
+      })
+    )
+  );
+});
+
+// Starts a check of every container's image on this host against its registry and answers at once:
+// with many images, or a slow registry, it can outlast the request timeout. Results land on the
+// containers' imageUpdate field, which the dashboard poll already carries. Admin-only: it reaches out.
+router.post('/hosts/:hostId/image-updates/check', requireAdmin, requireHost, (req, res) => {
+  const already = imageUpdates.isChecking(req.odwHost.id);
+  imageUpdates.checkHost(req.odwHost, { force: true });
+  logger.info('image_updates.check_requested', { user: req.session.username, host: req.odwHost.id, already });
+  res.status(202).json({ started: true });
 });
 
 router.get('/hosts/:hostId/dashboard', requireHost, async (req, res) => {
@@ -68,14 +96,14 @@ router.get('/hosts/:hostId/containers', requireHost, async (req, res) => {
 });
 
 // The viewer role means "can't change anything", not "can read every secret on every host" - and
-// Config.Env is where DB passwords and API keys live. Viewers get variable names with the values
-// masked, flagged by envMasked so the UI can say so rather than look like the values are blank.
+// Config.Env is where DB passwords and API keys live. Viewers get env names without values and no
+// healthcheck command (maskInspectForViewer), flagged so the UI can say why rather than look blank.
 router.get('/hosts/:hostId/containers/:id/inspect', requireHost, requireContainerId, async (req, res) => {
   const host = req.odwHost;
   try {
     const inspect = await getContainerInspect(host, req.params.id);
     if (req.session.role === 'admin') return res.json(inspect);
-    res.json({ ...inspect, env: maskEnvValues(inspect.env), envMasked: true });
+    res.json(maskInspectForViewer(inspect));
   } catch (err) {
     dockerError(res, err);
   }

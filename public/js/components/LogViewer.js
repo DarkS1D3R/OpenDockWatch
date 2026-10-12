@@ -16,6 +16,7 @@ import {
   appendPage,
   seekCursorFor,
 } from '../lib/logHistory.js';
+import { JUMP_PRESETS, toLocalInputValue, parseLocalInputValue, jumpError, utcOffsetLabel } from '../lib/logJump.js';
 import LogMatchPane from './LogMatchPane.js';
 
 // How little of the log body the match strip may leave behind. The body's floor, so it stays here
@@ -74,6 +75,11 @@ export default {
       // enough to clutter a half/quarter-width pane. Which one is visible is a CSS container-query
       // call on the pane's own width, but this open/closed state exists regardless of which shows.
       levelsMenuOpen: false,
+      // "Go to time": the picker's popover, its datetime-local value and why a value was refused.
+      jumpMenuOpen: false,
+      jumpValue: '',
+      jumpErrorText: null,
+      jumpPresets: JUMP_PRESETS,
       // Which matching line the search-hits box is parked on, held as that line's id rather than
       // its position - the buffer trims from the front while tailing, so a position stops meaning
       // the same line. null is "nothing picked yet", which reads as the first hit. See lib/logLines.js.
@@ -222,7 +228,8 @@ export default {
     // would jump the whole tab on every click instead of just swapping the stream underneath it.
     if (!this.embedded) {
       this.$nextTick(() => {
-        this.$el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        this.$el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
       });
     }
     document.addEventListener('click', this.onDocumentClick);
@@ -397,7 +404,7 @@ export default {
       try {
         const page = await apiGetLogHistory(this.hostId, this.containerId, { after: seekCursorFor(tsMs) }, LOG_PAGE_LINES);
         if (gen !== this._streamGen) return;
-        if (!page.lines.length) return this.seekFailed('No log lines found around that time - the log may have been rotated');
+        if (!page.lines.length) return this.seekFailed('No log lines from that time on - showing the latest instead');
         this.lines = appendPage([], page.lines, this.maxLines).lines;
         this.atBottom = false;
         // A short page means the window already reaches the present, so go live straight away.
@@ -634,10 +641,35 @@ export default {
     // Closes the compact level dropdown on an outside click - clicks on the menu itself or its
     // toggle button are excluded so ticking several levels in a row doesn't close it after each one.
     onDocumentClick(e) {
-      if (!this.levelsMenuOpen) return;
-      if (this.$refs.levelsMenuWrap && !this.$refs.levelsMenuWrap.contains(e.target)) {
+      if (this.levelsMenuOpen && this.$refs.levelsMenuWrap && !this.$refs.levelsMenuWrap.contains(e.target)) {
         this.levelsMenuOpen = false;
       }
+      if (this.jumpMenuOpen && this.$refs.jumpMenuWrap && !this.$refs.jumpMenuWrap.contains(e.target)) {
+        this.jumpMenuOpen = false;
+      }
+    },
+    // Opens on ten minutes ago, the usual question; a value typed earlier is kept.
+    toggleJumpMenu() {
+      this.jumpMenuOpen = !this.jumpMenuOpen;
+      this.jumpErrorText = null;
+      if (this.jumpMenuOpen && !this.jumpValue) this.jumpValue = toLocalInputValue(Date.now() - 10 * 60_000);
+    },
+    jumpBack(ms) {
+      this.jumpTo(Date.now() - ms);
+    },
+    jumpFromInput() {
+      this.jumpTo(parseLocalInputValue(this.jumpValue));
+    },
+    // The same path as an alert's Logs button: switch to All, then open the window at that time.
+    jumpTo(tsMs) {
+      this.jumpErrorText = jumpError(tsMs);
+      if (this.jumpErrorText) return;
+      this.jumpMenuOpen = false;
+      this.tail = 'all';
+      this.seek(tsMs);
+    },
+    utcOffset() {
+      return utcOffsetLabel(Date.now());
     },
     toggleFullscreen() {
       this.$emit('update:fullscreen', !this.fullscreen);
@@ -663,15 +695,15 @@ export default {
           <span class="log-status-badge" :class="statusBadge.cls" :title="statusBadge.title">{{ statusBadge.text }}</span>
           <div class="log-panel-controls">
           <div class="log-level-toggle log-level-toggle-full">
-            <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-            <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-            <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-            <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+            <button :class="{active: levels.error}" :aria-pressed="String(levels.error)" class="level-error" @click="toggleLevel('error')">Error</button>
+            <button :class="{active: levels.warn}" :aria-pressed="String(levels.warn)" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+            <button :class="{active: levels.info}" :aria-pressed="String(levels.info)" class="level-info" @click="toggleLevel('info')">Info</button>
+            <button :class="{active: levels.debug}" :aria-pressed="String(levels.debug)" class="level-debug" @click="toggleLevel('debug')">Debug</button>
           </div>
           <div class="log-level-toggle-compact" ref="levelsMenuWrap">
             <button
               class="small-btn"
-              :class="{ active: levelsMenuOpen }"
+              :class="{ active: levelsMenuOpen }" :aria-expanded="String(levelsMenuOpen)"
               @click="levelsMenuOpen = !levelsMenuOpen"
               title="Log level filters"
             >
@@ -679,10 +711,10 @@ export default {
             </button>
             <div v-if="levelsMenuOpen" class="log-levels-menu">
               <div class="log-level-toggle log-level-toggle-stacked">
-                <button :class="{active: levels.error}" class="level-error" @click="toggleLevel('error')">Error</button>
-                <button :class="{active: levels.warn}" class="level-warn" @click="toggleLevel('warn')">Warn</button>
-                <button :class="{active: levels.info}" class="level-info" @click="toggleLevel('info')">Info</button>
-                <button :class="{active: levels.debug}" class="level-debug" @click="toggleLevel('debug')">Debug</button>
+                <button :class="{active: levels.error}" :aria-pressed="String(levels.error)" class="level-error" @click="toggleLevel('error')">Error</button>
+                <button :class="{active: levels.warn}" :aria-pressed="String(levels.warn)" class="level-warn" @click="toggleLevel('warn')">Warn</button>
+                <button :class="{active: levels.info}" :aria-pressed="String(levels.info)" class="level-info" @click="toggleLevel('info')">Info</button>
+                <button :class="{active: levels.debug}" :aria-pressed="String(levels.debug)" class="level-debug" @click="toggleLevel('debug')">Debug</button>
               </div>
             </div>
           </div>
@@ -692,15 +724,16 @@ export default {
               <input
                 type="text"
                 v-model="filter"
+                aria-label="Filter log lines"
                 @keydown="onFilterKeydown"
                 :placeholder="regexMode ? 'Filter logs (regex)…' : 'Filter logs…'"
                 :class="{ 'filter-invalid': regexError }"
               />
-              <button v-if="filter" class="filter-clear-btn" @click="filter = ''" title="Clear filter">✕</button>
+              <button aria-label="Clear filter" v-if="filter" class="filter-clear-btn" @click="filter = ''" title="Clear filter">✕</button>
             </div>
-            <button
+            <button aria-label="Treat filter text as a regular expression"
               class="small-btn regex-toggle-btn"
-              :class="{ active: regexMode }"
+              :class="{ active: regexMode }" :aria-pressed="String(regexMode)"
               @click="regexMode = !regexMode"
               title="Treat filter text as a regular expression"
             >
@@ -708,21 +741,45 @@ export default {
             </button>
             <span v-if="regexError" class="filter-error-text">{{ regexError }}</span>
             <div v-else-if="searchActive" class="search-hits-box">
-              <button class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
+              <button aria-label="Previous match (Shift+Enter or ↑)" class="search-hits-btn" @click="prevMatch" :disabled="!matchLines.length" title="Previous match (Shift+Enter or ↑)">▲</button>
               <span class="search-hits-count">{{ matchLines.length ? activeHitIndex + 1 : 0 }} / {{ matchLines.length }}</span>
-              <button class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
+              <button aria-label="Next match (Enter or ↓)" class="search-hits-btn" @click="nextMatch" :disabled="!matchLines.length" title="Next match (Enter or ↓)">▼</button>
             </div>
             <button
               v-if="!multiPane"
               class="small-btn"
-              :class="{ active: showMatchPane }"
+              :class="{ active: showMatchPane }" :aria-pressed="String(showMatchPane)"
               @click="showMatchPane = !showMatchPane"
               title="List every matching line in a strip below - the log itself stays unfiltered, so clicking a match jumps to it in context"
             >
               ☰ <span class="btn-label">Matches</span>
             </button>
           </div>
-          <select :value="tail" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
+          <div class="log-jump-wrap" ref="jumpMenuWrap">
+            <button
+              class="small-btn"
+              :class="{ active: jumpMenuOpen }" :aria-expanded="String(jumpMenuOpen)"
+              @click="toggleJumpMenu"
+              title="Open the log at a moment in the past - ten minutes before a crash, say"
+            >
+              <span class="btn-icon">⏱</span> <span class="btn-label">Go to</span>
+            </button>
+            <div v-if="jumpMenuOpen" class="log-jump-menu" @keydown.escape="jumpMenuOpen = false">
+              <div class="log-jump-presets">
+                <button v-for="p in jumpPresets" :key="p.label" class="small-btn" @click="jumpBack(p.ms)">{{ p.label }}</button>
+              </div>
+              <div class="log-jump-row">
+                <label class="log-jump-field">
+                  From
+                  <input type="datetime-local" step="1" v-model="jumpValue" @keydown.enter="jumpFromInput" />
+                </label>
+                <button class="small-btn" @click="jumpFromInput">Go</button>
+              </div>
+              <div v-if="jumpErrorText" class="error small" role="alert">{{ jumpErrorText }}</div>
+              <div class="muted small">Your local time ({{ utcOffset() }}). Opens a minute before it; scroll either way from there, or ↓ Latest to go live.</div>
+            </div>
+          </div>
+          <select :value="tail" aria-label="Lines to load" @change="changeTail($event.target.value === 'all' ? 'all' : Number($event.target.value))" title="How many lines to load - All loads 10000, then older pages as you scroll up">
             <option :value="1000">1000</option>
             <option :value="5000">5000</option>
             <option :value="10000">10000</option>
@@ -732,7 +789,7 @@ export default {
           <button class="small-btn log-download-btn" @click="downloadLogs" title="Download the currently selected tail as a text file"><span class="btn-icon">⬇</span> <span class="btn-label">Download</span></button>
           <button
             class="small-btn log-pause-btn"
-            :class="{ active: paused }"
+            :class="{ active: paused }" :aria-pressed="String(paused)"
             @click="togglePause"
             :title="paused ? 'Paused - new lines are held until you resume (space)' : 'Pause the log - new lines are held rather than dropped (space)'"
           >
@@ -740,7 +797,7 @@ export default {
           </button>
           <button
             class="small-btn"
-            :class="{ active: showTimestamps }"
+            :class="{ active: showTimestamps }" :aria-pressed="String(showTimestamps)"
             @click="showTimestamps = !showTimestamps"
             title="Toggle the docker timestamp shown at the start of each line"
           >
@@ -752,7 +809,7 @@ export default {
           <button
             v-if="!embedded"
             class="small-btn"
-            :class="{ active: wrap }"
+            :class="{ active: wrap }" :aria-pressed="String(wrap)"
             @click="$emit('update:wrap', !wrap)"
             :title="wrap ? 'Wrapping long lines - turn off to scroll sideways instead' : 'Not wrapping - long lines scroll sideways'"
           >
@@ -761,7 +818,7 @@ export default {
           <template v-if="multiPane">
             <button
               class="small-btn"
-              :class="{ active: syncEnabled }"
+              :class="{ active: syncEnabled }" :aria-pressed="String(syncEnabled)"
               @click="$emit('toggle-sync')"
               :title="syncEnabled ? 'Synced - scroll it to move the other open panes, or turn this off to scroll it independently' : 'Not synced - scrolling this pane does not move, or get moved by, the others'"
             >
@@ -771,13 +828,15 @@ export default {
               class="log-pane-main-btn"
               :class="{ active: isMain }"
               @click="$emit('set-main')"
+              :aria-label="isMain ? 'Main pane - the others follow it' : 'Make this the main pane'"
+              :aria-pressed="String(isMain)"
               :title="isMain ? 'This is the pane the others follow when synced - click to unset' : 'Make this the pane the others follow when synced'"
             >
               {{ isMain ? '★' : '☆' }}
             </button>
           </template>
             <button v-if="!embedded" @click="$emit('close')">Close</button>
-            <button v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
+            <button aria-label="Close this pane" v-else-if="multiPane" class="small-btn log-pane-close-btn" @click="$emit('close')" title="Close this pane">
               ✕
             </button>
           </div>

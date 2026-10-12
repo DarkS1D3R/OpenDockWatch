@@ -16,15 +16,29 @@ const {
   refreshIconHints,
   iconHintFor,
   iconOverrideFromLabel,
+  urlFromLabel,
   computeRate,
   computeIoRates,
   parseDiskUsageImages,
   maskEnvValues,
+  maskInspectForViewer,
+  engineFromComponents,
+  isSshHost,
+  parseHealthStatuses,
+  healthTransitions,
+  refreshPodmanHealth,
+  inspectFound,
+  getContainerImages,
+  trackedHealth,
+  markHealthDirty,
+  parseHealthcheck,
   containerCounts,
   dockerCommandError,
   createTailBuffer,
   mergeLogsBefore,
   mergeLogsAfter,
+  logLineMatches,
+  mergeLogSearch,
   parseResourceLimits,
   parseTop,
   DISK_USAGE_TIMEOUT_MS,
@@ -518,6 +532,111 @@ test('parseDiskUsageImages', async (t) => {
   });
 });
 
+// The shape `docker inspect` returns for a postgres container with a compose healthcheck.
+function inspectWithHealth(overrides = {}) {
+  return {
+    Config: {
+      Healthcheck: { Test: ['CMD-SHELL', 'pg_isready -U shop'], Interval: 5e9, Timeout: 3e9, Retries: 5 },
+    },
+    State: {
+      Health: {
+        Status: 'unhealthy',
+        FailingStreak: 2,
+        Log: [
+          {
+            Start: '2026-10-12T00:05:20.862747223+02:00',
+            End: '2026-10-12T00:05:20.915959721+02:00',
+            ExitCode: 0,
+            Output: '/var/run/postgresql:5432 - accepting connections\n',
+          },
+          {
+            Start: '2026-10-12T00:05:25.916455022+02:00',
+            End: '2026-10-12T00:05:28.916455022+02:00',
+            ExitCode: -1,
+            Output: 'Health check exceeded timeout (3s)',
+          },
+          {
+            Start: '2026-10-12T00:05:31.970792790+02:00',
+            End: '2026-10-12T00:05:32.046690157+02:00',
+            ExitCode: 2,
+            Output: '/var/run/postgresql:5432 - no response\n',
+          },
+        ],
+      },
+    },
+    ...overrides,
+  };
+}
+
+test('parseHealthcheck', async (t) => {
+  await t.test('reads the configured check and its results, newest first, in milliseconds', () => {
+    const hc = parseHealthcheck(inspectWithHealth());
+    assert.equal(hc.status, 'unhealthy');
+    assert.equal(hc.failingStreak, 2);
+    assert.equal(hc.command, 'pg_isready -U shop');
+    assert.equal(hc.intervalMs, 5000);
+    assert.equal(hc.timeoutMs, 3000);
+    assert.equal(hc.retries, 5);
+    assert.deepEqual(
+      hc.log.map((e) => e.exitCode),
+      [2, -1, 0]
+    );
+    assert.equal(hc.log[0].output, '/var/run/postgresql:5432 - no response', 'trailing newline trimmed');
+  });
+
+  await t.test('fills in docker defaults for the fields a HEALTHCHECK left out', () => {
+    const hc = parseHealthcheck(inspectWithHealth({ Config: { Healthcheck: { Test: ['CMD', 'curl', '-f', 'http://localhost/'] } } }));
+    assert.equal(hc.command, 'curl -f http://localhost/');
+    assert.equal(hc.intervalMs, 30_000);
+    assert.equal(hc.timeoutMs, 30_000);
+    assert.equal(hc.startPeriodMs, 0);
+    assert.equal(hc.retries, 3);
+  });
+
+  await t.test('is null with no healthcheck, or one disabled with NONE', () => {
+    assert.equal(parseHealthcheck({ Config: {}, State: {} }), null);
+    assert.equal(parseHealthcheck({ Config: { Healthcheck: { Test: ['NONE'] } }, State: {} }), null);
+  });
+
+  await t.test('a configured check with no results yet has an empty log', () => {
+    const hc = parseHealthcheck({
+      Config: { Healthcheck: { Test: ['CMD-SHELL', 'true'] } },
+      State: { Health: { Status: 'starting', FailingStreak: 0, Log: null } },
+    });
+    assert.equal(hc.status, 'starting');
+    assert.deepEqual(hc.log, []);
+  });
+
+  await t.test('caps a long output', () => {
+    const raw = inspectWithHealth();
+    raw.State.Health.Log = [{ Start: 'a', End: 'b', ExitCode: 1, Output: 'x'.repeat(10_000) }];
+    assert.equal(parseHealthcheck(raw).log[0].output.length, 4097);
+  });
+});
+
+test('maskInspectForViewer', async (t) => {
+  const inspect = { env: ['DB_PASSWORD=hunter2'], healthcheck: parseHealthcheck(inspectWithHealth()) };
+
+  await t.test('withholds the healthcheck command but keeps its results', () => {
+    const out = maskInspectForViewer(inspect);
+    assert.equal(out.healthcheck.command, null);
+    assert.equal(out.healthcheck.commandMasked, true);
+    assert.equal(out.healthcheck.log.length, 3);
+    assert.ok(!JSON.stringify(out).includes('pg_isready'));
+  });
+
+  await t.test('masks env values as before, and leaves the original untouched', () => {
+    const out = maskInspectForViewer(inspect);
+    assert.deepEqual(out.env, ['DB_PASSWORD=••••••']);
+    assert.equal(out.envMasked, true);
+    assert.equal(inspect.healthcheck.command, 'pg_isready -U shop');
+  });
+
+  await t.test('a container with no healthcheck stays null', () => {
+    assert.equal(maskInspectForViewer({ env: [], healthcheck: null }).healthcheck, null);
+  });
+});
+
 test('maskEnvValues', async (t) => {
   await t.test('keeps the variable name and hides the value', () => {
     assert.deepEqual(maskEnvValues(['POSTGRES_PASSWORD=hunter2']), ['POSTGRES_PASSWORD=••••••']);
@@ -642,6 +761,15 @@ test('iconOverrideFromLabel', () => {
   assert.equal(iconOverrideFromLabel('redis'), 'redis');
   assert.equal(iconOverrideFromLabel(' Redis '), 'redis');
   for (const absent of [undefined, null, '', '   ']) assert.equal(iconOverrideFromLabel(absent), null);
+});
+
+test('urlFromLabel', () => {
+  assert.equal(urlFromLabel('https://grafana.example.com:3000/d/x'), 'https://grafana.example.com:3000/d/x');
+  assert.equal(urlFromLabel('  http://localhost:8080  '), 'http://localhost:8080');
+  // Anything but http(s) would run or navigate somewhere unintended from an href.
+  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://host', 'not a url', '//host/x', '', '  ', undefined, null]) {
+    assert.equal(urlFromLabel(bad), null, String(bad));
+  }
 });
 
 // metricsCollector fires this every poll without awaiting it, so overlap is the normal case on a slow host.
@@ -812,6 +940,74 @@ test('mergeLogsAfter', async (t) => {
   });
 });
 
+test('logLineMatches', async (t) => {
+  const line = (text) => `2026-01-01T00:00:01.000000000Z ${text}`;
+
+  await t.test('is a case-insensitive substring match on the message', () => {
+    assert.equal(logLineMatches(line('GET /orders req=AbC123 200'), 'abc123'), true);
+    assert.equal(logLineMatches(line('GET /orders req=xyz 200'), 'abc123'), false);
+  });
+
+  await t.test("never matches the line's own docker timestamp", () => {
+    assert.equal(logLineMatches(line('started'), '2026-01-01'), false);
+    assert.equal(logLineMatches(line('deploy 2026-01-01 done'), '2026-01-01'), true);
+  });
+
+  await t.test('sees through ANSI colour codes, which sit between the letters in the raw text', () => {
+    assert.equal(logLineMatches(line('\x1b[31mERR\x1b[0mOR timeout'), 'error timeout'), true);
+  });
+});
+
+test('mergeLogSearch', async (t) => {
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+  const ok = (containerName, lines, extra = {}) => ({
+    containerId: `${containerName}-id`,
+    containerName,
+    lines,
+    matched: lines.length,
+    ...extra,
+  });
+
+  await t.test("puts every container's matches on one timeline, tagged with where each came from", () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1'), line(4, 'a2')]), ok('worker', [line(2, 'w1'), line(3, 'w2')])], 100);
+    assert.deepEqual(
+      out.matches.map((m) => `${m.containerName}:${m.line.slice(-2)}`),
+      ['api:a1', 'worker:w1', 'worker:w2', 'api:a2']
+    );
+    assert.equal(out.matched, 4);
+    assert.equal(out.truncated, false);
+  });
+
+  await t.test('keeps the newest `limit` across all containers and says it cut some', () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1'), line(4, 'a2')]), ok('worker', [line(2, 'w1'), line(3, 'w2')])], 2);
+    assert.deepEqual(
+      out.matches.map((m) => m.line.slice(-2)),
+      ['w2', 'a2']
+    );
+    assert.equal(out.truncated, true);
+  });
+
+  await t.test('a container that capped its own matches makes the result truncated even under the overall limit', () => {
+    const out = mergeLogSearch([ok('api', [line(1, 'a1')], { matched: 40 })], 100);
+    assert.equal(out.matched, 40);
+    assert.equal(out.truncated, true);
+  });
+
+  await t.test('reports failures and timeouts beside the matches rather than dropping the rest', () => {
+    const out = mergeLogSearch(
+      [
+        ok('api', [line(1, 'a1')]),
+        { containerId: 'db-id', containerName: 'db', error: 'no such container' },
+        ok('worker', [line(2, 'w1')], { timedOut: true }),
+      ],
+      100
+    );
+    assert.equal(out.matches.length, 2);
+    assert.deepEqual(out.failed, [{ containerId: 'db-id', containerName: 'db', error: 'no such container' }]);
+    assert.deepEqual(out.timedOut, ['worker']);
+  });
+});
+
 test('parseResourceLimits', async (t) => {
   await t.test('reads memory, --cpus and pids when set', () => {
     assert.deepEqual(parseResourceLimits({ Memory: 536870912, NanoCpus: 1500000000, PidsLimit: 200 }), {
@@ -894,5 +1090,150 @@ test('parseTop', async (t) => {
     const top = parseTop('PID CMD\n1 ' + 'x'.repeat(5000));
     assert.ok(top.rows[0][1].length <= 1001);
     assert.ok(top.rows[0][1].endsWith('…'));
+  });
+});
+
+test('engineFromComponents', async (t) => {
+  await t.test('Podman lists itself as the Podman Engine component', () => {
+    assert.equal(engineFromComponents('Podman Engine|Conmon|OCI Runtime (crun)|'), 'podman');
+  });
+  await t.test('Docker, or nothing readable, is docker', () => {
+    assert.equal(engineFromComponents('Engine|containerd|runc|docker-init|'), 'docker');
+    assert.equal(engineFromComponents(''), 'docker');
+    assert.equal(engineFromComponents(undefined), 'docker');
+  });
+});
+
+test('isSshHost: only ssh:// pays a handshake - a unix:// socket is local', () => {
+  assert.equal(isSshHost({ dockerHost: 'ssh://deploy@prod.example.com' }), true);
+  assert.equal(isSshHost({ dockerHost: 'unix:///run/podman/podman.sock' }), false);
+  assert.equal(isSshHost({ dockerHost: null }), false);
+  assert.equal(isSshHost(null), false);
+});
+
+test('Podman health', async (t) => {
+  await t.test('parseHealthStatuses keeps containers that have a healthcheck', () => {
+    const raw =
+      'e67e2c16ce972ed4d1c6609cef4a3f64\thealthy\n6de8a26eac183e2ac25df61f33f6033\tunhealthy\nc145ca0bddaf55f8f71825da1057a5c8\t\n';
+    assert.deepEqual(
+      [...parseHealthStatuses(raw)],
+      [
+        ['e67e2c16ce97', 'healthy'],
+        ['6de8a26eac18', 'unhealthy'],
+      ]
+    );
+  });
+
+  await t.test('healthTransitions announces a change to healthy or unhealthy, not a first sighting or starting', () => {
+    const before = new Map([
+      ['a', 'starting'],
+      ['b', 'healthy'],
+      ['c', 'unhealthy'],
+      ['d', 'healthy'],
+    ]);
+    const after = new Map([
+      ['a', 'unhealthy'],
+      ['b', 'healthy'],
+      ['c', 'healthy'],
+      ['d', 'starting'],
+      ['e', 'unhealthy'],
+    ]);
+    assert.deepEqual(healthTransitions(before, after), [
+      { id: 'a', status: 'unhealthy' },
+      { id: 'c', status: 'healthy' },
+    ]);
+  });
+
+  const host = { id: 'pm-health', dockerHost: 'unix:///run/podman/podman.sock' };
+  const running = (id) => ({ id, state: 'running' });
+
+  await t.test('refreshPodmanHealth reads health once per running set, and again when marked dirty', async () => {
+    const calls = [];
+    let reply = 'aaaaaaaaaaaa\tstarting\n';
+    const exec = async (args) => (calls.push(args), reply);
+    const changes = [];
+    const opts = { exec, engine: 'podman' };
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa'), { id: 'bbbbbbbbbbbb', state: 'exited' }], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(-1), ['aaaaaaaaaaaa'], 'only running containers are inspected');
+    assert.ok(
+      calls[0].includes('{{.Id}}\t{{with index .State "Health"}}{{.Status}}{{end}}'),
+      'a missing Health key must not fail the batch'
+    );
+    assert.equal(trackedHealth(host.id, 'aaaaaaaaaaaa'), 'starting');
+
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa')], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 1, 'same running set and nothing new: no inspect');
+
+    markHealthDirty(host.id);
+    reply = 'aaaaaaaaaaaa\tunhealthy\n';
+    await refreshPodmanHealth(host, [running('aaaaaaaaaaaa')], (c) => changes.push(c), opts);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(changes, [{ id: 'aaaaaaaaaaaa', status: 'unhealthy' }]);
+    assert.equal(trackedHealth(host.id, 'aaaaaaaaaaaa'), 'unhealthy');
+  });
+
+  await t.test('a Docker host is never inspected for health - its list already carries it', async () => {
+    let called = false;
+    await refreshPodmanHealth({ id: 'dk-health' }, [running('cccccccccccc')], () => {}, {
+      exec: async () => ((called = true), ''),
+      engine: 'docker',
+    });
+    assert.equal(called, false);
+  });
+
+  await t.test('a container removed mid-batch costs only itself, not the whole read', async () => {
+    const h = { id: 'pm-health-gone' };
+    const exec = async () => {
+      throw Object.assign(new Error('Command failed'), {
+        stdout: 'eeeeeeeeeeee\tunhealthy\n',
+        stderr: 'Error: no such object: ffffffffffff\n',
+      });
+    };
+    await refreshPodmanHealth(h, [running('eeeeeeeeeeee'), running('ffffffffffff')], () => {}, { exec, engine: 'podman' });
+    assert.equal(trackedHealth(h.id, 'eeeeeeeeeeee'), 'unhealthy');
+  });
+
+  await t.test('a failed inspect leaves the host dirty, so the next poll tries again', async () => {
+    const h = { id: 'pm-health-fail' };
+    let attempts = 0;
+    const exec = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('daemon busy');
+      return 'dddddddddddd\thealthy\n';
+    };
+    await assert.rejects(refreshPodmanHealth(h, [running('dddddddddddd')], () => {}, { exec, engine: 'podman' }));
+    await refreshPodmanHealth(h, [running('dddddddddddd')], () => {}, { exec, engine: 'podman' });
+    assert.equal(attempts, 2);
+    assert.equal(trackedHealth(h.id, 'dddddddddddd'), 'healthy');
+  });
+});
+
+test('inspectFound', async (t) => {
+  const failing = (fields) => async () => {
+    throw Object.assign(new Error('Command failed'), fields);
+  };
+
+  await t.test('keeps what docker printed when the only problem is an object that is gone', async () => {
+    // Verified against a real daemon: the found container's line on stdout, exit 1, this on stderr.
+    const out = await inspectFound(failing({ stdout: 'aaaa\n', stderr: 'error: no such object: deadbeef0000\n' }), []);
+    assert.equal(out, 'aaaa\n');
+    const images = await inspectFound(
+      failing({ stdout: 'sha256:1\n', stderr: 'Error response from daemon: No such image: sha256:0\n' }),
+      []
+    );
+    assert.equal(images, 'sha256:1\n');
+  });
+
+  await t.test('still throws for anything else: no output, a timeout, or another error', async () => {
+    await assert.rejects(inspectFound(failing({ stdout: '', stderr: 'Error: No such object: x' }), []));
+    await assert.rejects(inspectFound(failing({ stdout: 'aaaa\n', stderr: 'no such object: x', timedOut: true }), []));
+    await assert.rejects(inspectFound(failing({ stdout: 'aaaa\n', stderr: 'permission denied' }), []));
+  });
+
+  await t.test('getContainerImages keeps the containers it did find', async () => {
+    const exec = failing({ stdout: 'aaaaaaaaaaaa1111\tsha256:img\tnginx:alpine\n', stderr: 'error: no such object: bbbbbbbbbbbb\n' });
+    const images = await getContainerImages({ id: 'h' }, ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], exec);
+    assert.deepEqual([...images.keys()], ['aaaaaaaaaaaa']);
   });
 });

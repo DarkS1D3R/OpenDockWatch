@@ -9,6 +9,7 @@ const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
 const alerts = require('./alerts');
+const eventWatcher = require('./eventWatcher');
 const logger = require('./logger');
 
 const POLL_MS = 5000;
@@ -27,7 +28,7 @@ const DISK_DUTY_FACTOR = 4;
 const DISK_BACKOFF_STEPS = 6;
 const DISK_BACKOFF_MAX_MS = 3_600_000;
 
-const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, reachable, ts }
+const snapshots = new Map(); // hostId -> { containers, stats, hostInfo, diskUsage, usage, reachable, ts }
 const hostStates = new Map(); // hostId -> { pollState, diskState } - lets addHost/removeHost target one host
 const localCpuTimesPrev = new Map(); // hostId -> previous hostUsage.sampleCpuTimes() sample, for computeCpuPercent's delta
 const globalTimers = [];
@@ -62,6 +63,12 @@ function takePollStats() {
   const out = pollStats;
   pollStats = { lastMs: out.lastMs, maxMs: 0, slow: 0 };
   return out;
+}
+
+// Non-destructive read for /metrics: takePollStats resets maxMs, so a scrape using it would zero
+// the worst-poll figure the vitals line is waiting to report.
+function peekPollStats() {
+  return { ...pollStats };
 }
 
 function getLastPollCompletedTs() {
@@ -99,6 +106,7 @@ function markUnreachable(snapshot, host, wasReachable) {
   snapshot.containers = [];
   snapshot.stats = {};
   snapshot.hostInfo = null;
+  snapshot.usage = null;
   snapshot.statsTs = undefined;
   // On the transition only, never per poll: the alert says "became unreachable" and stops there,
   // but "timed out after 20000ms" and "Permission denied (publickey)" call for entirely different
@@ -109,6 +117,7 @@ function markUnreachable(snapshot, host, wasReachable) {
   alerts.handleHostReachability(host.id, host.name || host.id, false, wasReachable);
 }
 
+const healthFailing = new Set(); // hostIds whose Podman health read is failing - see pollHost
 async function pollHost(host) {
   const prev = snapshots.get(host.id);
   // No in-memory prev on a cold start (process restart, or a host just added) - defaulting to true
@@ -119,7 +128,7 @@ async function pollHost(host) {
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
   // Docker at all - null for a remote host (hostUsage.js). Persisted into the same host_metrics
   // row as the Docker cpuPercent/memUsedBytes so one history fetch covers both, server-persisted.
-  const localSystemUsage = host.dockerHost ? null : sampleLocalSystemUsage(host.id);
+  const localSystemUsage = docker.isSshHost(host) ? null : sampleLocalSystemUsage(host.id);
 
   // Keep serving the previous poll's containers/stats/hostInfo until fresh values are ready,
   // rather than clearing them up front - the docker calls below take a noticeable fraction of a
@@ -129,6 +138,7 @@ async function pollHost(host) {
     stats: prev ? prev.stats : {},
     hostInfo: prev ? prev.hostInfo : null,
     diskUsage: prev ? prev.diskUsage : null,
+    usage: prev ? prev.usage : null,
     statsTs: prev ? prev.statsTs : undefined,
     reachable: wasReachable,
     ts: Date.now(),
@@ -201,6 +211,19 @@ async function pollHost(host) {
     // Not awaited: an inspect only when the container set changed, and a missing hint only costs a
     // badge its runtime logo for one poll - never worth delaying or failing the poll over.
     docker.refreshIconHints(host, containers).catch(() => {});
+    // Podman only, same not-awaited shape: health its list and events leave out. See server/CLAUDE.md.
+    const byId = new Map(containers.map((c) => [c.id, c]));
+    docker
+      .refreshPodmanHealth(host, containers, ({ id, status }) => {
+        if (byId.has(id)) eventWatcher.ingestEvent(eventWatcher.healthTransitionEvent(host, byId.get(id), status));
+      })
+      .then(() => healthFailing.delete(host.id))
+      .catch((err) => {
+        // Retried every poll while it fails, so it is logged once per run of failures, not per poll.
+        if (healthFailing.has(host.id)) return;
+        healthFailing.add(host.id);
+        logger.warn('metrics.podman_health.failed', { host: host.id, error: err.message });
+      });
 
     const ts = Date.now();
     snapshot.statsTs = ts;
@@ -265,6 +288,8 @@ async function pollHost(host) {
         : null;
 
     db.insertMetrics(samples, hostSample);
+    // The same figures the host CPU/RAM alerts judge, kept for GET /overview's one row per host.
+    snapshot.usage = hostSample ? { cpuPercent: hostSample.cpuPercent, memUsedBytes: memSum } : null;
     // One settings+rules read for the whole poll rather than one per container - resolved lazily so
     // a host whose containers are all label-disabled still reads nothing. See alerts.alertContext.
     const anyAlerting = alertSamples.some((s) => !s.alertsDisabled);
@@ -466,6 +491,7 @@ module.exports = {
   getLastPollCompletedTs,
   getHostCount,
   takePollStats,
+  peekPollStats,
   // Exported for test/metricsCollector.test.js only: reachability is now derived from which of
   // the poll's own calls fail, and the branches that follow from that (the probe gate, the
   // exactly-once alert, what the snapshot keeps) are worth asserting directly.

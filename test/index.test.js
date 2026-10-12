@@ -30,12 +30,14 @@ process.env.OPENDOCKWATCH_DB_PATH = TEST_DB_PATH;
 
 const request = require('supertest');
 const { app, api, requestTimeout, requireHost, clientErrorStatus, slowThresholdFor } = require('../server/index');
+const { loggableUrl } = require('../server/routes/middleware');
 const { loadHosts } = require('../server/hosts');
 const express = require('express');
 const { requireAdmin } = require('../server/auth');
 const db = require('../server/db');
 const docker = require('../server/docker');
 const metricsCollector = require('../server/metricsCollector');
+const imageUpdates = require('../server/imageUpdates');
 
 test.after(() => {
   db.close();
@@ -224,8 +226,87 @@ test('container-rules routes reject an unusable id rather than no-op with a 200'
   });
 });
 
+test('webhook routes', async (t) => {
+  const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+  const body = {
+    name: 'Ops phone',
+    url: 'ntfy://ntfy.sh/ops-topic',
+    rules: ['host_unreachable'],
+    minSeverity: 'critical',
+    notifyRecovery: true,
+  };
+
+  // A GET, so the structural admin-gating walk at the top of this file does not cover it - and the
+  // list carries every route's URL, tokens included.
+  await t.test('a viewer cannot read the route list', async () => {
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/settings/webhook-routes')).status, 403);
+  });
+
+  await t.test('rejects a bad name, URL, rule, severity, host or flag', async () => {
+    for (const bad of [
+      { name: '' },
+      { name: 'x'.repeat(61) },
+      { url: 'ftp://example.com' },
+      { url: 'not a url' },
+      { rules: ['no_such_rule'] },
+      { rules: 'host_cpu' },
+      { minSeverity: 'info' },
+      { hostId: '__no_such_host__' },
+      { notifyRecovery: 'yes' },
+      { delayMinutes: -1 },
+      { delayMinutes: 2000 },
+      { delayMinutes: '30' },
+      { format: 'teams' },
+    ]) {
+      const res = await admin.post('/api/settings/webhook-routes').send({ ...body, ...bad });
+      assert.equal(res.status, 400, `accepted ${JSON.stringify(bad)}`);
+    }
+  });
+
+  await t.test('round-trips add, update and delete, and 400/404s an unusable id', async () => {
+    const added = await admin.post('/api/settings/webhook-routes').send(body);
+    assert.equal(added.status, 200);
+    const route = added.body[added.body.length - 1];
+    assert.equal(route.name, 'Ops phone');
+    assert.deepEqual(route.rules, ['host_unreachable']);
+    assert.equal(route.enabled, true, 'a new route is on unless said otherwise');
+    assert.equal(route.delayMinutes, 0, 'a new route sends at once unless given a delay');
+    const updated = await admin.put(`/api/settings/webhook-routes/${route.id}`).send({ ...body, enabled: false, delayMinutes: 45 });
+    assert.equal(updated.body.find((r) => r.id === route.id).enabled, false);
+    assert.equal(updated.body.find((r) => r.id === route.id).delayMinutes, 45);
+    assert.equal((await admin.put('/api/settings/webhook-routes/abc').send(body)).status, 400);
+    assert.equal((await admin.put('/api/settings/webhook-routes/999999').send(body)).status, 404);
+    assert.equal((await admin.post('/api/settings/webhook-routes/999999/test')).status, 404);
+    assert.equal((await admin.delete(`/api/settings/webhook-routes/${route.id}`)).status, 200);
+    assert.equal((await admin.delete(`/api/settings/webhook-routes/${route.id}`)).status, 404);
+  });
+
+  await t.test('the main webhook takes notifyRecovery and mode, and validates both', async () => {
+    assert.equal((await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: 'on' })).status, 400);
+    assert.equal((await admin.put('/api/settings/webhook').send({ url: '', mode: 'some' })).status, 400);
+    for (const repeatMinutes of [-1, 1.5, '30', 1441]) {
+      assert.equal(
+        (await admin.put('/api/settings/webhook').send({ url: '', repeatMinutes })).status,
+        400,
+        `repeatMinutes ${repeatMinutes}`
+      );
+    }
+    const saved = await admin.put('/api/settings/webhook').send({ url: '', notifyRecovery: true, mode: 'unmatched', repeatMinutes: 30 });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.notifyRecovery, true);
+    assert.equal(saved.body.mode, 'unmatched');
+    assert.equal(saved.body.repeatMinutes, 30);
+    const kept = await admin.put('/api/settings/webhook').send({ url: '' });
+    assert.equal(kept.body.repeatMinutes, 30, 'an older client saving only the URL leaves reminders alone');
+    const cleared = await admin.delete('/api/settings/webhook');
+    assert.equal(cleared.body.mode, 'all');
+    assert.equal(cleared.body.repeatMinutes, 0);
+  });
+});
+
 test('default view (landing tab) setting', async (t) => {
-  await t.test('rejects a value outside list/flow/logs/activity', async () => {
+  await t.test('rejects a value outside the valid views', async () => {
     const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
     assert.equal((await agent.put('/api/settings/default-view').send({ defaultView: 'nonsense' })).status, 400);
   });
@@ -243,6 +324,16 @@ test('default view (landing tab) setting', async (t) => {
     const cleared = await admin.delete('/api/settings/default-view');
     assert.deepEqual(cleared.body, { defaultView: 'list', overridden: false });
     assert.equal((await admin.get('/api/session')).body.defaultView, 'list');
+  });
+
+  await t.test('the Hosts overview can be the landing tab', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.deepEqual((await admin.put('/api/settings/default-view').send({ defaultView: 'overview' })).body, {
+      defaultView: 'overview',
+      overridden: true,
+    });
+    assert.equal((await admin.get('/api/session')).body.defaultView, 'overview');
+    await admin.delete('/api/settings/default-view');
   });
 
   await t.test('only an admin can change it, though any role can read the resolved value via /session', async () => {
@@ -298,6 +389,16 @@ test('slowThresholdFor', async (t) => {
     }
     assert.ok(slowThresholdFor('/hosts/local/disk-usage') > 5000);
     assert.ok(slowThresholdFor('/hosts/local/disk-usage/images') > 5000);
+    assert.ok(slowThresholdFor('/hosts/local/compose/shop/logs/search') > 30_000, 'a log search runs to its own 30s deadline');
+  });
+
+  await t.test('request lines mask a log search query, which is often a request id or an email', () => {
+    assert.equal(
+      loggableUrl({ originalUrl: '/api/hosts/h/compose/shop/logs/search?q=jane%40example.com&sinceMinutes=60' }),
+      '/api/hosts/h/compose/shop/logs/search?q=…&sinceMinutes=60'
+    );
+    assert.equal(loggableUrl({ originalUrl: '/api/x?sinceMinutes=60&q=secret' }), '/api/x?sinceMinutes=60&q=…');
+    assert.equal(loggableUrl({ originalUrl: '/api/hosts/h/containers?fresh=1' }), '/api/hosts/h/containers?fresh=1');
   });
 
   await t.test('a route that merely mentions a slow word is not exempted', () => {
@@ -494,6 +595,127 @@ test('GET /hosts/:hostId/containers/:id/logs/history', async (t) => {
     const base = `/api/hosts/${hostId}/containers/abc/logs/history`;
     assert.equal((await admin.get(`${base}?before=${BEFORE}&after=${BEFORE}`)).status, 400);
     assert.equal((await admin.get(`${base}?limit=5`)).status, 400);
+  });
+});
+
+test('GET /hosts/:hostId/compose/:project/logs/search', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const CONTAINERS = [
+    { id: 'apiapiapiapi', name: 'shop-api', composeProject: 'shop' },
+    { id: 'workerworker', name: 'shop-worker', composeProject: 'shop' },
+    { id: 'otherotherot', name: 'other-thing', composeProject: 'other' },
+  ];
+  const line = (sec, text) => `2026-01-01T00:00:${String(sec).padStart(2, '0')}.000000000Z ${text}`;
+  const url = (qs) => `/api/hosts/${hostId}/compose/shop/logs/search?${qs}`;
+
+  await t.test('400s without a query, or with one too long to be a real search', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(url(''))).status, 400);
+    assert.equal((await admin.get(url('q=%20%20'))).status, 400);
+    assert.equal((await admin.get(url(`q=${'x'.repeat(201)}`))).status, 400);
+  });
+
+  await t.test('404s for an unknown host and for a project no container belongs to', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.get(`/api/hosts/${FAKE_HOST_ID}/compose/shop/logs/search?q=x`)).status, 404);
+    assert.equal((await admin.get(`/api/hosts/${hostId}/compose/nonexistent/logs/search?q=x`)).status, 404);
+  });
+
+  await t.test("searches only the project's containers and merges them into one timeline", async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const calls = [];
+    t2.mock.method(docker, 'searchLogs', async (host, id, opts) => {
+      calls.push({ id, ...opts });
+      const lines = id === 'apiapiapiapi' ? [line(1, 'req=42 in'), line(3, 'req=42 out')] : [line(2, 'job req=42')];
+      return { lines, matched: lines.length, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const before = Date.now();
+    const res = await admin.get(url('q=req%3D42&sinceMinutes=15'));
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls.map((c) => c.id).sort(), ['apiapiapiapi', 'workerworker']);
+    for (const c of calls) {
+      assert.equal(c.query, 'req=42');
+      assert.equal(c.limit, 500);
+      const sinceMs = Date.parse(c.since);
+      assert.ok(sinceMs >= before - 15 * 60_000 - 1000 && sinceMs <= Date.now() - 15 * 60_000 + 1000, 'since is sinceMinutes ago');
+      assert.ok(c.deadline > Date.now(), 'every container shares a future deadline');
+    }
+    assert.deepEqual(
+      res.body.matches.map((m) => m.containerName),
+      ['shop-api', 'shop-worker', 'shop-api']
+    );
+    assert.equal(res.body.searched, 2);
+    assert.equal(res.body.matched, 3);
+  });
+
+  await t.test('a container that fails is reported, not a failure of the whole search', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    t2.mock.method(docker, 'searchLogs', async (host, id) => {
+      if (id === 'workerworker') throw Object.assign(new Error('boom'), { stderr: 'Error: no such container' });
+      return { lines: [line(1, 'hit')], matched: 1, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=hit'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.matches.length, 1);
+    assert.deepEqual(res.body.failed, [{ containerId: 'workerworker', containerName: 'shop-worker', error: 'Error: no such container' }]);
+  });
+
+  await t.test('clamps the window and the limit', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    const calls = [];
+    t2.mock.method(docker, 'searchLogs', async (host, id, opts) => {
+      calls.push(opts);
+      return { lines: [], matched: 0, timedOut: false };
+    });
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=x&sinceMinutes=99999999&limit=99999999'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sinceMinutes, 7 * 24 * 60);
+    assert.equal(calls[0].limit, 2000);
+  });
+
+  await t.test('a viewer can search, the same as they can read a log', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    t2.mock.method(docker, 'searchLogs', async () => ({ lines: [], matched: 0, timedOut: false }));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get(url('q=x'))).status, 200);
+  });
+
+  await t.test("uses the collector's container list when there is one, with no docker call", async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({ statsTs: Date.now(), containers: CONTAINERS }));
+    const listed = t2.mock.method(docker, 'listContainers', async () => []);
+    t2.mock.method(docker, 'searchLogs', async () => ({ lines: [], matched: 0, timedOut: false }));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.get(url('q=x'));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.searched, 2);
+    assert.equal(listed.mock.callCount(), 0);
+  });
+
+  // Each search holds docker slots for up to its whole deadline, and a viewer can start one.
+  await t.test('only two searches run at once; a third is told to wait, and the slots come back', async (t2) => {
+    t2.mock.method(docker, 'listContainers', async () => CONTAINERS);
+    let release;
+    const gate = new Promise((r) => (release = r));
+    let started = 0;
+    t2.mock.method(docker, 'searchLogs', async () => {
+      started += 1;
+      await gate;
+      return { lines: [], matched: 0, timedOut: false };
+    });
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const first = viewer.get(url('q=a')).then((r) => r);
+    const second = viewer.get(url('q=b')).then((r) => r);
+    while (started < 4) await new Promise((r) => setTimeout(r, 5));
+    const third = await viewer.get(url('q=c'));
+    assert.equal(third.status, 429);
+    assert.match(third.body.error, /try again/);
+    release();
+    assert.deepEqual([(await first).status, (await second).status], [200, 200]);
+    assert.equal((await viewer.get(url('q=d'))).status, 200, 'finished searches free their place');
   });
 });
 
@@ -1056,6 +1278,114 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
 
 // Pure db/computation like /events beside it - reconstructed from durable history, not sampled, so
 // this seeds events/host_reachability rows directly rather than mocking anything docker-shaped.
+test('GET /overview', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const SNAPSHOT = {
+    ts: Date.now(),
+    statsTs: Date.now(),
+    reachable: true,
+    containers: [
+      { id: 'ovaaaaaaaaaa', name: 'web', state: 'running', health: 'unhealthy', composeProject: 'shop' },
+      { id: 'ovbbbbbbbbbb', name: 'db', state: 'exited', health: null, composeProject: 'shop' },
+    ],
+    stats: {},
+    hostInfo: { ncpu: 4, memTotalBytes: 8e9, hostname: 'shop-01' },
+    usage: { cpuPercent: 3.5, memUsedBytes: 1e9 },
+  };
+
+  await t.test('one row per configured host, from the snapshot and sqlite, with no docker call', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', (id) => (id === hostId ? SNAPSHOT : null));
+    const probed = t2.mock.method(docker, 'checkHost', () => Promise.resolve(true));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const res = await viewer.get('/api/overview');
+    assert.equal(res.status, 200, 'a read-only overview is for every role');
+    assert.equal(res.body.length, loadHosts().length);
+    assert.equal(probed.mock.callCount(), 0, 'unlike /hosts, the overview never probes a host');
+
+    const row = res.body.find((r) => r.id === hostId);
+    assert.deepEqual(row.containers, { total: 2, running: 1, unhealthy: 1, restarting: 0 });
+    assert.equal(row.cpuPercent, 3.5);
+    assert.equal(row.memTotalBytes, 8e9);
+    assert.equal(row.openAlerts, db.countOpenAlerts(hostId));
+    assert.equal(row.status, 'warning', 'an unhealthy container needs a look');
+  });
+
+  await t.test('counts only open alerts on that host', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', (id) => (id === hostId ? SNAPSHOT : null));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const before = (await admin.get('/api/overview')).body.find((r) => r.id === hostId).openAlerts;
+    db.insertAlert({
+      ts: Date.now(),
+      hostId,
+      containerId: null,
+      containerName: null,
+      rule: 'host_cpu',
+      severity: 'warning',
+      message: 'overview test',
+    });
+    db.insertAlert({
+      ts: Date.now(),
+      hostId: '__overview_other_host__',
+      containerId: null,
+      containerName: null,
+      rule: 'host_cpu',
+      severity: 'warning',
+      message: 'elsewhere',
+    });
+    const after = (await admin.get('/api/overview')).body.find((r) => r.id === hostId).openAlerts;
+    assert.equal(after, before + 1);
+  });
+
+  await t.test('a host with no snapshot yet reads pending rather than being probed', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => null);
+    const probed = t2.mock.method(docker, 'checkHost', () => Promise.resolve(true));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const row = (await admin.get('/api/overview')).body.find((r) => r.id === hostId);
+    assert.equal(row.status, 'pending');
+    assert.equal(probed.mock.callCount(), 0);
+  });
+});
+
+test('image update checks', async (t) => {
+  const hostId = loadHosts()[0].id;
+
+  await t.test('Check now starts a check and answers at once, admin only', async (t2) => {
+    const started = t2.mock.method(imageUpdates, 'checkHost', () => new Promise(() => {}));
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.post(`/api/hosts/${hostId}/image-updates/check`)).status, 403);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${hostId}/image-updates/check`);
+    assert.equal(res.status, 202, 'a check that never finishes must not hold the request open');
+    assert.equal(started.mock.callCount(), 1);
+    assert.equal(started.mock.calls[0].arguments[1].force, true, 'Check now asks the registry again rather than reusing its cache');
+    assert.equal((await admin.post(`/api/hosts/${FAKE_HOST_ID}/image-updates/check`)).status, 404);
+  });
+
+  await t.test('container rows carry the last verdict', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({
+      reachable: true,
+      statsTs: Date.now(),
+      containers: [{ id: 'iuaaaaaaaaaa', name: 'web', state: 'running', image: 'nginx:alpine' }],
+      stats: {},
+    }));
+    t2.mock.method(imageUpdates, 'statusFor', (h, id) => (id === 'iuaaaaaaaaaa' ? { status: 'outdated', checkedAt: 1 } : null));
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const row = (await admin.get(`/api/hosts/${hostId}/containers`)).body[0];
+    assert.deepEqual(row.imageUpdate, { status: 'outdated', checkedAt: 1 });
+  });
+
+  await t.test('the check interval setting validates and round-trips', async () => {
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    for (const hours of [-1, 'daily', 100000]) {
+      assert.equal((await admin.put('/api/settings/image-updates').send({ hours })).status, 400, `accepted ${hours}`);
+    }
+    assert.deepEqual((await admin.put('/api/settings/image-updates').send({ hours: 12 })).body, { hours: 12, overridden: true });
+    assert.deepEqual((await admin.delete('/api/settings/image-updates')).body, { hours: 0, overridden: false });
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get('/api/settings/image-updates')).status, 403);
+  });
+});
+
 test('GET /hosts/:hostId/uptime', async (t) => {
   const hostId = loadHosts()[0].id;
   const CONTAINER = 'uptimeaaaaaa';
@@ -1250,6 +1580,11 @@ test('asset caching', async (t) => {
 
   await t.test('a stale version prefix 404s rather than serving something', async () => {
     assert.equal((await request(app).get('/assets/v0.0.0-not-a-release/js/app.js')).status, 404);
+  });
+
+  await t.test('markdown notes in public/ are not served', async () => {
+    assert.equal((await request(app).get('/assets/CLAUDE.md')).status, 404);
+    assert.equal((await request(app).get(`${PREFIX}/CLAUDE.md`)).status, 404);
   });
 
   // A from-source rebuild keeps the version, so a version-only URL is exactly what a browser from

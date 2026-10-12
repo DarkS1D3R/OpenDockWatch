@@ -123,8 +123,8 @@ export default {
     <div>
       <div class="container-list-toolbar">
         <div class="search-clear-wrap container-list-search-wrap">
-          <input type="text" v-model="search" placeholder="Filter containers…" class="container-list-search" />
-          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+          <input type="text" v-model="search" placeholder="Filter containers…" aria-label="Filter containers by name" class="container-list-search" />
+          <button aria-label="Clear filter" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
         </div>
         <div class="container-list-sort">
           <label class="muted small" for="container-sort">Sort by</label>
@@ -137,6 +137,7 @@ export default {
             class="small-btn"
             @click="flipSortDir"
             :title="sort.dir === 'asc' ? 'Ascending - click for descending' : 'Descending - click for ascending'"
+            :aria-label="sort.dir === 'asc' ? 'Sorted ascending - switch to descending' : 'Sorted descending - switch to ascending'"
           >
             {{ sort.dir === 'asc' ? '▲' : '▼' }}
           </button>
@@ -145,8 +146,10 @@ export default {
       <p v-if="search.trim() && !filteredGroups.length" class="muted">No containers match "{{ search.trim() }}".</p>
       <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="group-block">
         <div class="group-header" @click="toggleGroup(groupName)">
-          <span class="chevron" :class="{open: !collapsedGroups[groupName]}">&#9656;</span>
-          {{ groupName }} <span class="muted">({{ items.length }})</span>
+          <button type="button" class="group-toggle" :aria-expanded="String(!collapsedGroups[groupName])" @click.stop="toggleGroup(groupName)">
+            <span class="chevron" :class="{open: !collapsedGroups[groupName]}" aria-hidden="true">&#9656;</span>
+            {{ groupName }} <span class="muted">({{ items.length }})</span>
+          </button>
           <div v-if="isAdmin && isRealGroup(groupName)" class="group-actions" @click.stop title="Batch action for every container in this compose project">
             <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'start')">Start all</button>
             <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'stop')">Stop all</button>
@@ -156,11 +159,11 @@ export default {
         <table v-show="!collapsedGroups[groupName]" class="containers">
           <thead>
             <tr>
-              <th class="sortable" :aria-sort="ariaSort('name')" @click="sortBy('name')" title="Sort by name">Name <span class="sort-arrow">{{ sortArrow('name') }}</span></th>
+              <th class="sortable" :aria-sort="ariaSort('name')"><button type="button" class="th-sort-btn" @click="sortBy('name')" title="Sort by name">Name <span class="sort-arrow" aria-hidden="true">{{ sortArrow('name') }}</span></button></th>
               <th>Image</th>
               <th>Status</th>
-              <th class="sortable" :aria-sort="ariaSort('cpu')" @click="sortBy('cpu')" title="Sort by CPU">CPU <span class="sort-arrow">{{ sortArrow('cpu') }}</span></th>
-              <th class="sortable" :aria-sort="ariaSort('mem')" @click="sortBy('mem')" title="Sort by memory used">Memory <span class="sort-arrow">{{ sortArrow('mem') }}</span></th>
+              <th class="sortable" :aria-sort="ariaSort('cpu')"><button type="button" class="th-sort-btn" @click="sortBy('cpu')" title="Sort by CPU">CPU <span class="sort-arrow" aria-hidden="true">{{ sortArrow('cpu') }}</span></button></th>
+              <th class="sortable" :aria-sort="ariaSort('mem')"><button type="button" class="th-sort-btn" @click="sortBy('mem')" title="Sort by memory used">Memory <span class="sort-arrow" aria-hidden="true">{{ sortArrow('mem') }}</span></button></th>
               <th>Ports</th>
               <th>Actions</th>
             </tr>
@@ -171,10 +174,14 @@ export default {
               :key="c.id"
               class="row-clickable"
               :class="{'row-selected': c.id === selectedContainerId}"
+              tabindex="0"
+              :aria-label="c.name + ', ' + c.status + ' - press Enter for details'"
               @click="$emit('select', c.id)"
+              @keydown.enter.self="$emit('select', c.id)"
+              @keydown.space.self.prevent="$emit('select', c.id)"
             >
-              <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" v-html="badgeHtml(c)"></span>{{ c.name }}</td>
-              <td class="muted">{{ c.image }}</td>
+              <td><span class="svc-badge" :class="{ 'svc-tile': badgeTile(c) }" :style="{ background: badgeFor(c).bg }" :title="badgeLabel(c)" aria-hidden="true" v-html="badgeHtml(c)"></span><a v-if="c.url" :href="c.url" target="_blank" rel="noopener noreferrer" class="container-link" title="Open the service's own UI">{{ c.name }} ↗</a><template v-else>{{ c.name }}</template></td>
+              <td class="muted"><span v-if="c.imageUpdate && c.imageUpdate.status === 'outdated'" class="image-update-badge" role="img" aria-label="Newer image available" title="Newer image available">⬆</span>{{ c.image }}</td>
               <td>
                 <div class="status-cell">
                   <span class="status-text" :class="stateClass(c)" :title="c.status">{{ c.status }}</span>
@@ -183,6 +190,8 @@ export default {
                     class="health-dot"
                     :style="{ background: healthDotColor(c.health) }"
                     :title="healthTitle(c.health)"
+                    role="img"
+                    :aria-label="healthTitle(c.health)"
                   ></span>
                   <span v-if="c.restartCount1h" class="restart-badge" title="Restarts in the last hour">⟳ {{ c.restartCount1h }}</span>
                 </div>
@@ -193,6 +202,7 @@ export default {
                   <button
                     class="mini-spark-btn"
                     :title="sparkTitle(c.id, 'cpu')"
+                    :aria-label="'CPU history for ' + c.name"
                     @click.stop="$emit('open-metrics', c.id)"
                   >
                     <mini-spark :samples="metricsFor(c.id).cpu" variant="cpu"></mini-spark>
@@ -205,6 +215,7 @@ export default {
                   <button
                     class="mini-spark-btn"
                     :title="sparkTitle(c.id, 'mem')"
+                    :aria-label="'Memory history for ' + c.name"
                     @click.stop="$emit('open-metrics', c.id)"
                   >
                     <mini-spark :samples="metricsFor(c.id).mem" variant="mem"></mini-spark>

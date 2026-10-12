@@ -4,6 +4,7 @@ const { listContainers, getStats, getTopology } = require('../docker');
 // The module object too, for iconHintFor - same reasoning as containers.js's docker require.
 const docker = require('../docker');
 const { HISTORY_RANGES } = require('../historyRanges');
+const imageUpdates = require('../imageUpdates');
 
 // The four builders below each back both their own route and one field of the /dashboard bundle.
 // They exist as functions for exactly that reason: the bundle is the same data the separate routes
@@ -46,6 +47,7 @@ async function containersFor(host, { fresh = false } = {}) {
     ...c,
     restartCount1h: restartCounts.get(c.id) || 0,
     iconHint: docker.iconHintFor(host.id, c.id),
+    imageUpdate: imageUpdates.statusFor(host.id, c.id),
   }));
 }
 

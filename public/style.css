@@ -594,6 +594,13 @@ body {
   border-color: var(--accent);
   color: #fff;
 }
+/* Greyed rather than hidden on the Hosts tab, so the topbar doesn't shift when switching to it. The
+   selected filter keeps a neutral fill so it still reads as the one that comes back. */
+.view-toggle button.active:disabled {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  color: var(--muted);
+}
 
 /* The filter box and the sort controls share one row, wrapping the sort under the filter only when
    the pane is too narrow for both. */
@@ -643,6 +650,28 @@ body {
   font-size: 12px;
   padding: 3px 8px;
 }
+/* The group's collapse toggle and the sortable column headers are real buttons for the keyboard
+   and screen readers, styled to look like the plain text they replaced. */
+.group-toggle,
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.group-toggle:hover:not(:disabled):not(.active),
+.th-sort-btn:hover:not(:disabled):not(.active) {
+  background: none;
+}
+.th-sort-btn {
+  gap: 4px;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
 .chevron {
   display: inline-block;
   transition: transform 0.1s ease;
@@ -675,6 +704,36 @@ button:hover:not(:disabled):not(.active) {
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* One keyboard focus ring for everything, :focus-visible so a mouse click doesn't draw it. The
+   browser default is a thin dark ring that all but disappears on this palette. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+tr:focus-visible {
+  outline-offset: -2px;
+}
+/* Read by a screen reader, not drawn - for text that only the visual layout makes redundant, like
+   the "open alerts" after the Activity tab's bare count. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Honours the OS "reduce motion" setting: spinners, the restarting icon's spin and every
+   transition stop moving. They still end in the same state, just without the motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 table.containers {
@@ -1404,6 +1463,40 @@ table.containers td:nth-child(7) {
   font-size: 12px;
   word-break: break-all;
 }
+.healthcheck-list {
+  max-height: 360px;
+  font-size: 12px;
+  align-items: flex-start;
+}
+.health-entry {
+  align-self: stretch;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+.health-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.health-output {
+  margin: 4px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.health-summary-ok,
+.health-result-ok {
+  color: var(--ok);
+}
+.health-summary-warn {
+  color: var(--warn);
+}
+.health-summary-bad,
+.health-result-bad {
+  color: var(--danger);
+}
 .mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
@@ -1850,6 +1943,41 @@ table.containers td:nth-child(7) {
   display: none;
   position: relative;
 }
+.log-jump-wrap {
+  position: relative;
+}
+.log-jump-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 3;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+.log-jump-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.log-jump-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.log-jump-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
 .log-levels-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -1891,10 +2019,17 @@ table.containers td:nth-child(7) {
    to a second row - including the very common case of two panes side by side on a 1080p screen,
    at ~985px each. Dropping just the button labels takes ~150-200px off and buys back the single
    row down to ~850px, while keeping the level buttons and the search box at full size; each of
-   these keeps its icon and its title tooltip, so nothing becomes unidentifiable. */
+   these keeps its icon and its title tooltip, so nothing becomes unidentifiable. The label is
+   visually hidden rather than display:none, which would also drop it from the button's
+   accessible name and leave a screen reader announcing a bare "⏸" or "⬇". */
 @container log-panel (max-width: 1150px) {
   .btn-label {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   /* The status badge now shares this row, so dropping the labels alone left the strip ~30px short
      of fitting at the two-panes-on-1080p width. The search box is the one control with slack to
@@ -1932,6 +2067,54 @@ table.containers td:nth-child(7) {
     color: transparent;
   }
   .log-filter-input-wrap input:focus {
+    width: 140px;
+    padding-right: 22px;
+  }
+}
+
+/* Go to added ~36px, which took two panes side by side on a 1600px screen (~596px each) from
+   one control row to two. Halving the gaps buys back ~40px - measured: the strip needed 580px
+   before the button and 616px after it. */
+@container log-panel (max-width: 620px) {
+  .log-panel-controls {
+    gap: 4px;
+  }
+}
+
+/* The standalone viewer reaches each tier earlier: on top of the shared controls it carries
+   Matches/Fullscreen/Wrap/Close, and since Go to it needs 1224px at full size, 961px with labels
+   hidden and 841px with the level dropdown (2px sweep). See public/CLAUDE.md. */
+@container log-panel (max-width: 1230px) {
+  .log-panel:not(.embedded) .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .log-panel:not(.embedded) .log-panel-controls input {
+    width: 150px;
+  }
+}
+@container log-panel (max-width: 965px) {
+  .log-panel:not(.embedded) .log-level-toggle-full {
+    display: none;
+  }
+  .log-panel:not(.embedded) .log-level-toggle-compact {
+    display: block;
+  }
+}
+@container log-panel (max-width: 845px) {
+  .log-panel:not(.embedded) .log-filter-input-wrap input {
+    width: 26px;
+    padding-right: 4px;
+    transition: width 0.15s ease;
+  }
+  .log-panel:not(.embedded) .log-filter-input-wrap input::placeholder {
+    color: transparent;
+  }
+  .log-panel:not(.embedded) .log-filter-input-wrap input:focus {
     width: 140px;
     padding-right: 22px;
   }
@@ -2247,6 +2430,94 @@ table.containers td:nth-child(7) {
   flex: 1;
   min-width: 0;
   display: flex;
+  position: relative;
+}
+/* The compose-wide search sits over the panes rather than replacing them, so open streams keep
+   their layout and scroll position underneath while it's up - display:none would lose both. */
+.logs-tab-search-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+.logs-tab-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.logs-tab-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logs-tab-group-search {
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.logs-tab-group-search:hover,
+.logs-tab-group-search.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.logs-tab-back-to-search {
+  width: 100%;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-search-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.log-search-titlebar .log-panel-name {
+  flex: 1;
+}
+.log-search-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.log-search-input {
+  flex: 1;
+  min-width: 160px;
+}
+.log-search-summary {
+  font-size: 12px;
+}
+.log-search-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.log-search-warning {
+  font-size: 12px;
+  color: var(--warn);
+}
+.log-search-empty {
+  padding: 24px;
+  font-size: 13px;
+}
+/* Which container a merged-timeline line came from - fixed width so the timestamps and messages
+   still line up down the list, ellipsised because compose names run long. */
+.log-search-container {
+  display: inline-block;
+  width: 14ch;
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-weight: 600;
+  opacity: 0.85;
 }
 .logs-tab-empty {
   margin: auto;
@@ -2363,6 +2634,49 @@ button.log-pane-main-btn.active:hover {
   opacity: 0.9;
   border-color: var(--accent);
 }
+/* An Activity alert whose problem has cleared. resolved_at 0 (from before resolution was tracked) is
+   falsy, so those rows show no marker rather than a made-up time. */
+.alert-resolved {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--ok);
+}
+/* Settings > Webhook's routes editor. */
+.settings-subheading {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 2px 12px;
+}
+.route-disabled {
+  opacity: 0.6;
+}
+/* Image-update verdicts (lib/imageUpdate.js tones). An available update is news, not a fault, so it
+   takes the accent rather than the warning colour. */
+.image-update-update {
+  color: var(--accent);
+}
+.image-update-ok {
+  color: var(--ok);
+}
+.image-update-muted {
+  color: var(--muted);
+}
+.image-update-badge {
+  color: var(--accent);
+  margin-right: 4px;
+  font-weight: 700;
+}
+.image-digests {
+  display: block;
+  font-family: monospace;
+}
+.image-check-btn {
+  margin-left: 8px;
+}
 .ack-tick {
   display: inline-block;
   margin-top: 2px;
@@ -2442,6 +2756,8 @@ button.log-pane-main-btn.active:hover {
   color: var(--muted);
   white-space: nowrap;
   cursor: pointer;
+  background: transparent;
+  line-height: inherit;
 }
 .activity-badge:hover {
   border-color: var(--accent);
@@ -2553,6 +2869,86 @@ table.uptime-table tr:last-child td {
 }
 .uptime-removed-row {
   opacity: 0.7;
+}
+
+/* The Hosts tab (HostsOverview.js). Same auto-layout table as the Uptime report, for the same reason:
+   table.containers' nth-child widths are List view's. A down or warning row gets a left accent, the
+   same inset shadow the Activity rows use, so a problem host stands out before its row is read. */
+.hosts-summary {
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+.hosts-summary-problem {
+  color: var(--warn);
+}
+table.hosts-table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.hosts-table th,
+table.hosts-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: top;
+}
+table.hosts-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+table.hosts-table tr:last-child td {
+  border-bottom: none;
+}
+.host-row-down td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.host-row-warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.host-row-down td:not(:first-child):not(:nth-child(2)) {
+  opacity: 0.6;
+}
+.hosts-table .small {
+  font-size: 12px;
+}
+.host-name {
+  font-weight: 600;
+}
+.host-kind {
+  margin-left: 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.host-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.host-problem {
+  color: var(--warn);
+}
+.host-row-down .host-status {
+  color: var(--danger);
+}
+.host-row-warning .host-status {
+  color: var(--warn);
+}
+.host-alerts-btn {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 12px;
+  cursor: pointer;
 }
 .alert-row-actions {
   display: flex;

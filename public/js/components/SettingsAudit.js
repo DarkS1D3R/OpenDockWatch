@@ -71,23 +71,23 @@ export default {
         (EVENTS_RETENTION_DAYS).
       </p>
       <div class="audit-toolbar">
-        <select v-model="hostId" title="Which host's actions to show">
+        <select v-model="hostId" title="Which host's actions to show" aria-label="Host">
           <option value="">All hosts</option>
           <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name || h.id }}</option>
         </select>
-        <select v-model.number="limit" title="How many of the newest rows to load">
+        <select v-model.number="limit" title="How many of the newest rows to load" aria-label="Rows to load">
           <option v-for="n in limits" :key="n" :value="n">Last {{ n }}</option>
         </select>
         <button class="small-btn" :disabled="loading" @click="load">{{ loading ? 'Loading…' : 'Refresh' }}</button>
       </div>
       <div class="audit-toolbar">
         <div class="search-clear-wrap audit-search-wrap">
-          <input type="text" v-model="search" placeholder="Search user, container, action, error…" />
-          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear search">✕</button>
+          <input type="text" v-model="search" placeholder="Search user, container, action, error…" aria-label="Search the audit log" />
+          <button aria-label="Clear search" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear search">✕</button>
         </div>
         <label class="audit-check"><input type="checkbox" v-model="failuresOnly" /> Failures only</label>
       </div>
-      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-else-if="!loading && !rows.length" class="muted">No actions recorded yet.</p>
       <p v-else-if="!view.length" class="muted">No matching entries.</p>
       <div v-else class="audit-table-wrap">

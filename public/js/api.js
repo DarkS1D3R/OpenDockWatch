@@ -57,6 +57,10 @@ export async function apiGetHosts() {
   return jsonOrThrow(await apiFetch('/api/hosts'));
 }
 
+export async function apiGetOverview() {
+  return jsonOrThrow(await apiFetch('/api/overview'));
+}
+
 // fresh bypasses the server's snapshot for the one case where up-to-POLL_MS staleness is visible
 // to the user: the refetch right after a start/stop/restart.
 export async function apiGetContainers(hostId, { fresh = false } = {}) {
@@ -114,6 +118,15 @@ export async function apiGetLogHistory(hostId, id, cursor, limit) {
   const [key, value] = Object.entries(cursor)[0];
   const qs = `${key}=${encodeURIComponent(value)}&limit=${limit}`;
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/logs/history?${qs}`, { timeoutMs: 40_000 }));
+}
+
+// Searches every container in a compose project. The server answers within ~45s by design (it flags
+// slow containers as timed out rather than waiting on them), so this only needs headroom over that.
+export async function apiSearchComposeLogs(hostId, project, { q, sinceMinutes, limit }) {
+  const qs = new URLSearchParams({ q, sinceMinutes: String(sinceMinutes), ...(limit ? { limit: String(limit) } : {}) });
+  return jsonOrThrow(
+    await apiFetch(`/api/hosts/${hostId}/compose/${encodeURIComponent(project)}/logs/search?${qs}`, { timeoutMs: 55_000 })
+  );
 }
 
 export function downloadLogsUrl(hostId, id, tail) {
@@ -196,12 +209,12 @@ export async function apiGetWebhookConfig() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook'));
 }
 
-export async function apiSaveWebhookConfig(url, format) {
+export async function apiSaveWebhookConfig({ url, format, notifyRecovery, mode, repeatMinutes }) {
   return jsonOrThrow(
     await apiFetch('/api/settings/webhook', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, format }),
+      body: JSON.stringify({ url, format, notifyRecovery, mode, repeatMinutes }),
     })
   );
 }
@@ -212,6 +225,60 @@ export async function apiClearWebhookConfig() {
 
 export async function apiTestWebhook() {
   return jsonOrThrow(await apiFetch('/api/settings/webhook/test', { method: 'POST' }));
+}
+
+export async function apiCheckImageUpdates(hostId) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/image-updates/check`, { method: 'POST' }));
+}
+
+export async function apiGetImageUpdateConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/image-updates'));
+}
+
+export async function apiSaveImageUpdateConfig(hours) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/image-updates', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hours }),
+    })
+  );
+}
+
+export async function apiClearImageUpdateConfig() {
+  return jsonOrThrow(await apiFetch('/api/settings/image-updates', { method: 'DELETE' }));
+}
+
+export async function apiGetWebhookRoutes() {
+  return jsonOrThrow(await apiFetch('/api/settings/webhook-routes'));
+}
+
+export async function apiAddWebhookRoute(route) {
+  return jsonOrThrow(
+    await apiFetch('/api/settings/webhook-routes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(route),
+    })
+  );
+}
+
+export async function apiUpdateWebhookRoute(id, route) {
+  return jsonOrThrow(
+    await apiFetch(`/api/settings/webhook-routes/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(route),
+    })
+  );
+}
+
+export async function apiDeleteWebhookRoute(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/webhook-routes/${id}`, { method: 'DELETE' }));
+}
+
+export async function apiTestWebhookRoute(id) {
+  return jsonOrThrow(await apiFetch(`/api/settings/webhook-routes/${id}/test`, { method: 'POST' }));
 }
 
 export async function apiGetThresholdConfig() {

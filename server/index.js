@@ -18,10 +18,11 @@ const logger = require('./logger');
 const alerts = require('./alerts');
 const eventWatcher = require('./eventWatcher');
 const metricsCollector = require('./metricsCollector');
+const imageUpdates = require('./imageUpdates');
 const statsWatcher = require('./statsWatcher');
 const prometheus = require('./prometheus');
 const { createWatchdog } = require('./watchdog');
-const { REQUEST_TIMEOUT_MS, STREAMING_PATH_RE, requestTimeout, requireHost } = require('./routes/middleware');
+const { REQUEST_TIMEOUT_MS, STREAMING_PATH_RE, requestTimeout, requireHost, loggableUrl } = require('./routes/middleware');
 const { getOpenLogStreams, router: containerRoutes } = require('./routes/containers');
 const { router: settingsRoutes } = require('./routes/settings');
 const sessionRoutes = require('./routes/session');
@@ -142,8 +143,9 @@ const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS) || 5000;
 // out SIGTERM routinely takes ten-plus seconds while behaving exactly as designed, and the disk
 // route can shell out to `docker system df`, measured at 40-75s cold on WSL2. Those get the
 // timeout they're actually bounded by as their threshold, so the line still fires when they exceed
-// even that - it just stops firing for working normally.
+// even that - it just stops firing for working normally. A compose log search runs to its own deadline.
 const SLOW_ROUTE_OVERRIDES = [
+  { re: /\/compose\/[^/]+\/logs\/search$/, ms: REQUEST_TIMEOUT_MS },
   { re: /\/containers\/[^/]+\/(start|stop|restart)$/, ms: CONTAINER_ACTION_TIMEOUT_MS },
   { re: /\/disk-usage(\/images)?$/, ms: DISK_USAGE_TIMEOUT_MS },
 ];
@@ -163,7 +165,7 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const tookMs = Date.now() - startedAt;
     if (tookMs >= threshold) {
-      logger.warn('request.slow', { method: req.method, path: req.originalUrl, status: res.statusCode, tookMs, thresholdMs: threshold });
+      logger.warn('request.slow', { method: req.method, path: loggableUrl(req), status: res.statusCode, tookMs, thresholdMs: threshold });
     }
   });
   next();
@@ -217,6 +219,9 @@ function hashPublicDir() {
 // page load, since `npm run dev` doesn't restart on a public/ edit and a stale tag would pin it.
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 let assetTag = `v${appVersion}-${hashPublicDir()}`;
+// public/ holds developer notes (CLAUDE.md) next to the files the browser needs, and /assets is
+// served without auth. No browser asset is markdown, so refuse it rather than ship docs to clients.
+app.use('/assets', (req, res, next) => (/\.md$/i.test(req.path) ? res.sendStatus(404) : next()));
 const pinnedAssets = express.static(PUBLIC_DIR, { index: false, immutable: true, maxAge: '365d' });
 app.use('/assets/:tag', (req, res, next) => (req.params.tag === assetTag ? pinnedAssets(req, res, next) : next()));
 
@@ -330,7 +335,7 @@ app.get('/metrics', (req, res) => {
   const provided = req.get('authorization')?.replace(/^Bearer\s+/i, '') || req.query.token;
   if (!tokenMatches(provided, token)) return res.status(401).type('text/plain').send('unauthorized');
   res.set('Content-Type', 'text/plain; version=0.0.4');
-  res.send(prometheus.render());
+  res.send(prometheus.render({ lagMs: watchdog.status().lagMs }));
 });
 
 app.post('/logout', (req, res) => {
@@ -357,7 +362,7 @@ app.use('/api', api);
 // otherwise leak the stack trace unless NODE_ENV=production. Four arguments mark this as an
 // error handler; `next` is used for the already-streaming (SSE) case where express must destroy it.
 app.use((err, req, res, next) => {
-  logger.error('request.failed', { method: req.method, path: req.originalUrl, error: err.message });
+  logger.error('request.failed', { method: req.method, path: loggableUrl(req), error: err.message });
   if (res.headersSent) return next(err);
   res.status(err.status || 500).json({ error: err.message });
 });
@@ -383,6 +388,7 @@ if (require.main === module) {
     alerts.start();
     eventWatcher.start();
     metricsCollector.start();
+    imageUpdates.start();
     watchdog.start();
     if (VITALS_INTERVAL_MS) {
       // Never the reason the process stays alive - the HTTP server is. Same as watchdog's timer.
@@ -443,6 +449,7 @@ if (require.main === module) {
     watchdog.stop();
     if (vitalsTimer) clearInterval(vitalsTimer);
     metricsCollector.stop();
+    imageUpdates.stop();
     eventWatcher.stop();
     alerts.stop();
 

@@ -1,6 +1,7 @@
 import { formatGB } from '../format.js';
 import { apiGetDiskUsageImages, apiGetMetricsHistory } from '../api.js';
 import { resolveHostMemoryDisplay } from '../lib/hostMemory.js';
+import { engineLabel } from '../lib/hostOverview.js';
 import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS, HOST_METRICS_HISTORY_LEN } from '../constants.js';
 import SparkTile from './SparkTile.js';
 
@@ -139,6 +140,7 @@ export default {
     },
   },
   methods: {
+    engineLabel,
     diskRow(type) {
       return this.diskUsage.find((r) => r.type === type) || null;
     },
@@ -215,13 +217,13 @@ export default {
         <strong>{{ hostName }}</strong>
         <span class="host-card-meta">
           <span class="meta-item"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 2.5 17 6.5V13.5L10 17.5 3 13.5V6.5L10 2.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 6.5 10 10.5 17 6.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 10.5V17.5" stroke="currentColor" stroke-width="1.6"/></svg> {{ hostInfo.containers }} containers</span>
-          <span class="meta-item"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h7l7 7-7 7-7-7V3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="6.7" cy="6.7" r="1.3" fill="currentColor"/></svg> {{ hostInfo.serverVersion }}</span>
+          <span class="meta-item"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h7l7 7-7 7-7-7V3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="6.7" cy="6.7" r="1.3" fill="currentColor"/></svg> {{ engineLabel(hostInfo) }}</span>
         </span>
         <div v-if="fullscreen" class="view-toggle host-range-toggle">
           <button
             v-for="r in ranges"
             :key="r.key"
-            :class="{ active: range === r.key }"
+            :class="{ active: range === r.key }" :aria-pressed="String(range === r.key)"
             @click="range = r.key"
           >{{ r.label }}</button>
         </div>
@@ -297,7 +299,7 @@ export default {
             <summary>Images{{ diskRow('Images') ? ' (' + diskRow('Images').total + ')' : '' }}</summary>
             <div class="inspect-list">
               <div v-if="imagesLoading" class="muted small">Loading…</div>
-              <div v-if="imagesError" class="error">{{ imagesError }}</div>
+              <div v-if="imagesError" class="error" role="alert">{{ imagesError }}</div>
               <div v-for="img in images" :key="img.id" class="inspect-line">
                 <span class="mono">{{ imageLabel(img) }}</span>
                 <span class="muted small">&nbsp;{{ img.size }} &bull; {{ img.containers ? 'in use (' + img.containers + ')' : 'unused' }} &bull; {{ img.createdSince }}</span>

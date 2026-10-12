@@ -2,6 +2,7 @@ import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS } from '../consta
 import { formatBytes, formatRate } from '../format.js';
 import { apiGetMetricsHistory } from '../api.js';
 import SparkTile from './SparkTile.js';
+import { trapTab, rememberFocus } from '../lib/focus.js';
 
 const RANGES = [
   { key: '1h', label: '1h' },
@@ -75,15 +76,20 @@ export default {
   mounted() {
     this.fetchHistory();
     this.restartRefresh();
-    // Bound once and kept, so beforeUnmount removes the same reference it added.
+    // Bound once and kept, so beforeUnmount removes the same reference it added. aria-modal is a
+    // promise the page behind is inert, so Tab is kept inside and focus goes back on close.
+    this._restoreFocus = rememberFocus();
     this._onKeydown = (event) => {
       if (event.key === 'Escape') this.$emit('close');
+      else trapTab(event, this.$refs.dialog);
     };
     window.addEventListener('keydown', this._onKeydown);
+    this.$refs.closeBtn.focus();
   },
   beforeUnmount() {
     if (this._refreshTimer) clearInterval(this._refreshTimer);
     window.removeEventListener('keydown', this._onKeydown);
+    this._restoreFocus();
   },
   methods: {
     // Only the 1h range keeps refreshing. Its buckets are 15s wide, so a 5s poll actually moves
@@ -130,25 +136,25 @@ export default {
   },
   template: `
     <div class="metrics-modal-backdrop" @click="onBackdropClick">
-      <div class="metrics-modal" role="dialog" aria-modal="true" :aria-label="'Metrics for ' + containerName">
+      <div ref="dialog" class="metrics-modal" role="dialog" aria-modal="true" :aria-label="'Metrics for ' + containerName">
         <div class="metrics-modal-header">
           <div>
             <strong>{{ containerName || containerId }}</strong>
             <div class="muted small">Metrics history</div>
           </div>
-          <div class="view-toggle">
+          <div class="view-toggle" role="group" aria-label="Time range">
             <button
               v-for="r in ranges"
               :key="r.key"
-              :class="{ active: range === r.key }"
+              :class="{ active: range === r.key }" :aria-pressed="String(range === r.key)"
               @click="range = r.key"
             >{{ r.label }}</button>
           </div>
-          <button class="small-btn" @click="$emit('close')" title="Close">✕</button>
+          <button ref="closeBtn" aria-label="Close metrics" class="small-btn" @click="$emit('close')" title="Close">✕</button>
         </div>
 
         <div class="metrics-modal-body">
-          <p v-if="error" class="error">{{ error }}</p>
+          <p v-if="error" class="error" role="alert">{{ error }}</p>
           <p v-else-if="loading && !hasRows" class="muted">Loading…</p>
           <p v-else-if="!hasRows" class="muted">
             No history recorded for this container over the last {{ range }}.

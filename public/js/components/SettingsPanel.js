@@ -5,6 +5,7 @@ import SettingsContainerRules from './SettingsContainerRules.js';
 import SettingsHosts from './SettingsHosts.js';
 import SettingsAppearance from './SettingsAppearance.js';
 import SettingsAudit from './SettingsAudit.js';
+import { rememberFocus, modalOpenAbove } from '../lib/focus.js';
 
 // The Settings panel: a tab strip over seven independent sections, each owning its own data/fetch
 // (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance/Audit - see those files). v-if, not v-show,
@@ -27,20 +28,36 @@ export default {
   data() {
     return { activeTab: 'general' };
   },
+  // A non-modal dialog: the page stays usable beside it, so no Tab trap - but focus moves in on open,
+  // back to the Settings button on close, and Escape closes it unless a field or a modal has the key.
+  mounted() {
+    this._restoreFocus = rememberFocus();
+    this._onKeydown = (event) => {
+      if (event.key !== 'Escape' || modalOpenAbove(this.$el)) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement && document.activeElement.tagName)) return;
+      this.$emit('close');
+    };
+    window.addEventListener('keydown', this._onKeydown);
+    this.$refs.closeBtn.focus();
+  },
+  beforeUnmount() {
+    window.removeEventListener('keydown', this._onKeydown);
+    this._restoreFocus();
+  },
   template: `
-    <aside class="detail-panel settings-panel">
+    <aside class="detail-panel settings-panel" role="dialog" aria-labelledby="settings-panel-title">
       <div class="detail-header">
-        <strong>Settings</strong>
-        <button @click="$emit('close')">✕</button>
+        <strong id="settings-panel-title">Settings</strong>
+        <button ref="closeBtn" @click="$emit('close')" aria-label="Close settings" title="Close settings">✕</button>
       </div>
-      <div class="view-toggle settings-tabs">
-        <button :class="{active: activeTab==='general'}" @click="activeTab='general'">General</button>
-        <button :class="{active: activeTab==='webhook'}" @click="activeTab='webhook'">Webhook</button>
-        <button :class="{active: activeTab==='thresholds'}" @click="activeTab='thresholds'">Thresholds</button>
-        <button :class="{active: activeTab==='container-rules'}" @click="activeTab='container-rules'">Container Rules</button>
-        <button :class="{active: activeTab==='hosts'}" @click="activeTab='hosts'">Hosts</button>
-        <button :class="{active: activeTab==='appearance'}" @click="activeTab='appearance'">Appearance</button>
-        <button :class="{active: activeTab==='audit'}" @click="activeTab='audit'">Audit log</button>
+      <div class="view-toggle settings-tabs" role="group" aria-label="Settings sections">
+        <button :class="{active: activeTab==='general'}" :aria-current="activeTab==='general' ? 'true' : null" @click="activeTab='general'">General</button>
+        <button :class="{active: activeTab==='webhook'}" :aria-current="activeTab==='webhook' ? 'true' : null" @click="activeTab='webhook'">Webhook</button>
+        <button :class="{active: activeTab==='thresholds'}" :aria-current="activeTab==='thresholds' ? 'true' : null" @click="activeTab='thresholds'">Thresholds</button>
+        <button :class="{active: activeTab==='container-rules'}" :aria-current="activeTab==='container-rules' ? 'true' : null" @click="activeTab='container-rules'">Container Rules</button>
+        <button :class="{active: activeTab==='hosts'}" :aria-current="activeTab==='hosts' ? 'true' : null" @click="activeTab='hosts'">Hosts</button>
+        <button :class="{active: activeTab==='appearance'}" :aria-current="activeTab==='appearance' ? 'true' : null" @click="activeTab='appearance'">Appearance</button>
+        <button :class="{active: activeTab==='audit'}" :aria-current="activeTab==='audit' ? 'true' : null" @click="activeTab='audit'">Audit log</button>
       </div>
       <div class="detail-body">
         <settings-general v-if="activeTab==='general'"></settings-general>

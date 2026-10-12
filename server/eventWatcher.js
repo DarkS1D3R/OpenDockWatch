@@ -11,6 +11,17 @@ const { createRestartingWatcher } = require('./restartingWatcher');
 
 const broadcaster = new Broadcaster();
 
+// Podman's own steps around every start and exit (init, cleanup), and its one `exec` event for what
+// Docker reports as the exec_* trio. Podman names Docker's `destroy` `remove`.
+const PODMAN_NOISE_ACTIONS = new Set(['init', 'cleanup', 'exec']);
+const PODMAN_ACTION_ALIASES = { remove: 'destroy' };
+
+// Podman sends a bare `health_status` (no result) on every check, where Docker sends
+// `health_status: unhealthy` on a change. Pure and exported for testing; see the stdout handler below.
+function isBareHealthEvent(event) {
+  return event.action === 'health_status';
+}
+
 function parseEventLine(line, host) {
   let raw;
   try {
@@ -22,6 +33,7 @@ function parseEventLine(line, host) {
   // exec_create/exec_start/exec_die fire on every healthcheck probe (often every few seconds),
   // which would flood the event log with noise unrelated to container lifecycle.
   if (raw.Action && raw.Action.startsWith('exec_')) return null;
+  if (PODMAN_NOISE_ACTIONS.has(raw.Action)) return null;
   const attrs = (raw.Actor && raw.Actor.Attributes) || {};
   const id = raw.Actor && raw.Actor.ID ? raw.Actor.ID : raw.id;
   return {
@@ -31,7 +43,7 @@ function parseEventLine(line, host) {
     // docker events' Actor.Attributes carries the full label set (same source docker.js's
     // listContainers reads composeProject from) alongside name/exitCode/signal - free, no extra call.
     composeProject: attrs['com.docker.compose.project'] || null,
-    action: raw.Action,
+    action: Object.hasOwn(PODMAN_ACTION_ALIASES, raw.Action) ? PODMAN_ACTION_ALIASES[raw.Action] : raw.Action,
     ts: raw.time ? raw.time * 1000 : Date.now(),
     raw,
   };
@@ -86,7 +98,11 @@ const watcher = createRestartingWatcher({
         const trimmed = line.trim();
         if (!trimmed) continue;
         const event = parseEventLine(trimmed, host);
-        if (event) ingestEvent(event);
+        if (!event) continue;
+        // A bare health event or a (re)start only tells the collector to re-read health on its next
+        // poll (docker.refreshPodmanHealth), which ingests the real transition. Docker hosts ignore it.
+        if (isBareHealthEvent(event) || event.action === 'start') docker.markHealthDirty(host.id);
+        if (!isBareHealthEvent(event)) ingestEvent(event);
       }
     });
     child.stderr.on('data', () => {
@@ -115,4 +131,34 @@ function stop() {
   watcher.stop();
 }
 
-module.exports = { start, stop, addHost, removeHost, broadcaster, parseEventLine, ingestEvent, takeIngestCount };
+// A health change docker.refreshPodmanHealth found, ingested as the event Docker would have sent.
+function healthTransitionEvent(host, container, status, ts = Date.now()) {
+  const action = `health_status: ${status}`;
+  return {
+    hostId: host.id,
+    containerId: container.id,
+    containerName: container.name || null,
+    composeProject: container.composeProject || null,
+    action,
+    ts,
+    raw: {
+      Type: 'container',
+      Action: action,
+      Actor: { ID: container.id, Attributes: { name: container.name } },
+      synthesized: 'podman-health',
+    },
+  };
+}
+
+module.exports = {
+  start,
+  stop,
+  addHost,
+  removeHost,
+  broadcaster,
+  parseEventLine,
+  isBareHealthEvent,
+  healthTransitionEvent,
+  ingestEvent,
+  takeIngestCount,
+};

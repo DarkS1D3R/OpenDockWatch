@@ -102,7 +102,7 @@ test('clearEvents hides events without losing the restart history', async (t) =>
     hostId,
     containerId: CONTAINER,
     containerName: 'web',
-    action: 'restart',
+    action: 'start',
     ts: (nextTs += 1000),
     rawJson: '{}',
     ...overrides,
@@ -110,7 +110,7 @@ test('clearEvents hides events without losing the restart history', async (t) =>
 
   await t.test('cleared events leave the feed, scoped to one host', () => {
     db.insertEvent(event(CLEAR_HOST));
-    db.insertEvent(event(CLEAR_HOST, { action: 'start' }));
+    db.insertEvent(event(CLEAR_HOST));
     db.insertEvent(event(OTHER_HOST));
 
     assert.equal(db.getEvents(CLEAR_HOST).length, 2);
@@ -131,6 +131,14 @@ test('clearEvents hides events without losing the restart history', async (t) =>
     db.insertEvent(event(CLEAR_HOST, { action: 'die' }));
     assert.equal(db.getEvents(CLEAR_HOST).length, 1);
     assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2, 'a die is not a restart');
+  });
+
+  // `docker restart` sends restart beside its start, and Podman does for every restart - counting
+  // both is how one restart read as two (and a single Podman auto-restart neared the crash loop).
+  await t.test('a restart event beside its start is not counted again', () => {
+    db.insertEvent(event(CLEAR_HOST, { action: 'restart' }));
+    assert.equal(db.countRestartsSince(CLEAR_HOST, CONTAINER, 0), 2);
+    assert.equal(db.getRestartCountsByContainer(CLEAR_HOST, 0).get(CONTAINER), 2);
   });
 
   // The plain (host_id, ts) index would walk every cleared row to answer this, which right after a
@@ -294,12 +302,253 @@ test('clearAlerts hides alerts without re-arming the cooldown', async (t) => {
   // something nobody can see any more. A hard delete had the same effect, by losing the row.
   await t.test('a cleared alert drops out of the webhook retry queue', () => {
     const id = db.insertAlert(alert(CLEAR_HOST, { rule: 'unhealthy' }));
-    db.markWebhookAttemptFailed(id);
-    const pending = () => db.getPendingWebhookRetries({ maxAttempts: 5, sinceTs: 0, limit: 10 }).some((a) => a.id === id);
+    const deliveryId = db.insertWebhookDelivery({ alertId: id, destination: 'main', kind: 'firing', ts: nextTs, payload: {} });
+    db.markDeliveryFailed(deliveryId);
+    const pending = () => db.getPendingDeliveries({ maxAttempts: 5, sinceTs: 0, limit: 10 }).some((d) => d.id === deliveryId);
     assert.equal(pending(), true);
     db.clearAlerts(CLEAR_HOST);
     assert.equal(pending(), false);
   });
+});
+
+test('alert resolution', async (t) => {
+  const RHOST = 'db-test-resolve-host';
+  const insert = (overrides = {}) =>
+    db.insertAlert({
+      ts: (nextTs += 1000),
+      hostId: RHOST,
+      containerId: null,
+      containerName: null,
+      rule: 'host_unreachable',
+      severity: 'critical',
+      message: 'down',
+      ...overrides,
+    });
+
+  await t.test('a new alert is open, and getUnresolvedAlert finds the newest one for that host, container and rule', () => {
+    insert();
+    const newer = insert();
+    insert({ rule: 'host_cpu' });
+    insert({ containerId: 'cccccccccccc', containerName: 'web' });
+    assert.equal(
+      db.getUnresolvedAlert({ hostId: RHOST, rule: 'host_unreachable' }).id,
+      newer,
+      'a host-level rule must match NULL with IS, not ='
+    );
+  });
+
+  await t.test('resolving marks it once - a second resolve reports nothing to do', () => {
+    const open = db.getUnresolvedAlert({ hostId: RHOST, rule: 'host_unreachable' });
+    assert.equal(db.markAlertResolved(open.id, nextTs), true);
+    assert.equal(db.markAlertResolved(open.id, nextTs + 1), false, 'two racing recoveries would both announce it');
+    assert.notEqual(db.getUnresolvedAlert({ hostId: RHOST, rule: 'host_unreachable' }).id, open.id);
+  });
+
+  await t.test('sinceTs keeps a recovery from closing an alert older than the breach that ended', () => {
+    const old = insert({ rule: 'host_mem' });
+    assert.equal(db.getUnresolvedAlert({ hostId: RHOST, rule: 'host_mem', sinceTs: nextTs + 1 }), null);
+    assert.equal(db.getUnresolvedAlert({ hostId: RHOST, rule: 'host_mem', sinceTs: 0 }).id, old);
+  });
+
+  await t.test('a cleared alert can still be resolved - its webhook went out regardless', () => {
+    const id = insert({ rule: 'docker_disk' });
+    db.clearAlerts(RHOST);
+    assert.equal(db.getUnresolvedAlert({ hostId: RHOST, rule: 'docker_disk' }).id, id);
+  });
+});
+
+test('webhook delivery queue', async (t) => {
+  const QHOST = 'db-test-queue-host';
+  const alertId = db.insertAlert({
+    ts: (nextTs += 1000),
+    hostId: QHOST,
+    containerId: null,
+    containerName: null,
+    rule: 'host_cpu',
+    severity: 'warning',
+    message: 'm',
+  });
+  const queue = (overrides = {}) =>
+    db.insertWebhookDelivery({ alertId, destination: 'main', kind: 'firing', ts: nextTs, payload: { message: 'm' }, ...overrides });
+  const pendingIds = () => db.getPendingDeliveries({ maxAttempts: 3, sinceTs: 0, limit: 50 }).map((d) => d.id);
+
+  await t.test('only a tried-and-failed notice is pending, until it is delivered or out of attempts', () => {
+    const id = queue();
+    assert.ok(!pendingIds().includes(id), 'never-attempted rows are the first attempt still in flight');
+    db.markDeliveryFailed(id);
+    assert.ok(pendingIds().includes(id));
+    db.markDeliveryFailed(id);
+    db.markDeliveryFailed(id);
+    assert.ok(!pendingIds().includes(id), 'past maxAttempts it must stop retrying');
+    const ok = queue({ destination: 'route:1' });
+    db.markDeliveryFailed(ok);
+    db.markDeliveryDelivered(ok);
+    assert.ok(!pendingIds().includes(ok));
+  });
+
+  await t.test('the payload round-trips, and the alert resolution rides along for the sweep', () => {
+    const id = queue({ destination: 'route:2', payload: { message: 'exact text' } });
+    db.markDeliveryFailed(id);
+    const row = db.getPendingDeliveries({ maxAttempts: 5, sinceTs: 0, limit: 50 }).find((d) => d.id === id);
+    assert.deepEqual(JSON.parse(row.payload), { message: 'exact text' });
+    assert.equal(row.resolvedAt, null);
+    db.markAlertResolved(alertId, nextTs);
+    assert.ok(db.getPendingDeliveries({ maxAttempts: 5, sinceTs: 0, limit: 50 }).find((d) => d.id === id).resolvedAt > 0);
+    db.deleteDelivery(id);
+    assert.ok(!pendingIds().includes(id));
+  });
+
+  await t.test('getDeliveredDestinations lists where the firing notice arrived, and nothing else', () => {
+    const other = db.insertAlert({
+      ts: (nextTs += 1000),
+      hostId: QHOST,
+      containerId: null,
+      containerName: null,
+      rule: 'host_mem',
+      severity: 'warning',
+      message: 'm',
+    });
+    const add = (destination, kind, delivered) => {
+      const id = db.insertWebhookDelivery({ alertId: other, destination, kind, ts: nextTs, payload: {} });
+      if (delivered) db.markDeliveryDelivered(id);
+    };
+    add('main', 'firing', true);
+    add('route:5', 'firing', false);
+    add('route:6', 'resolved', true);
+    add('main', 'firing', true);
+    assert.deepEqual(db.getDeliveredDestinations(other), ['main']);
+  });
+
+  await t.test('pruned with the rest of the alert history', () => {
+    const oldId = db.insertWebhookDelivery({ alertId, destination: 'main', kind: 'firing', ts: 1000, payload: {} });
+    const res = db.pruneOld({ metricsRetentionMs: Date.now(), eventsRetentionMs: Date.now(), auditRetentionMs: Date.now() - 2000 });
+    assert.ok(res.webhookDeliveries >= 1);
+    assert.equal(db.client.prepare('SELECT COUNT(*) AS n FROM webhook_deliveries WHERE id = ?').get(oldId).n, 0);
+  });
+});
+
+test('reminder and escalation queries', async (t) => {
+  const FHOST = 'db-test-follow-up-host';
+  const insert = (overrides = {}) =>
+    db.insertAlert({
+      ts: (nextTs += 1000),
+      hostId: FHOST,
+      containerId: null,
+      containerName: null,
+      rule: 'host_unreachable',
+      severity: 'critical',
+      message: 'down',
+      ...overrides,
+    });
+  const followUpIds = () =>
+    db
+      .getFollowUpAlerts({ limit: 500 })
+      .filter((a) => a.hostId === FHOST)
+      .map((a) => a.id);
+
+  await t.test('a stateful rule is a candidate at any age, anything else only from incidentSince', () => {
+    const outage = insert({ ts: 1000 });
+    const oldCrash = insert({ ts: 2000, rule: 'container_crashed', containerId: 'dddddddddddd' });
+    const recentCrash = insert({ ts: 9_000_000_000_000, rule: 'container_crashed', containerId: 'dddddddddddd' });
+    const ids = (opts) =>
+      db
+        .getFollowUpAlerts({ limit: 500, ...opts })
+        .filter((a) => a.hostId === FHOST)
+        .map((a) => a.id);
+    const remindable = ids({ statefulRules: ['host_unreachable'], incidentSince: 5_000_000_000_000 });
+    assert.ok(remindable.includes(outage), 'an old outage still gets reminders');
+    assert.ok(remindable.includes(recentCrash));
+    assert.ok(!remindable.includes(oldCrash), 'an incident past every escalation window is left out');
+    assert.deepEqual(ids({ statefulRules: [], incidentSince: 5_000_000_000_000 }), [recentCrash]);
+    for (const id of [outage, oldCrash, recentCrash]) db.ackAlert(id);
+  });
+
+  await t.test('only unacknowledged, unresolved, uncleared alerts are candidates, newest first', () => {
+    const acked = insert();
+    db.ackAlert(acked);
+    const resolved = insert();
+    db.markAlertResolved(resolved, nextTs);
+    const older = insert();
+    const newer = insert({ rule: 'unhealthy', containerId: 'cccccccccccc', containerName: 'web' });
+    assert.deepEqual(followUpIds(), [newer, older]);
+    const row = db.getFollowUpAlerts({ limit: 500 }).find((a) => a.id === newer);
+    assert.deepEqual(
+      { ...row, id: 0, ts: 0 },
+      {
+        id: 0,
+        ts: 0,
+        hostId: FHOST,
+        containerId: 'cccccccccccc',
+        containerName: 'web',
+        rule: 'unhealthy',
+        severity: 'critical',
+        message: 'down',
+      }
+    );
+    db.clearAlerts(FHOST);
+    assert.deepEqual(followUpIds(), [], 'a cleared alert gets no more reminders');
+  });
+
+  await t.test('the partial index serves the sweep query', () => {
+    const plan = db.client
+      .prepare(
+        'EXPLAIN QUERY PLAN SELECT id FROM alerts WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL ORDER BY ts DESC LIMIT 200'
+      )
+      .all()
+      .map((r) => r.detail)
+      .join(' | ');
+    assert.match(plan, /idx_alerts_follow_up/);
+  });
+
+  await t.test('getAlertNotices: when the firing notice arrived, and the last reminder tried, per destination', () => {
+    const id = insert();
+    const add = (destination, kind, ts, delivered) => {
+      const rowId = db.insertWebhookDelivery({ alertId: id, destination, kind, ts, payload: {} });
+      if (delivered) db.markDeliveryDelivered(rowId);
+    };
+    add('main', 'firing', 1000, true);
+    add('main', 'reminder', 5000, true);
+    add('main', 'reminder', 9000, false);
+    add('route:4', 'firing', 1000, false);
+    const notices = Object.fromEntries(db.getAlertNotices(id).map((n) => [n.destination, n]));
+    assert.ok(notices.main.firingDeliveredAt > 0);
+    assert.equal(notices.main.lastReminderTs, 9000, 'a failed reminder still sets the pace - no retry every minute');
+    assert.equal(notices['route:4'].firingDeliveredAt, null, 'never told, so no reminder');
+    assert.equal(notices['route:4'].lastReminderTs, null);
+  });
+
+  await t.test('a failed reminder is never retried by the retry sweep', () => {
+    const id = insert();
+    const rowId = db.insertWebhookDelivery({ alertId: id, destination: 'main', kind: 'reminder', ts: nextTs, payload: {} });
+    db.markDeliveryFailed(rowId);
+    assert.ok(!db.getPendingDeliveries({ maxAttempts: 5, sinceTs: 0, limit: 500 }).some((d) => d.id === rowId));
+  });
+});
+
+test('webhook_routes CRUD', () => {
+  const id = db.insertWebhookRoute({ name: 'Ops phone', url: 'ntfy://ntfy.sh/ops', rules: ['host_unreachable'], minSeverity: 'critical' });
+  let route = db.getWebhookRoutes().find((r) => r.id === id);
+  assert.deepEqual(route, {
+    id,
+    name: 'Ops phone',
+    url: 'ntfy://ntfy.sh/ops',
+    format: '',
+    hostId: null,
+    rules: ['host_unreachable'],
+    minSeverity: 'critical',
+    notifyRecovery: false,
+    enabled: true,
+    delayMinutes: 0,
+  });
+  assert.equal(db.updateWebhookRoute(id, { ...route, hostId: 'edge', notifyRecovery: true, enabled: false, delayMinutes: 30 }), true);
+  route = db.getWebhookRoutes().find((r) => r.id === id);
+  assert.equal(route.delayMinutes, 30);
+  assert.equal(route.hostId, 'edge');
+  assert.equal(route.notifyRecovery, true);
+  assert.equal(route.enabled, false);
+  assert.equal(db.deleteWebhookRoute(id), true);
+  assert.equal(db.deleteWebhookRoute(id), false);
+  assert.equal(db.updateWebhookRoute(id, route), false);
 });
 
 test('container_alert_rules CRUD', async (t) => {
@@ -518,8 +767,8 @@ const CLEARED_AT_EXEMPT = {
   getContainerLifecycleEvents: 'same as countRestartsSince - the uptime rollup answers what the container actually did',
   getContainerLifecycleSeed: 'same as getContainerLifecycleEvents, for the single event that seeds the window',
   getContainersWithLifecycleEvents: 'same as getContainerLifecycleEvents - lists containers by what they did, clear or not',
-  markWebhookDelivered: 'single row by primary key; the id came from getPendingWebhookRetries, which already filters',
-  markWebhookAttemptFailed: 'single row by primary key, same as markWebhookDelivered',
+  getUnresolvedAlert: 'a cleared alert was still sent by webhook, so its recovery is still news to whoever got it',
+  markAlertResolved: 'single row by primary key; the id came from getUnresolvedAlert',
   pruneEvents: 'age-based retention delete - cleared rows are exactly what it has to reclaim',
   pruneAlerts: 'age-based retention delete, same as pruneEvents',
 };

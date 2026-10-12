@@ -1,4 +1,29 @@
 export const POLL_MS = 5000;
+// Every alert rule, as a webhook route's rule filter offers them. Mirrors ALERT_RULES in
+// server/alerts.js, enforced by test/sharedConstants.test.js.
+export const ALERT_RULES = [
+  { value: 'container_crashed', label: 'Container crashed' },
+  { value: 'crash_loop', label: 'Crash loop' },
+  { value: 'unhealthy', label: 'Unhealthy' },
+  { value: 'unexpected_exit', label: 'Unexpected clean exit' },
+  { value: 'oom_killed', label: 'OOM kill' },
+  { value: 'container_cpu', label: 'Container CPU' },
+  { value: 'container_mem', label: 'Container memory' },
+  { value: 'host_cpu', label: 'Host CPU' },
+  { value: 'host_mem', label: 'Host memory' },
+  { value: 'docker_disk', label: 'Docker disk' },
+  { value: 'host_unreachable', label: 'Host unreachable' },
+];
+// The topbar's tabs, in order, as the Settings default-tab select offers them. Mirrors VALID_VIEWS
+// in server/views.js, enforced by test/sharedConstants.test.js.
+export const VIEWS = [
+  { value: 'overview', label: 'Hosts' },
+  { value: 'list', label: 'List' },
+  { value: 'flow', label: 'Flow' },
+  { value: 'logs', label: 'Logs' },
+  { value: 'activity', label: 'Activity' },
+  { value: 'uptime', label: 'Uptime' },
+];
 // Ceiling for the poll loop's failure backoff. A host unreachable for an hour isn't worth six
 // requests every five seconds, but the loop must never stop entirely or the dashboard sits on
 // stale data after the host comes back.

@@ -2,13 +2,14 @@ import { stateEmoji } from '../format.js';
 import { MAX_OPEN_LOG_PANES } from '../constants.js';
 import { loadOpenPanes, saveOpenPanes } from '../lib/logsPersistence.js';
 import LogViewer from './LogViewer.js';
+import LogSearchPanel from './LogSearchPanel.js';
 
 // The Logs tab: a container list on the left and up to MAX_OPEN_LOG_PANES embedded LogViewers
 // on the right, scroll-synced by timestamp (peer-to-peer by default; a pane can be marked "main"
 // for leader-follower, or opt out of sync via `disabledSyncIds`). Full sync design in public/CLAUDE.md.
 export default {
   name: 'LogsView',
-  components: { LogViewer },
+  components: { LogViewer, LogSearchPanel },
   props: {
     hostId: { type: String, required: true },
     groupedContainers: { type: Array, required: true },
@@ -42,6 +43,10 @@ export default {
       // but only when !embedded - here it'd mean repeating it in every already-crowded pane header
       // for a setting that's more useful applied uniformly anyway).
       wrapLines: true,
+      // The compose project the search panel is for, and whether it is showing. Hidden rather than
+      // closed after a result is opened, so "Back to results" returns to the same list.
+      searchProject: null,
+      searchVisible: false,
     };
   },
   computed: {
@@ -66,6 +71,9 @@ export default {
     maxPanes() {
       return MAX_OPEN_LOG_PANES;
     },
+    allContainerIds() {
+      return this.allContainers.map((c) => c.id);
+    },
   },
   watch: {
     // Switching host restores that host's own saved panes rather than clearing - the memory is
@@ -73,6 +81,7 @@ export default {
     // "what did I have open here" is a question each host answers for itself.
     hostId(id) {
       this.restoreOpenPanes(id);
+      this.closeSearch();
     },
     // Anything naming a pane is worth remembering; the scroll positions (lastSyncTsMs,
     // joinTsMsById) deliberately are not, since every pane re-tails on return and a saved
@@ -231,6 +240,42 @@ export default {
         if (tsMs != null) this.broadcastFrom(id, tsMs);
       }
     },
+    // "Ungrouped" is app.js's synthetic bucket for standalone containers - no project to search.
+    isRealGroup(name) {
+      return name !== 'Ungrouped';
+    },
+    openSearch(project) {
+      this.searchProject = project;
+      this.searchVisible = true;
+    },
+    closeSearch() {
+      this.searchProject = null;
+      this.searchVisible = false;
+    },
+    // A search result: open that container's pane on the log around the matched line. seekToTsMs is
+    // read once at a pane's mount, so a pane that's already open is closed and remounted to take it.
+    async openAt({ containerId, tsMs }) {
+      this.searchVisible = false;
+      if (!this.allContainers.some((c) => c.id === containerId)) return;
+      if (this.openIds.includes(containerId)) {
+        this.openIds = this.openIds.filter((id) => id !== containerId);
+        await this.$nextTick();
+      }
+      if (this.viewMode === 'single') {
+        this.openIds = [];
+        this.disabledSyncIds = [];
+        this.mainId = null;
+        this.joinTsMsById = {};
+      } else if (this.atCap) {
+        // Full grid: the oldest pane that isn't main makes room, so the result always opens.
+        const evict = this.openIds.find((id) => id !== this.mainId) ?? this.openIds[0];
+        this.openIds = this.openIds.filter((id) => id !== evict);
+        this.disabledSyncIds = this.disabledSyncIds.filter((id) => id !== evict);
+        if (this.mainId === evict) this.mainId = null;
+      }
+      this.seekTsMsById = { ...this.seekTsMsById, [containerId]: tsMs };
+      this.openIds = [...this.openIds, containerId];
+    },
     stateIcon(state, health) {
       return stateEmoji(state, health);
     },
@@ -241,39 +286,56 @@ export default {
         <div class="logs-tab-viewmode">
           <button
             class="small-btn"
-            :class="{ active: viewMode === 'single' }"
+            :class="{ active: viewMode === 'single' }" :aria-pressed="String(viewMode === 'single')"
             @click="setViewMode('single')"
             title="One pane - click a container to swap it in"
           >Single</button>
           <button
             class="small-btn"
-            :class="{ active: viewMode === 'multi' }"
+            :class="{ active: viewMode === 'multi' }" :aria-pressed="String(viewMode === 'multi')"
             @click="setViewMode('multi')"
             :title="'Up to ' + maxPanes + ' panes side by side, synced by timestamp'"
           >Multi</button>
         </div>
         <button
           class="small-btn logs-tab-wrap-toggle"
-          :class="{ active: wrapLines }"
+          :class="{ active: wrapLines }" :aria-pressed="String(wrapLines)"
           @click="wrapLines = !wrapLines"
           :title="wrapLines ? 'Wrapping long lines in every open pane - turn off to scroll sideways instead' : 'Not wrapping - long lines scroll sideways in every open pane'"
         >
           {{ wrapLines ? '↵ Wrap lines' : '↔ No wrap' }}
         </button>
+        <button v-if="searchProject && !searchVisible" class="small-btn logs-tab-back-to-search" @click="searchVisible = true" :title="'Back to the search results for ' + searchProject">
+          ← Results: {{ searchProject }}
+        </button>
         <div class="search-clear-wrap logs-tab-search-wrap">
-          <input type="text" v-model="search" placeholder="Filter containers…" class="logs-tab-search" />
-          <button v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
+          <input type="text" v-model="search" placeholder="Filter containers…" aria-label="Filter containers by name" class="logs-tab-search" />
+          <button aria-label="Clear filter" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
         </div>
         <p v-if="!filteredGroups.length" class="muted">No containers found.</p>
         <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="logs-tab-group">
-          <div class="logs-tab-group-label">{{ groupName }}</div>
+          <div class="logs-tab-group-label">
+            <span class="logs-tab-group-name">{{ groupName }}</span>
+            <button
+              v-if="isRealGroup(groupName)"
+              class="logs-tab-group-search"
+              :class="{ active: searchVisible && searchProject === groupName }" :aria-pressed="String(searchVisible && searchProject === groupName)"
+              @click="openSearch(groupName)"
+              title="Search the logs of every container in this project at once"
+            >Search</button>
+          </div>
           <div
             v-for="c in items"
             :key="c.id"
             class="logs-tab-row row-clickable"
             :class="{ 'row-selected': openIds.includes(c.id) }"
             :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
+            role="button"
+            tabindex="0"
+            :aria-pressed="String(openIds.includes(c.id))"
             @click="toggleOpen(c.id)"
+            @keydown.enter.prevent="toggleOpen(c.id)"
+            @keydown.space.prevent="toggleOpen(c.id)"
           >
             <span class="logs-tab-row-icon" v-html="stateIcon(c.state, c.health)"></span>
             <span class="logs-tab-row-name">{{ c.name }}</span>
@@ -281,6 +343,17 @@ export default {
         </div>
       </div>
       <div class="logs-tab-viewer">
+        <log-search-panel
+          v-if="searchProject"
+          v-show="searchVisible"
+          class="logs-tab-search-overlay"
+          :host-id="hostId"
+          :project="searchProject"
+          :container-ids="allContainerIds"
+          :wrap="wrapLines"
+          @open-at="openAt"
+          @close="closeSearch"
+        ></log-search-panel>
         <div v-if="openContainers.length" class="logs-tab-panes" :class="{ 'panes-grid': openContainers.length > 1 }">
           <log-viewer
             v-for="c in openContainers"

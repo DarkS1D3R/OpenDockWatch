@@ -56,6 +56,18 @@ test('isValidDockerHostUrl', async (t) => {
   await t.test('rejects an ssh URL with no host at all', () => {
     assert.equal(isValidDockerHostUrl('ssh://'), false);
   });
+
+  // Another socket on this machine - a Podman socket mounted into the container.
+  await t.test('accepts a unix:// socket with an absolute path', () => {
+    assert.equal(isValidDockerHostUrl('unix:///run/podman/podman.sock'), true);
+    assert.equal(isValidDockerHostUrl('unix:///run/user/1000/podman/podman.sock'), true);
+  });
+
+  await t.test('rejects a relative, dash-led, spaced or ../ socket path', () => {
+    for (const bad of ['unix://podman.sock', 'unix:///-H', 'unix:///run/my socket', 'unix:///run/../etc/x', 'unix://']) {
+      assert.equal(isValidDockerHostUrl(bad), false, bad);
+    }
+  });
 });
 
 test('hasLocalHost', async (t) => {

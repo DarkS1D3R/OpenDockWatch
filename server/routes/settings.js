@@ -9,12 +9,13 @@ const eventWatcher = require('../eventWatcher');
 const metricsCollector = require('../metricsCollector');
 const { requireHost, dockerError } = require('./middleware');
 const { forgetDashboardCaches } = require('./dashboardData');
+const { VALID_VIEWS } = require('../views');
+const imageUpdates = require('../imageUpdates');
 
 const router = express.Router();
 
 // The tab the app lands on after login - env default + DB override. Not admin-gated: /session
 // hands it to every role, so a viewer's landing tab matches the configured default.
-const VALID_VIEWS = new Set(['list', 'flow', 'logs', 'activity', 'uptime']);
 const DEFAULT_VIEW_KEY = 'defaultView';
 const FALLBACK_VIEW = 'list';
 
@@ -46,7 +47,7 @@ router.get('/settings/default-view', requireAdmin, (req, res) => {
 router.put('/settings/default-view', requireAdmin, (req, res) => {
   const { defaultView } = req.body || {};
   if (!VALID_VIEWS.has(defaultView)) {
-    return res.status(400).json({ error: 'defaultView must be one of list, flow, logs, activity' });
+    return res.status(400).json({ error: `defaultView must be one of ${[...VALID_VIEWS].join(', ')}` });
   }
   db.setSetting(DEFAULT_VIEW_KEY, defaultView);
   logger.info('settings.default_view.update', { user: req.session.username, defaultView });
@@ -67,30 +68,55 @@ router.get('/settings/webhook', requireAdmin, (req, res) => {
   res.json(alerts.getWebhookConfig());
 });
 
-router.put('/settings/webhook', requireAdmin, (req, res) => {
-  const { url = '', format = '' } = req.body || {};
-  if (url) {
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return res.status(400).json({ error: 'invalid webhook URL' });
-    }
-    if (!ALLOWED_WEBHOOK_SCHEMES.has(parsed.protocol)) {
-      return res.status(400).json({ error: `unsupported scheme "${parsed.protocol}" - use http(s), discord, ntfy, gotify, or gotifys` });
-    }
+// Shared by the main webhook and every route, so the two can't accept different URLs.
+function webhookUrlError(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'invalid webhook URL';
   }
+  if (!ALLOWED_WEBHOOK_SCHEMES.has(parsed.protocol)) {
+    return `unsupported scheme "${parsed.protocol}" - use http(s), discord, ntfy, gotify, or gotifys`;
+  }
+  return null;
+}
+
+// Reminder interval and a route's escalation delay share one range: whole minutes, up to a day.
+function minutesError(field, value) {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0 || value > alerts.REPEAT_MAX_MINUTES) {
+    return `${field} must be a whole number of minutes from 0 to ${alerts.REPEAT_MAX_MINUTES}`;
+  }
+  return null;
+}
+
+router.put('/settings/webhook', requireAdmin, (req, res) => {
+  const { url = '', format = '', notifyRecovery, mode, repeatMinutes } = req.body || {};
+  const urlError = url ? webhookUrlError(url) : null;
+  if (urlError) return res.status(400).json({ error: urlError });
   if (format && format !== 'slack') {
     return res.status(400).json({ error: 'format must be empty or "slack"' });
   }
+  if (notifyRecovery !== undefined && typeof notifyRecovery !== 'boolean') {
+    return res.status(400).json({ error: 'notifyRecovery must be true or false' });
+  }
+  if (mode !== undefined && !alerts.WEBHOOK_MODES.has(mode)) {
+    return res.status(400).json({ error: 'mode must be "all" or "unmatched"' });
+  }
+  const repeatError = minutesError('repeatMinutes', repeatMinutes);
+  if (repeatError) return res.status(400).json({ error: repeatError });
   // Scheme only, never the full URL - webhook URLs embed secrets (Discord token, Slack path, ntfy
   // topic) that have no business in the container's log output. Shared helper, same reason.
   logger.info('settings.webhook.update', {
     user: req.session.username,
     url: url ? alerts.webhookScheme(url) : '(cleared)',
     format: format || 'auto',
+    notifyRecovery,
+    mode,
+    repeatMinutes,
   });
-  res.json(alerts.setWebhookConfig({ url, format }));
+  res.json(alerts.setWebhookConfig({ url, format, notifyRecovery, mode, repeatMinutes }));
 });
 
 router.delete('/settings/webhook', requireAdmin, (req, res) => {
@@ -105,6 +131,118 @@ router.post('/settings/webhook/test', requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
+});
+
+// Extra webhook destinations, each taking the alerts its host/rules/severity filters match - every
+// matching route gets the alert, not just the first. See alerts.js's selectDestinations.
+const ALERT_RULE_NAMES = new Set(alerts.ALERT_RULES);
+const ROUTE_SEVERITIES = new Set(['warning', 'critical']);
+const ROUTE_NAME_MAX = 60;
+
+function validateWebhookRouteBody(body, hosts) {
+  const { name, url, format, hostId, rules, minSeverity, notifyRecovery, enabled, delayMinutes } = body;
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > ROUTE_NAME_MAX)
+    return `name is required, up to ${ROUTE_NAME_MAX} characters`;
+  if (typeof url !== 'string' || !url) return 'url is required';
+  const urlError = webhookUrlError(url);
+  if (urlError) return urlError;
+  if (format && format !== 'slack') return 'format must be empty or "slack"';
+  if (hostId && !hosts.some((h) => h.id === hostId)) return 'unknown hostId';
+  if (rules !== undefined && (!Array.isArray(rules) || rules.some((r) => !ALERT_RULE_NAMES.has(r)))) {
+    return `rules must be an array of ${alerts.ALERT_RULES.join('/')}`;
+  }
+  if (minSeverity !== undefined && !ROUTE_SEVERITIES.has(minSeverity)) return 'minSeverity must be "warning" or "critical"';
+  const delayError = minutesError('delayMinutes', delayMinutes);
+  if (delayError) return delayError;
+  for (const [field, val] of [
+    ['notifyRecovery', notifyRecovery],
+    ['enabled', enabled],
+  ]) {
+    if (val !== undefined && typeof val !== 'boolean') return `${field} must be true or false`;
+  }
+  return null;
+}
+
+function normalizeWebhookRouteBody(body) {
+  return {
+    name: body.name.trim(),
+    url: body.url,
+    format: body.format || '',
+    hostId: body.hostId || null,
+    rules: [...new Set(body.rules || [])],
+    minSeverity: body.minSeverity || 'warning',
+    notifyRecovery: !!body.notifyRecovery,
+    enabled: body.enabled !== false,
+    delayMinutes: body.delayMinutes || 0,
+  };
+}
+
+router.get('/settings/webhook-routes', requireAdmin, (req, res) => {
+  res.json(db.getWebhookRoutes());
+});
+
+router.post('/settings/webhook-routes', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const err = validateWebhookRouteBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  const route = normalizeWebhookRouteBody(body);
+  const id = db.insertWebhookRoute(route);
+  logger.info('settings.webhook_routes.add', { user: req.session.username, id, url: alerts.webhookScheme(route.url) });
+  res.json(db.getWebhookRoutes());
+});
+
+router.put('/settings/webhook-routes/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  const body = req.body || {};
+  const err = validateWebhookRouteBody(body, loadHosts());
+  if (err) return res.status(400).json({ error: err });
+  const route = normalizeWebhookRouteBody(body);
+  if (!db.updateWebhookRoute(id, route)) return res.status(404).json({ error: 'no such route' });
+  logger.info('settings.webhook_routes.update', { user: req.session.username, id, url: alerts.webhookScheme(route.url) });
+  res.json(db.getWebhookRoutes());
+});
+
+router.delete('/settings/webhook-routes/:id', requireAdmin, (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  if (!db.deleteWebhookRoute(id)) return res.status(404).json({ error: 'no such route' });
+  logger.info('settings.webhook_routes.remove', { user: req.session.username, id });
+  res.json(db.getWebhookRoutes());
+});
+
+router.post('/settings/webhook-routes/:id/test', requireAdmin, async (req, res) => {
+  const id = ruleIdParam(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid route id' });
+  if (!db.getWebhookRoutes().some((r) => r.id === id)) return res.status(404).json({ error: 'no such route' });
+  try {
+    await alerts.sendTestAlert({ routeId: id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// How often to check running images against their registries - 0 is off. Same env-default +
+// DB-override shape as the rest. See imageUpdates.js for why off is the default.
+const IMAGE_CHECK_MAX_HOURS = 24 * 30;
+
+router.get('/settings/image-updates', requireAdmin, (req, res) => {
+  res.json(imageUpdates.getCheckConfig());
+});
+
+router.put('/settings/image-updates', requireAdmin, (req, res) => {
+  const hours = Number((req.body || {}).hours);
+  if (!Number.isFinite(hours) || hours < 0 || hours > IMAGE_CHECK_MAX_HOURS) {
+    return res.status(400).json({ error: `hours must be between 0 (off) and ${IMAGE_CHECK_MAX_HOURS}` });
+  }
+  logger.info('settings.image_updates.update', { user: req.session.username, hours });
+  res.json(imageUpdates.setCheckConfig({ hours }));
+});
+
+router.delete('/settings/image-updates', requireAdmin, (req, res) => {
+  logger.info('settings.image_updates.clear', { user: req.session.username });
+  res.json(imageUpdates.clearCheckConfig());
 });
 
 // Resource-threshold rules (container/host CPU & mem, Docker disk footprint) -
@@ -156,7 +294,7 @@ router.post('/settings/hosts', requireAdmin, (req, res) => {
     return res.status(400).json({ error: `a host with id "${id}" already exists` });
   }
   if (!isValidDockerHostUrl(dockerHost)) {
-    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+    return res.status(400).json({ error: 'dockerHost must be an ssh:// URL, a unix:///path socket, or blank for the local socket' });
   }
   if (!dockerHost && hasLocalHost(hosts)) {
     return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });
@@ -176,7 +314,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'unknown host' });
   const { name, dockerHost } = req.body || {};
   if (!isValidDockerHostUrl(dockerHost)) {
-    return res.status(400).json({ error: 'dockerHost must be a valid ssh:// URL, or blank for the local socket' });
+    return res.status(400).json({ error: 'dockerHost must be an ssh:// URL, a unix:///path socket, or blank for the local socket' });
   }
   if (!dockerHost && hasLocalHost(hosts, req.params.id)) {
     return res.status(400).json({ error: 'a host already uses the local socket - only one local connection is allowed' });
@@ -189,6 +327,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   metricsCollector.removeHost(updatedHost.id);
   eventWatcher.removeHost(updatedHost.id);
   forgetDashboardCaches(updatedHost.id);
+  imageUpdates.forgetHost(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -203,6 +342,7 @@ router.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   metricsCollector.removeHost(req.params.id);
   eventWatcher.removeHost(req.params.id);
   forgetDashboardCaches(req.params.id);
+  imageUpdates.forgetHost(req.params.id);
   logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
   res.json(updated);
 });
@@ -222,7 +362,7 @@ router.post('/settings/hosts/:hostId/test', requireAdmin, requireHost, async (re
 
 // Per-container/name/compose-project alert overrides - first-match-wins ordered list, same
 // admin-only shape as the webhook/threshold/host settings above. See alerts.js's resolveContainerConfig.
-const EVENT_RULE_NAMES = new Set(['container_crashed', 'crash_loop', 'unhealthy', 'unexpected_exit']);
+const EVENT_RULE_NAMES = new Set(['container_crashed', 'crash_loop', 'unhealthy', 'unexpected_exit', 'oom_killed']);
 const MATCH_TYPES = new Set(['name', 'composeProject']);
 
 // Same reasoning as intParam/requireContainerId: nothing off the URL reaches sqlite unchecked.
@@ -248,7 +388,7 @@ function validateContainerRuleBody(body, hosts) {
     }
   }
   if (mutedRules !== undefined && (!Array.isArray(mutedRules) || mutedRules.some((r) => !EVENT_RULE_NAMES.has(r)))) {
-    return 'mutedRules must be an array of container_crashed/crash_loop/unhealthy/unexpected_exit';
+    return 'mutedRules must be an array of container_crashed/crash_loop/unhealthy/unexpected_exit/oom_killed';
   }
   return null;
 }

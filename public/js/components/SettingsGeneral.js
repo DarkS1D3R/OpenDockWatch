@@ -1,18 +1,13 @@
 import { apiGetDefaultView, apiSaveDefaultView, apiClearDefaultView } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
-
-const VIEWS = [
-  { value: 'list', label: 'List' },
-  { value: 'flow', label: 'Flow' },
-  { value: 'logs', label: 'Logs' },
-  { value: 'activity', label: 'Activity' },
-  { value: 'uptime', label: 'Uptime' },
-];
+import { VIEWS } from '../constants.js';
+import SettingsImageUpdates from './SettingsImageUpdates.js';
 
 // The Settings panel's General tab: currently just the default landing tab, env-default +
 // DB-override like the other sections - see server/index.js's getDefaultView.
 export default {
   name: 'SettingsGeneral',
+  components: { SettingsImageUpdates },
   data() {
     return {
       defaultView: 'list',
@@ -64,12 +59,14 @@ export default {
       </label>
       <p v-if="overridden" class="muted small">Overriding the .env default.</p>
       <p v-else class="muted small">Using the .env default (if any) — no override saved yet.</p>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="status" class="muted small">{{ status }}</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="status" class="muted small" role="status">{{ status }}</p>
       <div class="modal-actions">
         <button :disabled="saving" @click="save">Save</button>
         <button :disabled="saving || !overridden" @click="clear">Clear override</button>
       </div>
+      <hr />
+      <settings-image-updates></settings-image-updates>
     </div>
   `,
 };

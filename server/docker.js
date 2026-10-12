@@ -13,8 +13,13 @@ function hostArgs(host) {
   return host && host.dockerHost ? ['-H', host.dockerHost] : [];
 }
 
+// A unix:// socket (a mounted Podman socket, say) is on this machine; only ssh:// pays a handshake.
+function isSshHost(host) {
+  return !!(host && host.dockerHost && host.dockerHost.startsWith('ssh://'));
+}
+
 function checkTimeoutMs(host) {
-  return host && host.dockerHost ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
+  return isSshHost(host) ? SSH_CHECK_TIMEOUT_MS : CMD_TIMEOUT_MS;
 }
 
 // execFile's own `timeout` only sends SIGTERM, and a `docker` CLI wedged on a dead daemon/ssh
@@ -111,7 +116,7 @@ function poolStats() {
 // matters. `docker system df` timed out every 60s for weeks on a WSL2 host and looked exactly like
 // a broken daemon in the log. Pure and separate from spawnDocker so it's unit-testable without
 // mocking child_process, same as the CLI-output parsers further down this file.
-function dockerCommandError(err, args, timeoutMs, stderr) {
+function dockerCommandError(err, args, timeoutMs, stderr, stdout) {
   if (err.killed || err.signal === 'SIGTERM' || err.signal === 'SIGKILL') {
     const timedOut = new Error(`docker ${args.join(' ')} timed out after ${timeoutMs}ms`);
     timedOut.timedOut = true;
@@ -119,7 +124,20 @@ function dockerCommandError(err, args, timeoutMs, stderr) {
     return timedOut;
   }
   err.stderr = stderr;
+  err.stdout = stdout;
   return err;
+}
+
+// `docker inspect a b c` prints every object it found and exits 1 naming one that is gone - a
+// container removed since the list was read. That one's absence is the answer, not a reason to
+// throw away the rest of the batch. Anything else still throws.
+async function inspectFound(exec, args) {
+  try {
+    return await exec(args);
+  } catch (err) {
+    if (!err.timedOut && err.stdout && /no such (object|container|image)/i.test(err.stderr || '')) return err.stdout;
+    throw err;
+  }
 }
 
 function spawnDocker(args, timeoutMs, withStderr = false) {
@@ -127,7 +145,7 @@ function spawnDocker(args, timeoutMs, withStderr = false) {
     let killTimer = null;
     const child = execFile('docker', args, { timeout: timeoutMs, maxBuffer: 25 * 1024 * 1024 }, (err, stdout, stderr) => {
       clearTimeout(killTimer);
-      if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr));
+      if (err) return reject(dockerCommandError(err, args, timeoutMs, stderr, stdout));
       resolve(withStderr ? { stdout, stderr } : stdout);
     });
     killTimer = setTimeout(() => {
@@ -174,19 +192,35 @@ function containerCounts(containers) {
 
 // Always a live call; the caller decides whether to make it (see cachedHostInfo). Populating the
 // cache here rather than in a wrapper keeps the two from disagreeing about what was last fetched.
+// `docker info` does not say which engine answered; `docker version` lists Podman's as a component
+// named "Podman Engine". Pure and exported for testing.
+function engineFromComponents(names) {
+  return /(^|\|)\s*podman/i.test(String(names || '')) ? 'podman' : 'docker';
+}
+
 async function getHostInfo(host) {
-  const stdout = await run([...hostArgs(host), 'info', '--format', '{{json .}}']);
+  const [stdout, components] = await Promise.all([
+    run([...hostArgs(host), 'info', '--format', '{{json .}}']),
+    // Best effort: an engine we can't name is treated as Docker, which is what it was before.
+    run([...hostArgs(host), 'version', '--format', '{{range .Server.Components}}{{.Name}}|{{end}}']).catch(() => ''),
+  ]);
   const raw = JSON.parse(stdout);
   const info = {
     ncpu: raw.NCPU,
     memTotalBytes: raw.MemTotal,
     serverVersion: raw.ServerVersion,
+    engine: engineFromComponents(components),
     containers: raw.Containers,
     containersRunning: raw.ContainersRunning,
     hostname: raw.Name,
   };
   hostInfoCache.set(host.id, { ts: Date.now(), info });
   return info;
+}
+
+// The engine a host last reported, stale or not - it only changes if someone swaps the daemon.
+function hostEngine(hostId) {
+  return hostInfoCache.get(hostId)?.info.engine || null;
 }
 
 // Why the last probe failed, kept per host so the reason survives the boolean this returns.
@@ -292,13 +326,14 @@ async function listContainers(host) {
         image: raw.Image,
         status: raw.Status,
         state: raw.State,
-        health: parseHealth(raw.Status),
+        health: parseHealth(raw.Status) || (raw.State === 'running' ? trackedHealth(host.id, raw.ID) : null),
         ports: raw.Ports,
         networks,
         composeProject: labels['com.docker.compose.project'] || null,
         composeService: labels['com.docker.compose.service'] || null,
         alertsDisabled: labels['opendockwatch.alerts'] === 'off',
         iconOverride: iconOverrideFromLabel(labels['opendockwatch.icon']),
+        url: urlFromLabel(labels['opendockwatch.url']),
       };
     });
 }
@@ -307,6 +342,18 @@ async function listContainers(host) {
 // silently ignored for a difference the user can't see the reason for.
 function iconOverrideFromLabel(value) {
   return (value || '').trim().toLowerCase() || null;
+}
+
+// The value ends up in an href, so only http(s) survives: a `javascript:` URL in a label would run
+// in the dashboard's origin on click. Anything unparseable is dropped rather than shown broken.
+function urlFromLabel(value) {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+  try {
+    return ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 // Env var *names* that identify a container's runtime when its image name says nothing (a
@@ -367,6 +414,137 @@ async function refreshIconHints(host, containers, exec = run) {
     iconHintsCache.set(host.id, { signature, hints: parseIconHints(raw) });
   } finally {
     iconHintsInFlight.delete(host.id);
+  }
+}
+
+// For imageUpdates.js: which image each container actually runs (by id, since its tag may have moved
+// on) and the reference it was started from (Config.Image - `docker ps` shows a bare id once the tag
+// has moved). One batched inspect per host per check, the same shape as the icon hints above.
+function parseContainerImages(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const [id, imageId, configImage] = line.trim().split('\t');
+    if (id && imageId) out.set(id.slice(0, 12), { imageId, configImage: configImage || '' });
+  }
+  return out;
+}
+
+async function getContainerImages(host, containerIds, exec = run) {
+  if (!containerIds.length) return new Map();
+  return parseContainerImages(
+    await inspectFound(exec, [...hostArgs(host), 'inspect', '--format', '{{.Id}}\t{{.Image}}\t{{.Config.Image}}', ...containerIds])
+  );
+}
+
+// RepoDigests per image id: the registry digests the image was pulled as (on the containerd image
+// store, a local build has one too - see server/CLAUDE.md). A line that won't parse is skipped.
+function parseImageRepoDigests(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const tab = line.indexOf('\t');
+    if (tab === -1) continue;
+    try {
+      const digests = JSON.parse(line.slice(tab + 1));
+      out.set(line.slice(0, tab).trim(), Array.isArray(digests) ? digests : []);
+    } catch {
+      /* one bad line costs that image its check, not the whole host's */
+    }
+  }
+  return out;
+}
+
+async function getImageRepoDigests(host, imageIds, exec = run) {
+  if (!imageIds.length) return new Map();
+  return parseImageRepoDigests(
+    await inspectFound(exec, [...hostArgs(host), 'image', 'inspect', '--format', '{{.Id}}\t{{json .RepoDigests}}', ...imageIds])
+  );
+}
+
+// Podman leaves health out of `docker ps`'s Status and sends its health events with no result, so
+// for a Podman host health is read with one batched inspect - when the running set changes or
+// Podman reports a check ran (markHealthDirty). See server/CLAUDE.md.
+const healthState = new Map(); // hostId -> { signature, dirty, statuses: Map(shortId -> status) }
+// `index`, not `.State.Health`: the CLI templates over a map, and a container with no healthcheck
+// has no Health key - the dotted form errors and fails the whole batch (seen against Podman 5.8).
+const HEALTH_FORMAT = '{{.Id}}\t{{with index .State "Health"}}{{.Status}}{{end}}';
+const healthInFlight = new Set();
+
+function healthEntry(hostId) {
+  let entry = healthState.get(hostId);
+  if (!entry) {
+    entry = { signature: null, dirty: false, statuses: new Map() };
+    healthState.set(hostId, entry);
+  }
+  return entry;
+}
+
+function markHealthDirty(hostId) {
+  healthEntry(hostId).dirty = true;
+}
+
+function trackedHealth(hostId, containerId) {
+  return healthState.get(hostId)?.statuses.get(String(containerId).slice(0, 12)) || null;
+}
+
+// `<id>\t<status>` lines -> Map(shortId -> status); a container with no healthcheck has an empty
+// status and is left out. Pure and exported for testing.
+function parseHealthStatuses(raw) {
+  const out = new Map();
+  for (const line of String(raw || '').split('\n')) {
+    const [id, status] = line.trim().split('\t');
+    if (id && status) out.set(id.slice(0, 12), status.trim());
+  }
+  return out;
+}
+
+// What changed between two status maps, as the transitions Docker itself would have sent an event
+// for: to healthy or unhealthy. "starting" is recorded but not announced, and a container seen for
+// the first time is not a transition. Pure and exported for testing.
+function healthTransitions(before, after) {
+  const out = [];
+  for (const [id, status] of after) {
+    const prev = before.get(id);
+    if (prev !== undefined && prev !== status && (status === 'healthy' || status === 'unhealthy')) out.push({ id, status });
+  }
+  return out;
+}
+
+// Podman hosts only, one inspect per host at a time, never awaited by the poll. onTransition gets
+// each change so it can be ingested as the health event Podman's stream did not carry. exec/engine for tests.
+async function refreshPodmanHealth(host, containers, onTransition, { exec = run, engine = hostEngine(host.id) } = {}) {
+  if (engine !== 'podman') return;
+  const entry = healthEntry(host.id);
+  const ids = containers
+    .filter((c) => c.state === 'running')
+    .map((c) => c.id)
+    .sort();
+  const signature = ids.join(',');
+  if (signature === entry.signature && !entry.dirty) return;
+  if (healthInFlight.has(host.id)) return;
+  healthInFlight.add(host.id);
+  entry.dirty = false;
+  try {
+    const raw = ids.length ? await inspectFound(exec, [...hostArgs(host), 'inspect', '--format', HEALTH_FORMAT, ...ids]) : '';
+    const statuses = parseHealthStatuses(raw);
+    const changes = healthTransitions(entry.statuses, statuses);
+    entry.statuses = statuses;
+    entry.signature = signature;
+    for (const change of changes) onTransition(change);
+  } catch (err) {
+    entry.dirty = true;
+    throw err;
+  } finally {
+    healthInFlight.delete(host.id);
+  }
+}
+
+// For unexpected_exit on Podman, whose `podman stop` sends no kill event: whether the container
+// is running again (its restart policy brought it back) or stayed stopped. null if unknown.
+async function getContainerStatus(host, id) {
+  try {
+    return (await run([...hostArgs(host), 'inspect', '--format', '{{.State.Status}}', id])).trim() || null;
+  } catch {
+    return null;
   }
 }
 
@@ -454,6 +632,9 @@ function parseStatsLine(line) {
     return null;
   }
   if (!raw || typeof raw.Container !== 'string' || !raw.Container) return null;
+  // A placeholder row (every figure '--') carries nothing, and must not overwrite the last real
+  // one: Podman's stream alternates them with real rows for the same container.
+  if (raw.CPUPerc === '--' && String(raw.MemUsage || '').startsWith('--')) return null;
   return { id: raw.Container.slice(0, 12), sample: statsRowToSample(raw) };
 }
 
@@ -676,6 +857,7 @@ function forgetHost(hostId) {
   topologyMetaCache.delete(hostId);
   iconHintsCache.delete(hostId);
   hostInfoCache.delete(hostId);
+  healthState.delete(hostId);
   lastCheckErrors.delete(hostId);
 }
 
@@ -700,6 +882,7 @@ async function getTopology(host, snapshot) {
       image: c.image,
       composeService: c.composeService,
       iconOverride: c.iconOverride,
+      url: c.url,
       iconHint: iconHintFor(host.id, c.id),
       ports: c.ports,
       networks: c.networks,
@@ -755,11 +938,50 @@ async function getRestartPolicy(host, id) {
   }
 }
 
+// Docker's defaults for a HEALTHCHECK that leaves a field out, which inspect reports as 0.
+const HEALTHCHECK_DEFAULTS = { intervalMs: 30_000, timeoutMs: 30_000, startPeriodMs: 0, retries: 3 };
+const HEALTHCHECK_OUTPUT_MAX = 4096;
+
+function healthcheckCommand(test) {
+  if (!Array.isArray(test) || !test.length) return null;
+  if (test[0] === 'CMD-SHELL') return test.slice(1).join(' ');
+  if (test[0] === 'CMD') return test.slice(1).join(' ');
+  return null;
+}
+
+// The configured check and its last results (docker keeps five), newest first, or null when the
+// container has no healthcheck (none set, or disabled with `NONE`). Durations in inspect are
+// nanoseconds. Pure and exported for testing, like the other inspect parsing.
+function parseHealthcheck(raw) {
+  const cfg = raw?.Config?.Healthcheck || null;
+  const state = raw?.State?.Health || null;
+  const disabled = Array.isArray(cfg?.Test) && cfg.Test[0] === 'NONE';
+  if (disabled || (!cfg && !state)) return null;
+  const ms = (ns, fallback) => (typeof ns === 'number' && ns > 0 ? Math.round(ns / 1e6) : fallback);
+  const output = (s) => {
+    const text = String(s || '').trimEnd();
+    return text.length > HEALTHCHECK_OUTPUT_MAX ? text.slice(0, HEALTHCHECK_OUTPUT_MAX) + '…' : text;
+  };
+  return {
+    status: state?.Status || null,
+    failingStreak: state?.FailingStreak || 0,
+    command: healthcheckCommand(cfg?.Test),
+    intervalMs: ms(cfg?.Interval, HEALTHCHECK_DEFAULTS.intervalMs),
+    timeoutMs: ms(cfg?.Timeout, HEALTHCHECK_DEFAULTS.timeoutMs),
+    startPeriodMs: ms(cfg?.StartPeriod, HEALTHCHECK_DEFAULTS.startPeriodMs),
+    retries: cfg?.Retries > 0 ? cfg.Retries : HEALTHCHECK_DEFAULTS.retries,
+    log: (state?.Log || [])
+      .map((entry) => ({ start: entry.Start, end: entry.End, exitCode: entry.ExitCode, output: output(entry.Output) }))
+      .reverse(),
+  };
+}
+
 async function getContainerInspect(host, id) {
   const stdout = await run([...hostArgs(host), 'inspect', id]);
   const [raw] = JSON.parse(stdout);
   return {
     limits: parseResourceLimits(raw.HostConfig),
+    healthcheck: parseHealthcheck(raw),
     createdAt: raw.Created,
     restartPolicy: raw.HostConfig?.RestartPolicy?.Name || 'no',
     restartMaxRetries: raw.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
@@ -823,6 +1045,14 @@ function maskEnvValues(env) {
     const value = entry.slice(idx + 1);
     return `${entry.slice(0, idx)}=${value ? ENV_MASK : ''}`;
   });
+}
+
+// What a viewer session gets from inspect: env values masked, and the healthcheck command left out -
+// it is a command line like any other (`mysqladmin ping -p...`), which is why Processes is admin-only.
+// The check's output stays: it is what the container printed, and viewers can read its logs.
+function maskInspectForViewer(inspect) {
+  const healthcheck = inspect.healthcheck ? { ...inspect.healthcheck, command: null, commandMasked: true } : null;
+  return { ...inspect, env: maskEnvValues(inspect.env), envMasked: true, healthcheck };
 }
 
 // docker stop/restart wait out a 10s SIGTERM grace before SIGKILL - the same length as
@@ -1001,6 +1231,96 @@ function getLogsAfter(host, id, { after, limit }) {
   });
 }
 
+// Matched against the message only, with ANSI colour codes stripped - a search for "2026" must not
+// hit every line's own stamp, and a coloured "ERROR" is "\x1b[31mERROR" in the raw text. `needle`
+// arrives lowercased: plain case-insensitive substring, like every other filter box in the app.
+// eslint-disable-next-line no-control-regex
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
+function logLineMatches(line, needle) {
+  const body = line.replace(LOG_TS_RE, '');
+  const plain = body.includes('\x1b[') ? body.replace(ANSI_SGR_RE, '') : body;
+  return plain.toLowerCase().includes(needle);
+}
+
+// Scans one container's log since `since` for `query`, keeping the newest `limit` matches. Stops at
+// `deadline` (epoch ms, so time queued for a run() slot counts too) and returns what it found rather
+// than failing, so one huge log can't sink a compose-wide search. Holds a slot while it reads.
+async function searchLogs(host, id, { since, query, limit, deadline }) {
+  const needle = query.toLowerCase();
+  await acquire();
+  try {
+    if (deadline - Date.now() <= 0) return { lines: [], matched: 0, timedOut: true };
+    return await new Promise((resolve, reject) => {
+      const child = spawn('docker', [...hostArgs(host), 'logs', '--timestamps', '--since', since, id]);
+      const bufs = { out: createTailBuffer(limit), err: createTailBuffer(limit) };
+      const partial = { out: '', err: '' };
+      let matched = 0;
+      let stderrText = '';
+      let settled = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        finish();
+      }, deadline - Date.now());
+
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        if (err) return reject(err);
+        const stamp = (l) => (LOG_TS_RE.exec(l) || [])[1] || '';
+        const lines = [...bufs.out.lines(), ...bufs.err.lines()].sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+        resolve({ lines: lines.slice(-limit), matched, timedOut });
+      }
+
+      const scan = (key, line) => {
+        if (!line.length || !logLineMatches(line, needle)) return;
+        matched++;
+        bufs[key].push(line);
+      };
+      const take = (key) => (chunk) => {
+        if (key === 'err') stderrText = (stderrText + chunk).slice(-4096);
+        const parts = (partial[key] + chunk).split('\n');
+        partial[key] = parts.pop();
+        for (const part of parts) scan(key, part);
+      };
+      child.stdout.setEncoding('utf8').on('data', take('out'));
+      child.stderr.setEncoding('utf8').on('data', take('err'));
+      child.on('error', (err) => finish(err));
+      child.on('close', (code) => {
+        if (timedOut) return;
+        for (const key of ['out', 'err']) scan(key, partial[key]);
+        if (code) return finish(Object.assign(new Error(stderrText.trim() || `docker logs exited ${code}`), { stderr: stderrText }));
+        finish();
+      });
+    });
+  } finally {
+    release();
+  }
+}
+
+// Pure half of the compose-wide search route: every container's matches on one timeline, newest
+// `limit` kept. Per-container failures and timeouts are reported beside the matches, not thrown.
+function mergeLogSearch(results, limit) {
+  const stamp = (m) => (LOG_TS_RE.exec(m.line) || [])[1] || '';
+  const all = [];
+  const failed = [];
+  const timedOut = [];
+  let matched = 0;
+  for (const r of results) {
+    if (r.error) {
+      failed.push({ containerId: r.containerId, containerName: r.containerName, error: r.error });
+      continue;
+    }
+    if (r.timedOut) timedOut.push(r.containerName);
+    matched += r.matched;
+    for (const line of r.lines) all.push({ containerId: r.containerId, containerName: r.containerName, line });
+  }
+  all.sort((a, b) => (stamp(a) < stamp(b) ? -1 : stamp(a) > stamp(b) ? 1 : 0));
+  return { matches: all.slice(-limit), matched, truncated: matched > Math.min(all.length, limit), failed, timedOut };
+}
+
 function streamEvents(host) {
   return spawn('docker', [...hostArgs(host), 'events', '--format', '{{json .}}']);
 }
@@ -1077,6 +1397,11 @@ async function getDiskUsageImages(host) {
 }
 
 module.exports = {
+  inspectFound,
+  parseContainerImages,
+  getContainerImages,
+  parseImageRepoDigests,
+  getImageRepoDigests,
   checkHost,
   testHostConnection,
   forgetHost,
@@ -1089,6 +1414,9 @@ module.exports = {
   createTailBuffer,
   mergeLogsBefore,
   mergeLogsAfter,
+  searchLogs,
+  logLineMatches,
+  mergeLogSearch,
   LOG_TS_RE,
   streamEvents,
   streamStats,
@@ -1099,6 +1427,7 @@ module.exports = {
   getTopologyMeta,
   refreshIconHints,
   iconOverrideFromLabel,
+  urlFromLabel,
   iconHintFor,
   parseIconHints,
   runtimeHintFromEnv,
@@ -1109,11 +1438,22 @@ module.exports = {
   cachedHostInfo,
   containerCounts,
   getContainerInspect,
+  getContainerStatus,
+  isSshHost,
+  engineFromComponents,
+  hostEngine,
+  markHealthDirty,
+  trackedHealth,
+  parseHealthStatuses,
+  healthTransitions,
+  refreshPodmanHealth,
   parseResourceLimits,
   getRestartPolicy,
   getContainerTop,
   parseTop,
   maskEnvValues,
+  maskInspectForViewer,
+  parseHealthcheck,
   parseByteString,
   parseMemUsedBytes,
   parseLabels,
