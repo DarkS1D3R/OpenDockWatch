@@ -44,7 +44,8 @@ test('jumpError', () => {
 
 test('utcOffsetLabel names the offset the picker is in', () => {
   const ms = local(2026, 6, 1, 12, 0, 0);
-  const minutes = -new Date(ms).getTimezoneOffset();
+  // 0 - x, not -x: in UTC -0 would fail the strict equal against the parsed label's 0.
+  const minutes = 0 - new Date(ms).getTimezoneOffset();
   const label = lj.utcOffsetLabel(ms);
   assert.match(label, /^UTC[+-]\d{2}:\d{2}$/);
   const [, sign, h, m] = /^UTC([+-])(\d{2}):(\d{2})$/.exec(label);
