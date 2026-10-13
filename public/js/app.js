@@ -180,8 +180,10 @@ const app = createApp({
       const h = this.hosts.find((h) => h.id === this.selectedHostId);
       return h ? h.name : '';
     },
+    // Matches the server's countOpenAlerts: `=== null`, not falsiness, since resolved_at = 0
+    // (from before resolution was tracked) counts as resolved there.
     openAlertsCount() {
-      return this.alerts.filter((a) => !a.acknowledged).length;
+      return this.alerts.filter((a) => !a.acknowledged && a.resolved_at === null).length;
     },
     // A browser allows ~6 connections per origin over HTTP/1.1, so a log-preview stream only
     // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see public/CLAUDE.md.
