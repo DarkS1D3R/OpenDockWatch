@@ -383,7 +383,7 @@ const stmts = {
   `),
   countOpenAlertsByContainer: db.prepare(`
     SELECT container_id AS containerId, COUNT(*) AS n FROM alerts
-    WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL
+    WHERE host_id = ? AND acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
     GROUP BY container_id
   `),
   // No `result = 'ok'` filter: index.js writes this row's ts when the action is requested, before
@@ -415,7 +415,10 @@ const stmts = {
   getAuditLogAll: db.prepare(`SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?`),
   getAlertsByHost: db.prepare(`SELECT * FROM alerts WHERE host_id = ? AND cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
   getAlertsAll: db.prepare(`SELECT * FROM alerts WHERE cleared_at IS NULL ORDER BY ts DESC LIMIT ?`),
-  countOpenAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
+  countOpenAlerts: db.prepare(`
+    SELECT COUNT(*) AS n FROM alerts
+    WHERE host_id = ? AND acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
+  `),
   // Buckets into `bucketMs`-wide windows and averages numeric columns; the four I/O columns use
   // MAX not AVG since they're cumulative counters - metricsHistory.js's withIoRates turns
   // consecutive bucket totals into displayed rates. See server/CLAUDE.md for the restart-edge-case note.
@@ -760,6 +763,8 @@ function clearAlerts(hostId) {
   return stmts.clearAlertsByHost.run(Date.now(), hostId).changes;
 }
 
+// Open = unacknowledged and unresolved; resolved_at = 0 (the pre-tracking backfill) counts as
+// resolved, as it does for follow-ups. See server/CLAUDE.md.
 function countOpenAlerts(hostId) {
   return stmts.countOpenAlerts.get(hostId).n;
 }

@@ -285,6 +285,22 @@ test('clearAlerts hides alerts without re-arming the cooldown', async (t) => {
     assert.equal(db.ackAllAlerts(CLEAR_HOST), 0);
   });
 
+  await t.test('a resolved alert stops counting as open but stays in the list, unacknowledged', () => {
+    const RESOLVE_HOST = 'db-test-resolve-host';
+    const firing = db.insertAlert(alert(RESOLVE_HOST));
+    const resolved = db.insertAlert(alert(RESOLVE_HOST, { containerId: 'dddddddddddd' }));
+    const legacy = db.insertAlert(alert(RESOLVE_HOST, { containerId: 'eeeeeeeeeeee' }));
+    db.markAlertResolved(resolved, (nextTs += 1000));
+    db.client.prepare('UPDATE alerts SET resolved_at = 0 WHERE id = ?').run(legacy);
+
+    assert.equal(db.countOpenAlerts(RESOLVE_HOST), 1, 'only the still-firing alert is open');
+    assert.deepEqual([...db.getOpenAlertCountsByContainer(RESOLVE_HOST)], [['cccccccccccc', 1]]);
+    const rows = db.getAlerts(RESOLVE_HOST);
+    assert.equal(rows.length, 3, 'resolving must not hide an alert from the list');
+    assert.ok(rows.every((r) => r.acknowledged === 0));
+    assert.ok(rows.some((r) => r.id === firing));
+  });
+
   // The whole point of the soft delete.
   await t.test('the cooldown still sees the cleared alert', () => {
     const ts = (nextTs += 1000);

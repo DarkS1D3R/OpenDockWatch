@@ -47,7 +47,7 @@ function render({ lagMs = 0 } = {}) {
       '# HELP opendockwatch_host_containers_running Running containers on host',
       '# TYPE opendockwatch_host_containers_running gauge',
       ...hostContainersLines,
-      '# HELP opendockwatch_alerts_open Open (unacknowledged) alerts for host',
+      '# HELP opendockwatch_alerts_open Open (unacknowledged, unresolved) alerts for host',
       '# TYPE opendockwatch_alerts_open gauge',
       ...alertsLines,
       '# HELP opendockwatch_host_reachable Whether the host answered its last poll (1) or not (0)',
