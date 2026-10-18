@@ -343,7 +343,10 @@ router.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(req.params.id);
   forgetDashboardCaches(req.params.id);
   imageUpdates.forgetHost(req.params.id);
-  logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id });
+  // Once the host is gone its alerts can't be shown, acknowledged or cleared from the UI, and an
+  // open one would keep counting and keep getting reminders. A soft clear, as from the Activity tab.
+  const alertsCleared = db.clearAlerts(req.params.id);
+  logger.info('settings.hosts.remove', { user: req.session.username, host: req.params.id, alertsCleared });
   res.json(updated);
 });
 

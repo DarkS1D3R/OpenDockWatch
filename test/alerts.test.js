@@ -50,6 +50,7 @@ function mockDb(t, overrides = {}) {
     getDeliveredDestinations: () => [],
     getUnresolvedAlert: () => null,
     markAlertResolved: () => true,
+    getOpenContainerAlerts: () => [],
     getWebhookRoutes: () => [],
     getContainerAlertRules: () => [],
     insertHostReachability: () => {},
@@ -1296,6 +1297,82 @@ test('retainContainers / forgetHost: breach counter cleanup', async (t) => {
   });
 });
 
+// A stopped or removed container never sends the sample or health event that would resolve its
+// alert, so without this the alert stayed open and reminders repeated until someone acked it.
+test('retainContainers: resolves running-state alerts for containers no longer running', async (t) => {
+  const open = (id, containerId, rule) => ({
+    id,
+    ts: Date.now() - 20 * 60_000,
+    severity: 'warning',
+    containerId,
+    containerName: `svc-${containerId}`,
+    rule,
+  });
+
+  function setup(t2, rows, { delivered = [] } = {}) {
+    const resolved = [];
+    const asked = [];
+    const posts = [];
+    mockDb(t2, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'https://example.com/main' : key === 'alertWebhookNotifyRecovery' ? '1' : null),
+      getOpenContainerAlerts: (hostId, rules) => (asked.push({ hostId, rules }), rows),
+      markAlertResolved: (id) => (resolved.push(id), true),
+      getDeliveredDestinations: () => delivered,
+    });
+    stubFetch(t2, async (url, opts) => (posts.push(JSON.parse(opts.body)), { ok: true }));
+    return { resolved, asked, posts };
+  }
+
+  await t.test('resolves CPU, memory and unhealthy alerts whose container stopped, and only those', (t2) => {
+    const s = setup(t2, [open(1, 'stopped', 'container_cpu'), open(2, 'stopped', 'unhealthy'), open(3, 'running', 'container_mem')]);
+    alerts.retainContainers('h-resolve', ['running']);
+    assert.deepEqual(s.asked, [{ hostId: 'h-resolve', rules: ['container_cpu', 'container_mem', 'unhealthy'] }]);
+    assert.deepEqual(s.resolved, [1, 2]);
+  });
+
+  await t.test('asks again only when the running set changes', (t2) => {
+    const s = setup(t2, []);
+    alerts.retainContainers('h-signature', ['a', 'b']);
+    alerts.retainContainers('h-signature', ['b', 'a']);
+    assert.equal(s.asked.length, 1, 'same set in another order is no change');
+    alerts.retainContainers('h-signature', ['a']);
+    assert.equal(s.asked.length, 2);
+    alerts.forgetHost('h-signature');
+    alerts.retainContainers('h-signature', ['a']);
+    assert.equal(s.asked.length, 3, 'forgetHost starts over, so an edited host is settled again');
+  });
+
+  await t.test('tells a destination that got the firing notice why it closed', async (t2) => {
+    const s = setup(t2, [open(9, 'gone', 'container_mem')], { delivered: ['main'] });
+    alerts.retainContainers('h-notice', []);
+    await flushMicrotasks();
+    assert.equal(s.posts.length, 1);
+    assert.equal(s.posts[0].status, 'resolved');
+    assert.equal(s.posts[0].containerId, 'gone');
+    assert.match(s.posts[0].message, /^Container svc-gone is no longer running - lasted 20m$/);
+  });
+
+  await t.test('a stopped breaching container is resolved, and its breach starts over when it runs again', (t2) => {
+    const fired = [];
+    const s = setup(t2, [open(5, 'c-stop', 'container_cpu')]);
+    t2.mock.method(db, 'insertAlert', (a) => (fired.push(a), 1));
+    t2.mock.method(db, 'getSetting', mockThresholdSettings({ cpuThreshold: 90, sustainMinutes: 5 }));
+    const start = Date.now();
+    alerts.handleSample({ hostId: 'h-stop', containerId: 'c-stop', containerName: 'web', cpuPerc: 95, memPerc: 10, ts: start });
+    alerts.retainContainers('h-stop', []);
+    assert.deepEqual(s.resolved, [5]);
+    alerts.handleSample({
+      hostId: 'h-stop',
+      containerId: 'c-stop',
+      containerName: 'web',
+      cpuPerc: 95,
+      memPerc: 10,
+      ts: start + 5 * 60_000,
+    });
+    assert.equal(fired.length, 0, 'the old breach window did not survive the stop');
+  });
+});
+
 test('breach persistence: checkSustained mirrors start/clear into db', (t) => {
   const setCalls = [];
   const deleteCalls = [];
@@ -2124,6 +2201,18 @@ test('sendFollowUps', async (t) => {
     repeat = '15';
     await alerts.sendFollowUps(now);
     assert.ok(asked[2].incidentSince > now, 'no escalation route: no incident can be due');
+  });
+
+  await t.test('asks only about hosts still configured', async (t2) => {
+    const asked = [];
+    mockHosts(t2, [{ id: 'local' }, { id: 'edge' }]);
+    mockDb(t2, {
+      getSetting: (key) => (key === 'alertWebhookUrl' ? 'https://example.com/main' : key === 'alertRepeatMinutes' ? '15' : null),
+      getFollowUpAlerts: (opts) => (asked.push(opts), []),
+      getAlertNotices: () => [],
+    });
+    await alerts.sendFollowUps(Date.now());
+    assert.deepEqual(asked[0].hostIds, ['local', 'edge'], 'a deleted host cannot be acknowledged from the UI, so it is not followed up');
   });
 
   await t.test('sends what is due and records it as a reminder', async (t2) => {

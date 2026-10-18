@@ -505,6 +505,47 @@ test('reminder and escalation queries', async (t) => {
     assert.deepEqual(followUpIds(), [], 'a cleared alert gets no more reminders');
   });
 
+  await t.test('hostIds limits candidates to those hosts; null means every host', () => {
+    const here = insert();
+    const elsewhere = insert({ hostId: 'db-test-deleted-host' });
+    const ids = (hostIds) => db.getFollowUpAlerts({ limit: 500, statefulRules: ['host_unreachable'], hostIds }).map((a) => a.id);
+    assert.ok(ids(null).includes(here) && ids(null).includes(elsewhere));
+    assert.ok(ids([FHOST]).includes(here));
+    assert.ok(!ids([FHOST]).includes(elsewhere), 'a host no longer configured gets no follow-ups');
+    assert.deepEqual(ids([]), [], 'no hosts configured: nothing to follow up');
+    db.ackAlert(here);
+    db.ackAlert(elsewhere);
+  });
+
+  await t.test('getOpenContainerAlerts: open alerts on one host, for the named rules, acknowledged or not', () => {
+    const OHOST = 'db-test-open-container-host';
+    const add = (overrides) =>
+      insert({
+        hostId: OHOST,
+        containerId: 'aaaaaaaaaaaa',
+        containerName: 'web',
+        rule: 'container_cpu',
+        severity: 'warning',
+        ...overrides,
+      });
+    const open = add();
+    const acked = add({ rule: 'unhealthy' });
+    db.ackAlert(acked);
+    const resolved = add();
+    db.markAlertResolved(resolved, nextTs);
+    add({ rule: 'container_crashed' });
+    add({ containerId: null, containerName: null, rule: 'host_cpu' });
+    insert({ hostId: 'db-test-other-host', containerId: 'aaaaaaaaaaaa', rule: 'container_cpu' });
+    const rows = db.getOpenContainerAlerts(OHOST, ['container_cpu', 'container_mem', 'unhealthy', 'host_cpu']);
+    assert.deepEqual(rows.map((r) => r.id).sort(), [open, acked].sort());
+    assert.deepEqual(
+      { ...rows.find((r) => r.id === open), id: 0, ts: 0 },
+      { id: 0, ts: 0, severity: 'warning', containerId: 'aaaaaaaaaaaa', containerName: 'web', rule: 'container_cpu' }
+    );
+    db.clearAlerts(OHOST);
+    assert.deepEqual(db.getOpenContainerAlerts(OHOST, ['container_cpu', 'unhealthy']), [], 'a cleared alert is left alone');
+  });
+
   await t.test('the partial index serves the sweep query', () => {
     const plan = db.client
       .prepare(

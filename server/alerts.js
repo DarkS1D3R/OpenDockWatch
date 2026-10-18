@@ -378,11 +378,16 @@ function checkSustained(key, breached, sustainMs, ts) {
 // translated to a named message since this path also backs Settings' "Test webhook" button.
 const WEBHOOK_TIMEOUT_MS = 10_000;
 
-// checkSustained never removes a counter once its subject is gone, so left alone breachStarts
-// keeps one entry per (container, rule) that ever breached for the process's life. Called from
-// metricsCollector, the only thing that sees a container disappear; host-level counters survive.
-function retainContainers(hostId, containerIds) {
-  const keep = new Set(containerIds);
+// Rules only a running container can clear: a stopped or removed one never reports "back under" or
+// "healthy", so its alert stayed open and reminders repeated until someone acknowledged it.
+const RUNNING_STATE_RULES = ['container_cpu', 'container_mem', 'unhealthy'];
+const runningSets = new Map(); // hostId -> the running-id signature retainContainers last acted on
+
+// Called by metricsCollector with each poll's running containers. Drops breach counters for the
+// rest (host-level ones survive) and, when the running set changed, resolves their open
+// RUNNING_STATE_RULES alerts. See server/CLAUDE.md.
+function retainContainers(hostId, runningIds) {
+  const keep = new Set(runningIds);
   for (const key of breachStarts.keys()) {
     const [host, subject] = key.split(':');
     if (host !== hostId || subject === 'host') continue;
@@ -391,9 +396,23 @@ function retainContainers(hostId, containerIds) {
       db.deleteBreachStart(key);
     }
   }
+  const signature = [...keep].sort().join(',');
+  if (runningSets.get(hostId) === signature) return;
+  runningSets.set(hostId, signature);
+  for (const open of db.getOpenContainerAlerts(hostId, RUNNING_STATE_RULES)) {
+    if (keep.has(open.containerId)) continue;
+    closeAlert(open, {
+      hostId,
+      containerId: open.containerId,
+      rule: open.rule,
+      message: `Container ${open.containerName || open.containerId} is no longer running`,
+      reason: 'not_running',
+    });
+  }
 }
 
 function forgetHost(hostId) {
+  runningSets.delete(hostId);
   for (const key of recentKills.keys()) if (key.startsWith(`${hostId}:`)) recentKills.delete(key);
   for (const key of recentOoms.keys()) if (key.startsWith(`${hostId}:`)) recentOoms.delete(key);
   for (const key of breachStarts.keys()) {
@@ -490,11 +509,21 @@ function formatAge(ms) {
 // recorded; the notice itself is opt-in per destination. See server/CLAUDE.md.
 function resolve({ hostId, containerId = null, containerName = null, rule, message, sinceTs = 0 }) {
   const open = db.getUnresolvedAlert({ hostId, containerId, rule, sinceTs });
-  if (!open) return;
+  if (open) closeAlert(open, { hostId, containerId, containerName, rule, message });
+}
+
+// Marks one open alert resolved and sends its resolved notice; shared by resolve() and retainContainers.
+function closeAlert(open, { hostId, containerId = null, containerName = null, rule, message, reason }) {
   const ts = Date.now();
   if (!db.markAlertResolved(open.id, ts)) return;
   const name = containerName || open.containerName;
-  logger.info('alert.resolved', { host: hostId, container: name || containerId, rule, afterSec: Math.round((ts - open.ts) / 1000) });
+  logger.info('alert.resolved', {
+    host: hostId,
+    container: name || containerId,
+    rule,
+    afterSec: Math.round((ts - open.ts) / 1000),
+    ...(reason ? { reason } : {}),
+  });
   const delivered = db.getDeliveredDestinations(open.id);
   if (!delivered.length) return;
   const main = getWebhookConfig();
@@ -650,6 +679,8 @@ async function sendFollowUps(now = Date.now()) {
         statefulRules: main.repeatMinutes ? [...STATEFUL_RULES] : [],
         incidentSince: delayed.length ? now - longestDelayMs - ESCALATION_WINDOW_MS : now + 1,
         limit: FOLLOW_UP_LIMIT,
+        // A deleted host's alerts can't be acknowledged from the UI, so they must not be followed up.
+        hostIds: hosts.loadHosts().map((h) => h.id),
       }),
       noticesFor: (id) => db.getAlertNotices(id),
       main,

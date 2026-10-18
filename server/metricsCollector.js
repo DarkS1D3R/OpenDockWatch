@@ -296,19 +296,13 @@ async function pollHost(host) {
     const alertCtx = anyAlerting ? alerts.alertContext() : null;
     for (const sample of alertSamples) alerts.handleSample(sample, alertCtx);
 
-    // Containers that have gone away since the last poll can't dip back under threshold to
-    // clear their own breach counters, so they're dropped here instead.
-    alerts.retainContainers(
-      host.id,
-      containers.map((c) => c.id)
-    );
-    // Same idea for the stats stream, but against the *running* set: `docker stats` only ever
-    // reports running containers, so this is what keeps a stopped one's last sample from
-    // outliving it and a churning host from accumulating an entry per id it has ever seen.
-    statsWatcher.retainContainers(
-      host.id,
-      containers.filter((c) => c.state === 'running').map((c) => c.id)
-    );
+    // A container that stopped or went away since the last poll can't dip back under threshold or
+    // report healthy, so its breach counters and running-state alerts are settled here instead.
+    // The stats stream too: `docker stats` only reports running containers, so this keeps a stopped
+    // one's last sample from outliving it and a churning host from keeping every id it ever saw.
+    const runningIds = containers.filter((c) => c.state === 'running').map((c) => c.id);
+    alerts.retainContainers(host.id, runningIds);
+    statsWatcher.retainContainers(host.id, runningIds);
 
     if (hostSample) {
       alerts.handleHostSample(
