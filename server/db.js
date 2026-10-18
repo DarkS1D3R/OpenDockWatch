@@ -409,9 +409,18 @@ const stmts = {
   getHostReachabilityTransitions: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? AND ts >= ? ORDER BY ts ASC`),
   getHostReachabilitySeed: db.prepare(`SELECT reachable FROM host_reachability WHERE host_id = ? AND ts < ? ORDER BY ts DESC LIMIT 1`),
   getLastHostReachability: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? ORDER BY ts DESC LIMIT 1`),
-  pruneContainerMetrics: db.prepare(`DELETE FROM container_metrics WHERE ts < ?`),
-  pruneHostMetrics: db.prepare(`DELETE FROM host_metrics WHERE ts < ?`),
-  pruneEvents: db.prepare(`DELETE FROM events WHERE ts < ?`),
+  // The three big tables prune by rowid: walk up from the oldest row to the first one inside
+  // retention and delete everything below it. "WHERE ts < ?" scanned the whole table (no index leads
+  // with ts) - 763ms of event-loop time on 6M rows, 81ms this way. See server/CLAUDE.md.
+  pruneContainerMetrics: db.prepare(`
+    DELETE FROM container_metrics WHERE id < COALESCE((SELECT id FROM container_metrics WHERE ts >= ? ORDER BY id LIMIT 1), (SELECT MAX(id) FROM container_metrics) + 1)
+  `),
+  pruneHostMetrics: db.prepare(`
+    DELETE FROM host_metrics WHERE id < COALESCE((SELECT id FROM host_metrics WHERE ts >= ? ORDER BY id LIMIT 1), (SELECT MAX(id) FROM host_metrics) + 1)
+  `),
+  pruneEvents: db.prepare(`
+    DELETE FROM events WHERE id < COALESCE((SELECT id FROM events WHERE ts >= ? ORDER BY id LIMIT 1), (SELECT MAX(id) FROM events) + 1)
+  `),
   pruneAuditLog: db.prepare(`DELETE FROM audit_log WHERE ts < ?`),
   pruneAlerts: db.prepare(`DELETE FROM alerts WHERE ts < ?`),
   pruneHostReachability: db.prepare(`DELETE FROM host_reachability WHERE ts < ?`),
@@ -505,7 +514,7 @@ function insertMetrics(samples, hostSample = null) {
 // bind-mounted volume shows up as application lag, and why a WAL checkpoint (where the fsyncs
 // actually are, not at each commit) can land inside one. watchdog.js can say the loop stalled but
 // never why; this is the attribution. Only the two writes big enough to matter are wrapped (the
-// per-poll transaction and the hourly prune, which is a full table scan) - timing every single-row
+// per-poll transaction and the hourly prune) - timing every single-row
 // statement would cost more than it tells you. Rounded on read to keep the hot path to one subtraction.
 const SLOW_DB_WRITE_MS = Number(process.env.SLOW_DB_WRITE_MS) || 250;
 let writeStats = { lastMs: 0, maxMs: 0, slow: 0, op: null };

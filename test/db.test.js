@@ -876,3 +876,96 @@ test('alerts and events queries filter cleared_at', async (t) => {
     }
   });
 });
+
+// The big tables prune by rowid rather than "WHERE ts < ?", which no index could serve and so
+// scanned the whole table every hour (763ms on 6M rows). Rowid order is insert order, which is
+// time order except across a clock step - so the one property that must hold whatever the order
+// is that nothing inside retention is ever deleted.
+test('pruneOld: rowid-walk prune of the metrics and events tables', async (t) => {
+  const DAY = 86_400_000;
+  const now = Date.now();
+  const keepAll = Number.MAX_SAFE_INTEGER / 2;
+  const reset = () => db.client.exec('DELETE FROM container_metrics; DELETE FROM host_metrics; DELETE FROM events');
+  const sample = (ts) => ({
+    hostId: 'prune-host',
+    containerId: 'aaaaaaaaaaaa',
+    ts,
+    cpuPerc: 1,
+    memUsedBytes: 1,
+    memPerc: 1,
+    netRxBytes: 0,
+    netTxBytes: 0,
+    blockReadBytes: 0,
+    blockWriteBytes: 0,
+  });
+  const host = (ts) => ({
+    hostId: 'prune-host',
+    ts,
+    cpuPercent: 1,
+    memUsedBytes: 1,
+    systemCpuPercent: null,
+    systemMemUsedBytes: null,
+    systemMemTotalBytes: null,
+  });
+  const metricTs = () =>
+    db.client
+      .prepare('SELECT ts FROM container_metrics ORDER BY id')
+      .all()
+      .map((r) => r.ts);
+  const prune = (metricsDays) =>
+    db.pruneOld({ metricsRetentionMs: metricsDays * DAY, eventsRetentionMs: keepAll, auditRetentionMs: keepAll });
+
+  await t.test('deletes rows older than retention and keeps the rest', () => {
+    reset();
+    const ts = [now - 9 * DAY, now - 8 * DAY, now - 6 * DAY, now - DAY];
+    for (const x of ts) db.insertMetrics([sample(x)], host(x));
+    const res = prune(7);
+    assert.equal(res.containerMetrics, 2);
+    assert.equal(res.hostMetrics, 2);
+    assert.deepEqual(metricTs(), ts.slice(2));
+  });
+
+  await t.test('never deletes a row inside retention, even out of insert order', () => {
+    reset();
+    // A clock stepped back: a recent row sits below an old one in rowid order.
+    for (const x of [now - 9 * DAY, now - DAY, now - 8 * DAY, now - 2 * DAY]) db.insertMetrics([sample(x)]);
+    prune(7);
+    assert.deepEqual(metricTs(), [now - DAY, now - 8 * DAY, now - 2 * DAY], 'the stale row past the boundary waits for a later prune');
+  });
+
+  await t.test('a table with nothing inside retention is emptied', () => {
+    reset();
+    for (const x of [now - 9 * DAY, now - 8 * DAY]) db.insertMetrics([sample(x)]);
+    assert.equal(prune(7).containerMetrics, 2);
+    assert.deepEqual(metricTs(), []);
+  });
+
+  await t.test('events prune the same way', () => {
+    reset();
+    const event = (ts) =>
+      db.insertEvent({ hostId: 'prune-host', containerId: 'aaaaaaaaaaaa', containerName: 'web', action: 'start', ts, rawJson: null });
+    event(now - 40 * DAY);
+    event(now - DAY);
+    const res = db.pruneOld({ metricsRetentionMs: keepAll, eventsRetentionMs: 30 * DAY, auditRetentionMs: keepAll });
+    assert.equal(res.events, 1);
+    assert.deepEqual(
+      db.client
+        .prepare('SELECT ts FROM events')
+        .all()
+        .map((r) => r.ts),
+      [now - DAY]
+    );
+  });
+
+  await t.test('the delete is a rowid range, not a scan of the table', () => {
+    for (const table of ['container_metrics', 'host_metrics', 'events']) {
+      const sql = DB_SOURCE.match(new RegExp(`DELETE FROM ${table} WHERE id < [^\`]*`))[0];
+      const plan = db.client
+        .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .all(now)
+        .map((r) => r.detail);
+      assert.equal(plan[0], `SEARCH ${table} USING INTEGER PRIMARY KEY (rowid<?)`, `${table}: ${plan.join(' | ')}`);
+    }
+  });
+  reset();
+});

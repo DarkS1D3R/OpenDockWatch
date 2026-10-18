@@ -448,3 +448,47 @@ test('pollHost writes container samples and the host row together', async (t) =>
     assert.equal(metricsCollector.getSnapshot(HOST.id).usage, null);
   });
 });
+
+// addHost used to run a separate first poll and first disk poll beside the scheduled loops, so a
+// first poll slower than POLL_MS overlapped the 5s tick (a down SSH host logged unreachable twice)
+// and a cold 40-75s `docker system df` overlapped the 60s one. Each loop is now strictly sequential.
+test('addHost: the first poll and first disk poll never overlap the next ones', async (t) => {
+  const HOST = { id: 'collector-overlap-host', dockerHost: null };
+  const calls = { list: 0, disk: 0 };
+  const pending = { list: null, disk: null };
+  const flush = () => new Promise((r) => setImmediate(r));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(docker, 'listContainers', () => (calls.list++, new Promise((r) => (pending.list = r))));
+  t.mock.method(docker, 'getStats', () => Promise.resolve({}));
+  t.mock.method(docker, 'getHostInfo', () => Promise.resolve({ ncpu: 4, memTotalBytes: 1e9 }));
+  t.mock.method(docker, 'refreshIconHints', () => Promise.resolve());
+  t.mock.method(docker, 'refreshPodmanHealth', () => Promise.resolve());
+  t.mock.method(docker, 'getDiskUsage', () => (calls.disk++, new Promise((r) => (pending.disk = r))));
+  t.mock.method(statsWatcher, 'addHost', () => {});
+  t.mock.method(statsWatcher, 'removeHost', () => {});
+  t.mock.method(statsWatcher, 'getSamples', () => null);
+  t.mock.method(alerts, 'handleHostReachability', () => {});
+  t.mock.method(alerts, 'handleDiskUsage', () => {});
+  t.mock.method(db, 'insertMetrics', () => {});
+  t.after(() => metricsCollector.removeHost(HOST.id));
+
+  metricsCollector.addHost(HOST);
+  assert.equal(calls.list, 1, 'the first poll starts at once');
+  t.mock.timers.tick(metricsCollector.POLL_MS * 3);
+  t.mock.timers.tick(DISK_POLL_MS * 2);
+  assert.equal(calls.list, 1, 'no second poll while the first is still running');
+  assert.equal(calls.disk, 0, 'the disk poll waits for the first poll, whose snapshot says the host is reachable');
+
+  pending.list([]);
+  await flush();
+  assert.equal(calls.disk, 1, 'the first disk poll follows the first poll');
+  t.mock.timers.tick(metricsCollector.POLL_MS);
+  assert.equal(calls.list, 2, 'the next poll is POLL_MS after the first finished');
+
+  t.mock.timers.tick(DISK_POLL_MS * 2);
+  assert.equal(calls.disk, 1, 'no second `docker system df` while the first is still running');
+  pending.disk([]);
+  await flush();
+  t.mock.timers.tick(DISK_POLL_MS);
+  assert.equal(calls.disk, 2, 'the next disk poll is scheduled from when the first finished');
+});

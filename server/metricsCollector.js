@@ -4,7 +4,7 @@ const { loadHosts } = require('./hosts');
 // branches - which now depend on which of these calls fail - without a docker daemon. The pure
 // helpers below have nothing to mock and stay destructured.
 const docker = require('./docker');
-const { getDiskUsage, parseMemUsedBytes, computeIoRates, containerCounts, forgetHost: forgetDockerHost } = require('./docker');
+const { parseMemUsedBytes, computeIoRates, containerCounts, forgetHost: forgetDockerHost } = require('./docker');
 const statsWatcher = require('./statsWatcher');
 const hostUsage = require('./hostUsage');
 const db = require('./db');
@@ -335,7 +335,7 @@ async function pollDiskUsage(host, diskState) {
   if (!snapshot || !snapshot.reachable) return;
   const startedAt = Date.now();
   try {
-    snapshot.diskUsage = await getDiskUsage(host);
+    snapshot.diskUsage = await docker.getDiskUsage(host);
     snapshot.diskUsageError = null;
     diskState.lastDurationMs = Date.now() - startedAt;
     if (diskState.failures > 0) {
@@ -365,7 +365,8 @@ async function pollDiskUsage(host, diskState) {
   }
 }
 
-function scheduleHostPolling(host, pollState) {
+function scheduleHostPolling(host, pollState, afterFirstPoll = () => {}) {
+  let first = true;
   const tick = async () => {
     if (pollState.stopped) return;
     const startedAt = Date.now();
@@ -379,10 +380,14 @@ function scheduleHostPolling(host, pollState) {
     } finally {
       lastPollCompletedTs = Date.now();
       recordPoll(host.id, lastPollCompletedTs - startedAt);
+      if (first) {
+        first = false;
+        afterFirstPoll();
+      }
       if (!pollState.stopped) pollState.timer = setTimeout(tick, POLL_MS);
     }
   };
-  pollState.timer = setTimeout(tick, POLL_MS);
+  tick();
 }
 
 // Chained rather than a setInterval, and the gap is measured from when the last run finished:
@@ -398,7 +403,7 @@ function scheduleDiskPolling(host, diskState) {
       if (!diskState.stopped) diskState.timer = setTimeout(tick, nextDiskDelay(diskState));
     }
   };
-  diskState.timer = setTimeout(tick, DISK_POLL_MS);
+  tick();
 }
 
 // Starts polling a single host immediately - used both by start() at boot and by the
@@ -414,17 +419,10 @@ function addHost(host) {
   // only to feed this collector, so its lifecycle is this collector's, and the settings/hosts
   // routes get it for free through the addHost/removeHost pair they already call.
   statsWatcher.addHost(host);
-  // pollDiskUsage reads the snapshot pollHost writes (snapshot.reachable, set after checkHost
-  // resolves) - firing both in parallel left diskUsage empty until the next 60s tick, since the
-  // first call found no snapshot yet. pollHost never rejects, so this chain needs no .catch.
-  pollHost(host)
-    .then(() => pollDiskUsage(host, diskState))
-    .catch((err) => logger.error('metrics.initial_poll.failed', { host: host.id, error: err.message }))
-    .finally(() => {
-      lastPollCompletedTs = Date.now();
-    });
-  scheduleHostPolling(host, pollState);
-  scheduleDiskPolling(host, diskState);
+  // Each loop's first run is its own first tick, so a run never overlaps the next: a separate
+  // initial poll used to race the 5s tick (a down SSH host logged unreachable twice) and a cold
+  // 75s `docker system df` the 60s one. Disk waits for the first poll's snapshot.reachable.
+  scheduleHostPolling(host, pollState, () => scheduleDiskPolling(host, diskState));
 }
 
 function removeHost(hostId) {
