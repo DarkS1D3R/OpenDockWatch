@@ -18,6 +18,7 @@ A small self-hosted Docker dashboard. See containers grouped by Compose project,
 - **Image updates** — flags containers whose tag has moved on the registry (detection only, opt-in).
 - **Activity** — alerts and the container event log side by side, filterable.
 - **Uptime** — 24h / 7d / 30d per-container and per-host uptime report.
+- **Resources** — read-only inventory of images, volumes and networks with sizes and "unused" flags.
 - **Alerts** — crashes, OOM kills, crash loops, unhealthy, unreachable hosts and CPU/memory/disk thresholds, sent to Discord, Slack, ntfy, Gotify or any JSON webhook.
 - **Podman** — supported through its Docker-compatible API.
 - **Two roles** — admin, plus an optional read-only viewer login.

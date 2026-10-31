@@ -11,6 +11,7 @@ const metricsCollector = require('../metricsCollector');
 const logger = require('../logger');
 const { hostDisplayName, hostOverview } = require('../overview');
 const imageUpdates = require('../imageUpdates');
+const inventory = require('../inventory');
 const { requireHost, requireContainerId, intParam, dockerError } = require('./middleware');
 const { containersFor, statsFor, hostHistoryFor, topologyFor, dashboardExtrasFor } = require('./dashboardData');
 
@@ -176,6 +177,14 @@ router.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => 
   } catch (err) {
     dockerError(res, err);
   }
+});
+
+// The Resources tab. Answers from memory at once and refreshes in the background - `system df -v`
+// can outlast REQUEST_TIMEOUT_MS on a slow host - so the client polls while `refreshing` is true.
+router.get('/hosts/:hostId/inventory', requireHost, (req, res) => {
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  const known = snapshot && snapshot.ts && snapshot.reachable && Array.isArray(snapshot.containers);
+  res.json(inventory.getInventory(req.odwHost, { force: req.query.refresh === '1', containers: known ? snapshot.containers : null }));
 });
 
 router.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {

@@ -151,6 +151,11 @@ export async function apiGetDiskUsageImages(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`, { timeoutMs: 40_000 }));
 }
 
+// Answers from the server's cache at once; `refreshing` says a background re-read is under way.
+export async function apiGetInventory(hostId, { refresh = false } = {}) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/inventory${refresh ? '?refresh=1' : ''}`));
+}
+
 export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
   const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));

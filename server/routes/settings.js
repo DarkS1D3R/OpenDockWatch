@@ -11,6 +11,7 @@ const { requireHost, dockerError } = require('./middleware');
 const { forgetDashboardCaches } = require('./dashboardData');
 const { VALID_VIEWS } = require('../views');
 const imageUpdates = require('../imageUpdates');
+const inventory = require('../inventory');
 
 const router = express.Router();
 
@@ -328,6 +329,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(updatedHost.id);
   forgetDashboardCaches(updatedHost.id);
   imageUpdates.forgetHost(updatedHost.id);
+  inventory.forgetHost(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -343,6 +345,7 @@ router.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(req.params.id);
   forgetDashboardCaches(req.params.id);
   imageUpdates.forgetHost(req.params.id);
+  inventory.forgetHost(req.params.id);
   // Once the host is gone its alerts can't be shown, acknowledged or cleared from the UI, and an
   // open one would keep counting and keep getting reminders. A soft clear, as from the Activity tab.
   const alertsCleared = db.clearAlerts(req.params.id);

@@ -1386,6 +1386,60 @@ test('image update checks', async (t) => {
   });
 });
 
+test('GET /hosts/:hostId/inventory', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const inventory = require('../server/inventory');
+  t.afterEach(() => inventory.forgetHost(hostId));
+
+  await t.test('answers from memory without waiting on system df, and joins networks to the snapshot', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({
+      ts: Date.now(),
+      reachable: true,
+      containers: [{ id: 'aaaaaaaaaaaa', name: 'shop-web-1', networks: ['shop_backend'] }],
+    }));
+    t2.mock.method(docker, 'getInventoryDf', () => new Promise(() => {})); // never settles
+    t2.mock.method(docker, 'getNetworks', async () => [
+      { id: '1', name: 'shop_backend', builtin: false },
+      { id: '2', name: 'old_default', builtin: false },
+    ]);
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const first = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.refreshing, true);
+    assert.equal(first.body.images, null);
+
+    const second = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(second.body.refreshing, true);
+    assert.deepEqual(
+      second.body.networks.map((n) => [n.name, n.containers, n.unused]),
+      [
+        ['shop_backend', ['shop-web-1'], false],
+        ['old_default', [], true],
+      ]
+    );
+  });
+
+  await t.test('an unreachable host leaves network usage unknown rather than all unused', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({ ts: Date.now(), reachable: false, containers: [] }));
+    t2.mock.method(docker, 'getInventoryDf', async () => ({
+      images: [],
+      volumes: [],
+      buildCache: { count: 0, sizeBytes: 0, reclaimableBytes: 0 },
+    }));
+    t2.mock.method(docker, 'getNetworks', async () => [{ id: '2', name: 'old_default', builtin: false }]);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await inventory.refresh({ id: hostId });
+    const res = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(res.body.networks[0].unused, null);
+  });
+
+  await t.test('an unknown host 404s and it needs a session', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/inventory`)).status, 404);
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/inventory`)).status, 401);
+  });
+});
+
 test('GET /hosts/:hostId/uptime', async (t) => {
   const hostId = loadHosts()[0].id;
   const CONTAINER = 'uptimeaaaaaa';

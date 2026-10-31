@@ -3189,3 +3189,55 @@ table.hosts-table tr:last-child td {
   border-top: 1px solid var(--border);
   margin: 16px 0;
 }
+
+/* The Resources tab (ResourcesView.js). Reuses the Uptime report's table and filter box; the
+   status flag is a small pill so "Unused" can be spotted down a long list without reading it. */
+.resources-refresh {
+  margin-left: auto;
+}
+.resources-summary {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.resources-build-cache {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.resources-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 0;
+}
+.resources-filters .uptime-search-wrap {
+  margin-bottom: 0;
+  flex: 1;
+}
+.resources-net-containers {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+.resource-flag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.resource-flag-unused {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.resource-flag-used {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.resources-view .log-section-header {
+  justify-content: flex-start;
+  gap: 14px;
+}
+.resources-count {
+  opacity: 0.75;
+}

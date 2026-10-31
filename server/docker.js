@@ -1396,6 +1396,80 @@ async function getDiskUsageImages(host) {
   return parseDiskUsageImages(JSON.parse(stdout.trim()));
 }
 
+// The Resources tab's images and volumes, from the same `system df -v` document. Unused means no
+// container at all references it, stopped ones included (`Containers`/`Links` count both).
+function parseInventoryDf(data) {
+  const images = parseDiskUsageImages(data).map((img) => ({
+    ...img,
+    sizeBytes: parseByteString(img.size),
+    uniqueBytes: parseByteString(img.uniqueSize),
+    dangling: !img.repository,
+    unused: img.containers === 0,
+  }));
+  const volumes = ((data && data.Volumes) || [])
+    .map((v) => {
+      const labels = parseLabels(v.Labels);
+      const links = parseInt(v.Links, 10) || 0;
+      return {
+        name: v.Name,
+        driver: v.Driver || null,
+        size: v.Size && v.Size !== 'N/A' ? v.Size : null,
+        sizeBytes: v.Size && v.Size !== 'N/A' ? parseByteString(v.Size) : null,
+        containers: links,
+        anonymous: 'com.docker.volume.anonymous' in labels,
+        composeProject: labels['com.docker.compose.project'] || null,
+        unused: links === 0,
+      };
+    })
+    .sort((a, b) => parseByteString(b.size) - parseByteString(a.size));
+  const cacheRows = (data && data.BuildCache) || [];
+  const buildCache = {
+    count: cacheRows.length,
+    sizeBytes: cacheRows.reduce((sum, r) => sum + parseByteString(r.Size), 0),
+    reclaimableBytes: cacheRows.filter((r) => String(r.InUse) !== 'true').reduce((sum, r) => sum + parseByteString(r.Size), 0),
+  };
+  return { images, volumes, buildCache };
+}
+
+// Networks docker (or podman, or swarm) creates itself. They are never "unused" - removing them
+// isn't something a user does - so they are flagged builtin instead.
+const BUILTIN_NETWORKS = new Set(['bridge', 'host', 'none', 'podman', 'docker_gwbridge', 'ingress']);
+
+// `docker network ls --format '{{json .}}'`, one object per line; a malformed line is skipped.
+function parseNetworkLs(stdout) {
+  const out = [];
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    let r;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!r || typeof r.Name !== 'string') continue;
+    const labels = parseLabels(r.Labels);
+    out.push({
+      id: (r.ID || '').slice(0, 12),
+      name: r.Name,
+      driver: r.Driver || null,
+      scope: r.Scope || null,
+      internal: String(r.Internal) === 'true',
+      composeProject: labels['com.docker.compose.project'] || null,
+      builtin: BUILTIN_NETWORKS.has(r.Name),
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function getInventoryDf(host) {
+  const stdout = await run([...hostArgs(host), 'system', 'df', '-v', '--format', '{{json .}}'], DISK_USAGE_TIMEOUT_MS);
+  return parseInventoryDf(JSON.parse(stdout.trim()));
+}
+
+async function getNetworks(host) {
+  return parseNetworkLs(await run([...hostArgs(host), 'network', 'ls', '--format', '{{json .}}']));
+}
+
 module.exports = {
   inspectFound,
   parseContainerImages,
@@ -1435,6 +1509,11 @@ module.exports = {
   getDiskUsage,
   getDiskUsageImages,
   parseDiskUsageImages,
+  parseInventoryDf,
+  parseNetworkLs,
+  getInventoryDf,
+  getNetworks,
+  BUILTIN_NETWORKS,
   cachedHostInfo,
   containerCounts,
   getContainerInspect,

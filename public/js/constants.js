@@ -23,6 +23,7 @@ export const VIEWS = [
   { value: 'logs', label: 'Logs' },
   { value: 'activity', label: 'Activity' },
   { value: 'uptime', label: 'Uptime' },
+  { value: 'resources', label: 'Resources' },
 ];
 // Ceiling for the poll loop's failure backoff. A host unreachable for an hour isn't worth six
 // requests every five seconds, but the loop must never stop entirely or the dashboard sits on

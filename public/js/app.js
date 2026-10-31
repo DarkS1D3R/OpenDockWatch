@@ -10,6 +10,7 @@ import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
 import UptimeReport from './components/UptimeReport.js';
+import ResourcesView from './components/ResourcesView.js';
 import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
@@ -91,6 +92,7 @@ const app = createApp({
     FlowView,
     LogsView,
     UptimeReport,
+    ResourcesView,
     HostsOverview,
   },
   data() {
@@ -110,7 +112,7 @@ const app = createApp({
       actionInFlight: {},
       groupActionInFlight: {},
 
-      view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
+      view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' | 'resources' - reset to the configured default once the session loads, see mounted()
       stateFilter: 'all', // 'all' | 'running' | 'stopped'
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
@@ -611,11 +613,12 @@ const app = createApp({
             Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
           </button>
           <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
+          <button :class="{active: view==='resources'}" :aria-current="view==='resources' ? 'page' : null" @click="setView('resources')" title="Images, volumes and networks on this host">Resources</button>
         </nav>
-        <div class="view-toggle" role="group" aria-label="Show containers" :title="view === 'overview' ? 'The Hosts tab shows every host, not containers - this filter applies to the other tabs' : null">
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
+        <div class="view-toggle" role="group" aria-label="Show containers" :title="view === 'overview' ? 'The Hosts tab shows every host, not containers - this filter applies to the other tabs' : view === 'resources' ? 'The Resources tab lists images, volumes and networks, not containers' : null">
+          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
+          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
+          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
         </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
         <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Settings" :aria-expanded="String(settingsOpen)">⚙ Settings</button>
@@ -693,6 +696,8 @@ const app = createApp({
           ></activity-view>
 
           <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
+
+          <resources-view v-if="view === 'resources'" :host-id="selectedHostId"></resources-view>
 
           <hosts-overview v-if="view === 'overview'" :selected-host-id="selectedHostId" @open-host="openHost"></hosts-overview>
         </main>
