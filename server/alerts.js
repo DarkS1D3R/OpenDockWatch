@@ -98,7 +98,7 @@ function webhookScheme(rawUrl) {
 
 // Routes ALERT_WEBHOOK_URL to the right destination/payload shape based on its scheme,
 // apprise-style (discord://, ntfy://, gotify(s)://, or a plain http(s) URL - auto-detects
-// Slack, else generic JSON POST). See README's Alerts section for the full scheme table.
+// Slack, else generic JSON POST). See docs/alerts.md for the full scheme table.
 function buildDelivery(rawUrl, alert, format) {
   const url = new URL(rawUrl);
 

@@ -5,31 +5,24 @@
 [![Version](https://img.shields.io/github/v/release/DarkS1D3R/OpenDockWatch?label=version)](https://github.com/DarkS1D3R/OpenDockWatch/releases)
 [![Test](https://img.shields.io/github/actions/workflow/status/DarkS1D3R/OpenDockWatch/ci.yml?branch=main&label=test)](https://github.com/DarkS1D3R/OpenDockWatch/actions/workflows/ci.yml)
 
-A small self-hosted Docker dashboard: containers grouped by Compose project, CPU/memory stats, start/stop/restart, live log tailing, and an ArgoCD-style topology view of how containers relate to each other. Works against the local Docker daemon and any number of remote hosts over SSH. No orchestration, no scheduling, no Kubernetes — just visibility and basic control, in the spirit of Dozzle.
+A small self-hosted Docker dashboard. See containers grouped by Compose project, with live CPU/memory, start/stop/restart, log tailing, alerts and a topology graph. It watches the local Docker daemon and any number of remote hosts over SSH. No orchestration — just visibility and basic control.
 
 ## Features
 
-- **Hosts tab** — every monitored host on one screen, one row each: reachable or not (and for how long), running/total containers with any unhealthy or restarting ones called out, CPU and memory, and open alerts. Problem hosts sort to the top, and a one-line summary above the table answers "is anything wrong anywhere". Clicking a row switches to that host; clicking its alert count opens that host's Activity. Built from what the server already polls, so it adds no work on the hosts themselves. Can be made the landing tab from Settings → General or `DEFAULT_VIEW=overview`.
-- **List view** — containers grouped by `docker compose` project (collapsible), with live CPU/memory columns each carrying its own sparkline of the last couple of minutes, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart actions. Filter by All / Running / Stopped.
-  - **Group actions** — a Start all / Stop all / Restart all row on each compose group's header batches the action across every container in that project, in `depends_on` order (dependencies first for start/restart, dependents first for stop; containers with no ordering relationship between them run in parallel). This is a real docker-CLI-level batch, not `docker compose up`/`down`/`pull` — those need the compose YAML itself, which OpenDockWatch never reads, so it works identically on a remote SSH host where there's no local copy of the file to hand a compose command anyway. One container failing doesn't stop the rest; the response reports each container's own result.
-  - **Service logos** — each row starts with the logo of what the container runs (Postgres, Redis, nginx, Grafana and ~85 more, from [Simple Icons](https://simpleicons.org)), matched from the image name. When the name says nothing — a custom `myorg/app:latest` — the runtime is recognised from the environment variables its base image sets, so an app built `FROM eclipse-temurin` with Spring config shows the Spring logo (only variable _names_ are read; values never leave the server). Add an `opendockwatch.url` label (http/https only) to turn the container's name into a link to its own UI, also shown in the detail panel. Pin one explicitly with the `opendockwatch.icon` label, e.g. `opendockwatch.icon=springboot`. Anything unrecognised falls back to a lettered badge.
-- **Container metrics** — clicking a row's CPU or memory sparkline opens that container's full recorded history: CPU, memory, network I/O and block I/O over a selectable 1h / 24h / 7d window, stacked and sharing one hover crosshair, so a CPU spike can be read against what memory and the network were doing at that same moment. The I/O charts are rates derived from Docker's cumulative counters rather than the counters themselves, so a container restart reads as a gap instead of a cliff.
-- **Flow view** — a graph of containers, grouped visually by compose project, with zoom/fit controls, a name filter, per-edge-kind toggles, PNG/SVG export, and a Fullscreen toggle that hides the host stats card so the graph gets the room. Nodes show a state indicator, an uptime/status string, live CPU/RAM bars, network/disk I/O as current rates (not lifetime totals), published ports, and a badge for open alerts.
-  - **PNG export** — captures exactly what's currently framed on screen (zoom/pan in first to crop to a specific area), at 2x pixel density for crisp text and lines.
-  - **SVG export** — a vector alternative with no fixed size/resolution ceiling, drawn directly from the graph's own layout data rather than screenshotting the page, and always covers the whole graph regardless of current zoom/pan. Better for a host running a lot of compose projects: scales losslessly to any zoom level and stays a small file regardless of how big the graph gets.
-  - **Compose-group collapse** — collapse a group to a single aggregate box (container count, summed CPU/RAM, worst health, total open alerts) via the +/- cue on the group or the Collapse/Expand-all buttons — drilling into a large host ArgoCD-style instead of staring at a hairball.
-  - **Blast-radius selection** — selecting a node walks its `depends_on` chain both directions and tints the result: what it needs to be healthy (upstream) and what breaks if it dies (downstream) get distinct colors, with everything else dimmed — not just the immediate neighborhood.
-  - **Semantic zoom** — below native size, nodes switch to a compact state/icon/name rendering instead of shrinking their full metrics down to unreadable, one zoom-in gesture away from the rest.
-  - **Depends-on edges**: read straight from Compose's own `com.docker.compose.depends_on` label (service + startup condition), so it reflects the real `depends_on:` block — no compose file parsing needed, and it works for remote SSH hosts too.
-  - **Auto (network) edges**: containers sharing a custom Docker network are connected, labeled with the network's name — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
-  - **Manual edges**: for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies. Preferred way is the `opendockwatch.depends_on` label on the dependent service itself: a comma-separated `target[:label]` list, e.g. `opendockwatch.depends_on: "payments-gateway:http,shop-db:reads"` on `shop-api`'s own `labels:` — `target` matches a service in the same compose project first, falling back to a literal container name for cross-project or non-dockerized targets. It lives in the compose file next to the service it describes and needs no separate config. `hosts.json` (`edges: [{ from, to, label }]`) is still there for the one case the label can't cover: a relationship where one end isn't a container at all.
-  - **Tree mode** — a Graph/Tree toggle switches to an ArgoCD-style `project → container → (network | volume)` layout instead: no compose-group boxes, just a left-to-right dependency tree. A network or volume shared by more than one container renders once and gets multiple incoming edges, so shared infrastructure is immediately obvious. Container boxes are the same live nodes as Graph mode (CPU/RAM, health, badges); tapping a network/mount pill fades the graph down to just the containers using it and shows which ones in the toolbar. Networks/volumes can each be hidden via their own toggle. Positions, camera, and the mode itself are all remembered per host.
-- **Logs tab** — a dedicated view for jumping between container logs: a compact, searchable, project-grouped list of every container on the left, and a full log viewer on the right that switches streams the moment you click a different one, with the host stats card tucked away so the log gets the room. Each compose project in the list has a **Search** button that looks for a piece of text (a request id, an email, an error) in every container of that project at once, stopped ones included, over the last 15 minutes to 7 days. The matches come back as one timeline tagged by container, and clicking one opens that container's log at the line.
-- **Image updates** — marks containers whose image is behind what its tag now points at on the registry: a ⬆ before the image in the List view, a line in the details panel showing the running and registry digests, and a count on the Hosts tab. Detection only — nothing is pulled or recreated. It is off until you set a check interval (Settings → General, or `IMAGE_UPDATE_CHECK_HOURS`), since it contacts each image's registry; an admin can also press **Check now** in the details panel at any time. Each check is one lightweight `HEAD` request per tag, which Docker Hub does not count against its pull limit, and the answer is cached so a restart does not ask again. No registry credentials are read, so images on private registries show as "not on its registry, or private" — as do images you built locally. An image pinned by digest, or run by id, has nothing to check.
-- **Details panel** — clicking a container (in either view) opens a side panel with status, image, CPU/mem, network/disk I/O rates, ports, networks, actions, and a small live log preview (last 100 lines). Created time, restart policy, environment variables, mounts, and labels — the things you'd otherwise `docker inspect` for — are one click away in collapsed sections. A container with a healthcheck also gets a **Healthcheck** section with the check's schedule, its command, and the last five results with their output — so "why is it unhealthy" is answered without a shell. It opens by itself while the container is unhealthy. Viewer accounts see the results but not the command, which can carry credentials.
-- **Log Viewer** — expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file. **Go to** opens the log at a moment in the past — 5 minutes to 24 hours ago, or any date and time you type (in your local time) — starting a minute before it, with the line nearest that time highlighted; from there you can scroll back for older lines, forward for newer ones, or press **Latest** to go live again. Reachable from the details panel, directly via the Logs button on any row in List view, or from the Logs tab.
-- **Activity view** — alerts and the raw container event log (start/stop/die/oom, etc.) side by side, each independently searchable and scrollable, with a count badge on the tab itself for alerts that are unacknowledged and still firing (one that has resolved stays listed but stops counting) and a checkmark on any alert you've acknowledged. See [Alerts](#alerts) below for the rule list and webhook setup.
-- **Uptime view** — a 24h/7d/30d SLA-style report, per container and for the host itself: reachable/up percentage, healthy percentage (for containers with a healthcheck), restart count, and total down time, reconstructed entirely from the container event log and host reachability history already kept for Activity/alerts — no extra sampling or retention window. A container that crashed badly enough to get replaced under a new id still shows up, tagged "removed", instead of silently dropping out of the report the moment it no longer exists.
+- **Hosts** — every host on one screen, problem hosts first.
+- **List** — containers grouped by Compose project, live CPU/memory sparklines, start/stop/restart per container or per project (in `depends_on` order), service logos.
+- **Container metrics** — CPU, memory, network and disk I/O history over 1h / 24h / 7d.
+- **Flow** — topology graph with `depends_on`, shared-network and manual edges; blast-radius selection, group collapse, tree mode, PNG/SVG export.
+- **Logs** — multi-pane log viewer with level filters, regex search, pause, jump to a time, and search across a whole Compose project.
+- **Details panel** — ports, networks, env, mounts, labels, healthcheck results and a live log preview.
+- **Image updates** — flags containers whose tag has moved on the registry (detection only, opt-in).
+- **Activity** — alerts and the container event log side by side, filterable.
+- **Uptime** — 24h / 7d / 30d per-container and per-host uptime report.
+- **Alerts** — crashes, OOM kills, crash loops, unhealthy, unreachable hosts and CPU/memory/disk thresholds, sent to Discord, Slack, ntfy, Gotify or any JSON webhook.
+- **Podman** — supported through its Docker-compatible API.
+- **Two roles** — admin, plus an optional read-only viewer login.
+
+Full detail: [docs/features.md](docs/features.md).
 
 ## Screenshots
 
@@ -37,83 +30,45 @@ A small self-hosted Docker dashboard: containers grouped by Compose project, CPU
 
 ![List view, containers grouped by Compose project](screenshots/list-view.png)
 
-**Container metrics** — clicking a row's CPU or memory sparkline opens its recorded history over 1h / 24h / 7d, with one hover crosshair shared across all four charts
+**Container metrics** — recorded history over 1h / 24h / 7d, one shared hover crosshair
 
 ![Container metrics modal showing CPU, memory, network I/O and block I/O charts for a single container over a one-hour window](screenshots/container-metrics.png)
 
-**Flow view** — a topology graph of containers, with live CPU/RAM/network/disk stats and open-alert badges on each node
+**Flow view** — topology graph with live stats and open-alert badges on each node
 
 ![Flow view, a topology graph of containers](screenshots/flow-view.png)
 
-**Blast-radius selection** — selecting a node tints what it needs (purple) and what breaks if it dies (orange), walking the real `depends_on` chain in both directions
+**Blast-radius selection** — what a node needs (purple) and what breaks if it dies (orange)
 
 ![Flow view with a node selected, tinting its upstream dependencies purple and downstream dependents orange](screenshots/flow-blast-radius.png)
 
-**Compose-group collapse** — drill into a large host ArgoCD-style instead of staring at a hairball
+**Compose-group collapse** — a whole project as one aggregate box
 
 ![Flow view with a compose group collapsed into a single aggregate box showing container count, CPU/RAM, and health](screenshots/flow-collapsed.png)
 
-**Tree mode** — an ArgoCD-style `project → container → network/volume` DAG; a network or volume shared by more than one container renders once with multiple incoming edges
+**Tree mode** — `project → container → network/volume`, shared infrastructure drawn once
 
 ![Flow view in tree mode, showing compose projects fanning out to containers which fan out to shared network and volume/bind-mount pills](screenshots/flow-tree-view.png)
 
-**Logs tab** — a compact, searchable container list on the left, a full log viewer on the right; click through containers without leaving the view
+**Logs tab** — container list on the left, full log viewer on the right
 
 ![Logs tab, a compact container list beside a full-width log viewer streaming the selected container's logs](screenshots/logs-tab.png)
 
-**Details panel** — status, image, CPU/mem, network/disk rates, ports, networks, actions, a live log preview, and `docker inspect` details (environment, mounts, labels, restart policy, healthcheck results) a click away
+**Details panel** — status, stats, actions, log preview and `docker inspect` details
 
 ![Container details panel with a live log preview and expanded environment/labels sections](screenshots/details-panel.png)
 
-**Log Viewer** — full-width panel with level filters, regex search, and download
+**Log Viewer** — level filters, regex search and download
 
 ![Full-width Log Viewer with a regex filter matching ERROR and WARN lines](screenshots/log-viewer.png)
 
-**Activity view** — searchable, scrollable alerts and container event log side by side
+**Activity view** — alerts and the container event log side by side
 
 ![Activity view, searchable alerts with an acknowledged checkmark and a filtered event log](screenshots/activity-view.png)
 
-## How it works
+## Quick start
 
-The server shells out to the `docker` CLI rather than talking to the Engine API directly. For remote hosts it passes `-H ssh://user@host` per request, which the Docker CLI resolves using your normal SSH client/config/keys — no extra tunneling code needed. This means:
-
-- Local host: no `dockerHost` set, uses the default local socket.
-- Remote hosts: reachable via key-based SSH the same way you'd already `ssh` into them.
-- Podman: through its Docker-compatible API, either as a socket or over SSH — see [Podman hosts](#podman-hosts).
-
-## Requirements
-
-- Node.js 22+
-- `docker` CLI available on PATH, with access to the Docker socket
-- For remote hosts: key-based SSH access (no password prompt) to a Docker socket on that host
-- For Podman: Podman 4 or later with its API socket enabled (see [Podman hosts](#podman-hosts))
-
-## Setup
-
-1. Install dependencies:
-   ```
-   npm install
-   ```
-2. Copy env and hosts config:
-   ```
-   cp .env.example .env
-   cp config/hosts.example.json config/hosts.json
-   ```
-3. Edit `config/hosts.json` with your real hosts (local + any remote SSH targets).
-4. Generate a password hash and fill in `.env`:
-   ```
-   npm run hash-password -- "your-password"
-   ```
-   Put the output in `AUTH_PASS_HASH`, set `AUTH_USER`, and set a random `SESSION_SECRET`. To also hand out read-only access (e.g. a wall display, or teammates who shouldn't get start/stop/restart), generate a second hash the same way and set `VIEWER_USER` / `VIEWER_PASS_HASH`.
-5. Run:
-   ```
-   npm start
-   ```
-   Visit http://localhost:3000
-
-## Running as a container
-
-You can also run OpenDockWatch itself in a container, alongside everything else it's monitoring. A prebuilt image is published to Docker Hub as [`darks1d3r/opendockwatch`](https://hub.docker.com/r/darks1d3r/opendockwatch) (`linux/amd64` + `linux/arm64`, tagged per release and `latest`):
+The image is [`darks1d3r/opendockwatch`](https://hub.docker.com/r/darks1d3r/opendockwatch) (`linux/amd64` + `linux/arm64`).
 
 ```
 docker run -d --name opendockwatch \
@@ -126,137 +81,46 @@ docker run -d --name opendockwatch \
   darks1d3r/opendockwatch
 ```
 
-Or build it yourself from a checkout:
+Or build from a checkout with `docker compose up -d --build`. The `~/.ssh` mount lets the container reach remote hosts with your keys. If Docker runs inside WSL, run this from the WSL distro.
+
+## Running from source
+
+Needs Node.js 22+ and the `docker` CLI on PATH.
 
 ```
-docker compose up -d --build
+npm install
+cp .env.example .env
+cp config/hosts.example.json config/hosts.json
+npm run hash-password -- "your-password"
+npm start                                   # http://localhost:3000
 ```
 
-Either way, this mounts `/var/run/docker.sock` for local control and `~/.ssh` (read-only) so the container's `docker` CLI can reach remote hosts over SSH the same way your host user would. If Docker runs inside WSL (rather than Docker Desktop), run this from within your WSL distro so the socket path lines up.
+In `.env`, set `AUTH_USER`, `AUTH_PASS_HASH` (the hash output) and a random `SESSION_SECRET`. For a read-only login, also set `VIEWER_USER` / `VIEWER_PASS_HASH`.
 
-### Reverse proxy
+## Hosts
 
-If you're putting OpenDockWatch behind a reverse proxy (nginx, Caddy, Traefik, etc.) that terminates TLS, set `TRUST_PROXY=true` in `.env` so Express trusts the proxy's `X-Forwarded-For`/`X-Forwarded-Proto` headers — this is needed for the session cookie's `Secure` flag and for the login rate limiter to see the real client IP rather than the proxy's.
-
-Leave `TRUST_PROXY` unset (the default) if OpenDockWatch is reachable directly, without a proxy in front. Trusting `X-Forwarded-For` from an untrusted client lets them spoof `req.ip` on every request, which defeats the login rate limiter (each spoofed IP gets its own fresh attempt budget) and lets an attacker forge the IP recorded in `auth.failure` log lines.
-
-## Remote hosts
-
-Any host you can `ssh user@host` into (with a key, no password prompt) and that has a reachable Docker socket for that user can be added from the Settings panel or directly to `config/hosts.json`:
+Add hosts in Settings → Hosts or in `config/hosts.json`. A remote host needs key-based SSH (no passphrase) to a user that can reach its Docker socket:
 
 ```json
 { "id": "prod", "name": "Production", "dockerHost": "ssh://deploy@prod.example.com" }
 ```
 
-Recommended setup for a remote host:
+SSH access to a Docker socket is root-equivalent on that host, so treat the key accordingly. Behind a TLS-terminating reverse proxy, set `TRUST_PROXY=true`.
 
-- Create a **dedicated SSH key with no passphrase** for OpenDockWatch (`ssh-keygen -t ed25519 -f ~/.ssh/opendockwatch -N ""`) rather than reusing your personal key — a passphrase can't be entered by a non-interactive `docker` CLI call, so a passphrased key just hangs until it times out.
-- Add the host's key to the known-hosts file before adding it here — `ssh-keyscan prod.example.com >> ~/.ssh/known_hosts` — so the first real connection doesn't hang on an interactive host-key prompt (`StrictHostKeyChecking ask` is `ssh`'s default, and there's nothing here to answer it).
-- Use a **dedicated remote user in the `docker` group**, not `root` and not your own login, so it's obvious in the remote's own logs/audit trail which access is OpenDockWatch's.
-- After adding a host, use its **Test connection** button in Settings — it runs the same reachability probe as the background poller but shows the actual `ssh`/`docker` error (`Host key verification failed`, `Permission denied (publickey)`, etc.) instead of just "unreachable".
-
-**Connection reuse:** the container ships an `ssh_config.d` entry (`ControlMaster auto`, `ControlPersist 10m`) so the first `docker` call to a remote host opens one SSH connection and every call for the next 10 minutes — there are several per 5s poll — rides that same connection instead of opening its own. No configuration needed; this is why polling several remote hosts doesn't multiply into dozens of new SSH sessions a minute.
-
-**Trust model:** SSH access to a host's Docker socket is root-equivalent on that host — anyone who can run arbitrary containers there can mount the host filesystem. Treat the dedicated key/user above with the same care as root SSH access, not as a limited-scope credential. For a genuinely least-privilege setup, look at [rootless Docker](https://docs.docker.com/engine/security/rootless/) on the remote host instead.
-
-## Podman hosts
-
-Podman works through its Docker-compatible API, so the same `docker` CLI inside the container talks to it. A Podman host is labelled **Podman** on the Hosts tab and its version reads "Podman 5.8.7" on the host card. Two ways to add one:
-
-- **A socket on the same machine.** Enable the API socket (`sudo systemctl enable --now podman.socket` for rootful Podman, or `systemctl --user enable --now podman.socket` for rootless), mount it into the container and add a host with a `unix://` address:
-
-  ```yaml
-  volumes:
-    - /run/podman/podman.sock:/run/podman/podman.sock # rootless: /run/user/<uid>/podman/podman.sock
-  ```
-
-  ```json
-  { "id": "podman", "name": "Podman", "dockerHost": "unix:///run/podman/podman.sock" }
-  ```
-
-  On a machine with no Docker at all, mounting the Podman socket at `/var/run/docker.sock` and leaving `dockerHost` blank works too.
-
-- **A remote host over SSH**, exactly like a Docker host (`ssh://user@host`). `docker -H ssh://` runs `docker system dial-stdio` on the remote, so the remote needs `docker` to mean Podman — install the `podman-docker` package, which provides that — and the API socket enabled for the SSH user as above. For a rootless user, also run `loginctl enable-linger <user>` so their socket and healthcheck timers keep running when nobody is logged in.
-
-What is different from Docker, and how it is handled:
-
-- **Health** is not in Podman's container list or its health events, so for a Podman host it is read with one `inspect` when Podman reports that a check ran — the health dot and an `unhealthy` alert can lag the check by one poll (5 seconds). Podman runs healthchecks from systemd timers; on a host without systemd they never run, and every container stays "starting".
-- **`podman stop` sends no kill event**, so the `unexpected_exit` rule checks a few seconds later whether the restart policy brought the container back. If it stayed stopped, someone stopped it.
-- Podman's extra `init`, `cleanup` and `exec` events are not shown, and its `remove` is shown as `destroy`, the same as a Docker host.
-
-Tested against Podman 5.8, rootful, both through a mounted socket and over SSH.
+SSH setup, Podman, and the reverse-proxy details: [docs/hosts.md](docs/hosts.md).
 
 ## Alerts
 
-OpenDockWatch fires an alert (visible in the Activity tab, and via `GET /api/alerts`) for these rules:
+Event rules (crash, unexpected exit, OOM kill, crash loop, unhealthy, host unreachable) are always on. Threshold rules are off until you set them, in `.env` or Settings → Thresholds:
 
-| Rule                | Fires when                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| `container_crashed` | a container exits with a non-zero code (not from a manual stop/restart just before it)   |
-| `unexpected_exit`   | a container with restart policy `always`/`unless-stopped` exits 0 without being asked to |
-| `oom_killed`        | the kernel OOM-kills a process in a container (sent instead of `container_crashed`)      |
-| `crash_loop`        | a container restarts 3+ times in 5 minutes, excluding manual restarts                    |
-| `unhealthy`         | a container's healthcheck reports unhealthy                                              |
-| `host_unreachable`  | a host stops responding to `docker version`                                              |
-| `container_cpu`     | a container's CPU % stays over threshold for the sustain window                          |
-| `container_mem`     | a container's mem % stays over threshold for the sustain window                          |
-| `host_cpu`          | a host's normalized CPU % (sum of container CPU / core count) stays over threshold       |
-| `host_mem`          | a host's summed container memory usage vs. total host memory stays over threshold        |
-| `docker_disk`       | `docker system df`'s total footprint exceeds a threshold — see caveat below              |
+| Variable                  | Enables                                      |
+| ------------------------- | -------------------------------------------- |
+| `ALERT_CPU_THRESHOLD`     | container and host CPU alerts                |
+| `ALERT_MEM_THRESHOLD`     | container and host memory alerts             |
+| `ALERT_DISK_THRESHOLD_GB` | Docker disk footprint alert                  |
+| `ALERT_WEBHOOK_URL`       | push notifications (Discord, Slack, ntfy, …) |
 
-The five threshold-based rules (`container_cpu`/`container_mem`/`host_cpu`/`host_mem`/`docker_disk`) are opt-in and disabled by default — set `ALERT_CPU_THRESHOLD`, `ALERT_MEM_THRESHOLD`, and/or `ALERT_DISK_THRESHOLD_GB` in `.env` (or from the Settings panel, see below) to enable them. `ALERT_SUSTAIN_MINUTES` (default 5, shared between the CPU and mem rules) avoids alerting on a single spike from an image build, cron job, or JVM startup — a value has to stay over threshold continuously for that long before it fires.
-
-Some caveats worth knowing:
-
-- CPU % is raw `docker stats` CPU (per-core cumulative) — a container fully using 4 cores reads 400%, matching what the UI already shows. It is not normalized by core count.
-- Mem % is `docker stats` MemPerc, computed against a container's own memory limit. A container with no limit set reads low against host total and rarely trips `container_mem` — in practice this focuses the rule on containers that do have limits, which is where memory pressure actually OOMKills.
-- `docker_disk` is Docker's own footprint (images, containers, volumes, build cache) — Docker doesn't report host filesystem free space, so this can't be a true "disk almost full" alert. Treat it as a prune reminder.
-- Skip threshold alerts for a single container entirely with the `opendockwatch.alerts=off` label (`docker run --label opendockwatch.alerts=off ...` or the equivalent in a compose file).
-- Beyond that blanket label, admins can define per-container/name/compose-project alert rules from the Settings panel's **Container Rules** tab: an ordered list matched by container name (substring, case-insensitive) or an exact compose project, optionally scoped to one host, overriding the CPU/mem/sustain thresholds and/or muting individual event rules (`container_crashed`/`crash_loop`/`unhealthy`/`unexpected_exit`/`oom_killed`) for matched containers. The first matching rule wins in full — rules aren't merged together — and anything a matched rule leaves blank still inherits the global threshold above. No glob/regex matching. A muted event rule logs an `alert.muted` line instead of firing, so the Log Viewer still shows that something was suppressed and which rule did it.
-
-Set `ALERT_WEBHOOK_URL` in `.env` to also get a push notification on any of the rules above. The destination and payload are picked from the URL's scheme, so one config value is enough — no separate format setting per service:
-
-| Scheme        | Example                                                                                                                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Discord       | `discord://<webhook_id>/<webhook_token>`                                                                                                                                                         |
-| ntfy          | `ntfy://ntfy.sh/mytopic` (or a self-hosted server: `ntfy://ntfy.example.com/mytopic`)                                                                                                            |
-| Gotify        | `gotify://<host>/<token>` (http) or `gotifys://<host>/<token>` (https)                                                                                                                           |
-| Slack         | any `https://hooks.slack.com/...` incoming webhook URL — auto-detected                                                                                                                           |
-| Anything else | posted as generic JSON (the alert object). Set `ALERT_WEBHOOK_FORMAT=slack` to force the Slack `{text}` shape for a Slack-compatible endpoint that isn't on `hooks.slack.com` (e.g. Mattermost). |
-
-**Resolved messages.** Set `ALERT_WEBHOOK_NOTIFY_RECOVERY=true` (or tick the box in Settings → Webhook) to also get a message when a problem clears: a host reachable again, CPU/memory/disk back under its threshold, or a health check passing again. It says how long the problem lasted, goes only to destinations that received the original alert, and is labelled RESOLVED (sent at low priority on ntfy and Gotify). Crashes, crash loops, unexpected exits and OOM kills are one-off events and have no resolved message. Either way, the Activity tab marks an alert **resolved** with the time it cleared. Generic JSON payloads carry `status: "firing"` or `"resolved"`, plus `firedAt` on a resolved one.
-
-**More than one webhook.** Settings → Webhook → **Routes** adds extra destinations, each with a name, its own URL (any scheme above), and filters: one host or any, a set of rules or all of them, and warning-and-critical or critical only. Every enabled route whose filters match gets the alert — for example, `host_unreachable` and `oom_killed` to a phone via ntfy, and everything to a team chat. Each route has its own resolved-messages switch and a **Send test alert** button. Once a route exists, the main webhook can be set to receive only alerts that no route matched, so routes can take traffic away from it rather than only copying it. Every destination is retried on its own if it fails, for up to an hour; a retry of an alert that has resolved in the meantime is dropped rather than sent late.
-
-**Reminders and escalation.** An alert is sent once. Two settings follow up on one that nobody has acknowledged:
-
-- **Reminders** — set `ALERT_REPEAT_MINUTES` (or Settings → Webhook → _Remind every_) and a problem that is still there gets sent again at that interval, to every destination that received it, until someone acknowledges it in the Activity tab or it clears. The message starts "Still unacknowledged after 1h 30m:". Only conditions are repeated — a host still down, a container still unhealthy, a threshold still breached; crashes, crash loops, unexpected exits and OOM kills are one-off events and are not. Off by default.
-- **Escalation** — give a route a delay ("Only after unacknowledged for 30 minutes") and it receives an alert only if nobody has acknowledged it by then, starting "Unacknowledged for 30m:". This applies to every rule, crashes included. A delayed route does not count as having taken the alert, so with the main webhook set to unmatched-only it still gets it at once. An alert is escalated within an hour of its delay passing or not at all, so adding an escalation route — or restarting after downtime — does not page about every old alert.
-
-A threshold breach raises one alert, however long it lasts; it no longer raises a new one every 10 minutes while it continues. Reminders are the way to hear about it again.
-
-The host card's ⛶ Fullscreen view adds a **Live / 1h / 24h / 7d** range switch over the CPU and RAM charts, the same windows the per-container metrics modal offers.
-
-The Activity tab's Alerts and Events columns each carry count badges in the top right — alerts broken down by rule, events by action — so a burst of one kind is visible without scrolling the list. They follow the column's search box, so filtering re-counts them. **Clicking a badge filters the list to that rule or action**, and clicking it again clears the filter — the other badges stay put while one is active, so you can move straight from one to the next. It's an exact match on the badge's own kind, independent of and combinable with the search box: filtering by `start` will not drag in `restart` rows the way typing it would. Both columns share one colour language: red for `die`/`kill`/`oom`/unhealthy, amber for `stop`/`restart`/`destroy`/`pause`, green for `start`/`create`/`unpause`/healthy, and no colour for routine actions like `exec_create` or `attach`. The row and its badge always agree.
-
-An admin can empty either column for the selected host with its **Clear alerts** / **Clear events** button. It takes two clicks — the first arms the button and turns it red, and clicking away (or waiting a few seconds) cancels. Both clears only hide what is already there; neither resets anything the app derives from it. A rule that is still breaching stays quiet for the rest of its 10-minute cooldown rather than immediately re-firing (and re-sending its webhook), so an alert that reappears after a clear is a condition that genuinely alerted again — and clearing the events column leaves crash-loop detection, the List view's 1h restart count and the Prometheus restart metric reading exactly what the containers actually did.
-
-Each log pane shows its container name on its own line, with a status badge under it reading **active**, **paused** or **suspended**. **Space bar pauses and resumes** the log — new lines are held rather than dropped, and the badge shows how many are waiting (with several panes open, space applies to the one under the cursor). A single pane also gets a **☰ Matches** toggle: a strip under the log listing every matching line for the current filter, where clicking one jumps to it in context. With the strip open the log itself stays unfiltered — the strip is the list of hits, so the log above it stays the place you read them in context. **Drag the strip's header bar** (the "N matching lines" row) to resize it — up for more matches, down for more log. It stops before squeezing the log out entirely, and the height you set is remembered while the pane stays open. The header is also focusable, so ↑/↓ resize it from the keyboard.
-
-The List view's **Logs** button opens that container on the Logs tab in single-pane mode, rather than the in-place viewer — that's where the multi-pane, timestamp-sync and match-strip tools live. The Detail panel's own Logs button still opens the viewer in place, for reading a container's log without leaving List/Flow.
-
-A container's status icon carries its health, not just its state: a running container's dot is green when healthy, **amber while `starting`**, and **red when `unhealthy`**, so "running" stops reading as "fine" during a failing healthcheck. A container that was `docker create`d but never started gets its own dashed blue square, distinct from the gray one meaning it ran and exited. The same colouring applies everywhere the icon appears — List, Detail, Flow (node borders included) and the Logs tab's container list — and survives the Flow view's SVG export.
-
-Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (General / Webhook / Thresholds / Container Rules / Hosts) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured. The General tab sets which tab (Hosts/List/Flow/Logs/Activity/Uptime) the app lands on after login for every user — `DEFAULT_VIEW` in `.env` is the optional config-file equivalent.
-
-## Notes
-
-- `name` is optional for local (non-SSH) hosts — if omitted, it's auto-filled from the machine's real hostname via `docker info`. Remote SSH hosts still need an explicit `name` since there's no local machine to introspect.
-- `config/hosts.json` is gitignored since it may contain internal hostnames — only `hosts.example.json` is committed.
-- Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
-- Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
-- The optional viewer login (`VIEWER_USER`/`VIEWER_PASS_HASH`) can see everything but gets a 403 from the server (not just a hidden button) on any start/stop/restart request — enforced server-side, not just in the UI.
-- The host card's CPU/RAM tiles show two numbers: the Docker figure (sum of container stats, the same one used by the `host_cpu`/`host_mem` alert rules) and, for the local host only, a "host total" line — real host-wide usage from every process, not just Docker's. It's local-only because there's no way to read a remote SSH host's own `/proc` without installing an agent there; a remote host's tile just omits that second line. The RAM tile's "host total" figure is Node's own `/proc`-derived reading, which isn't cgroup-virtualized — if OpenDockWatch itself runs inside something that caps its memory below what that reading reports (most commonly a Proxmox LXC container, whose `lxcfs` virtualization corrects `dockerd`'s own view but doesn't reach into a second, separately-nested Docker container the way OpenDockWatch itself runs), the corner box auto-detects the mismatch (Docker's own reported total, from `docker info`, coming in more than 5% below the raw `/proc` total) and repurposes to an "LXC total" figure instead, demoting the raw physical-machine total to a small secondary "physical host" line. The "used" half of that LXC figure is an approximation — the summed usage of this app's own monitored Docker containers, not a true whole-LXC measurement including non-Docker processes (sshd, cron, `lxcfs`, systemd, ...), since there's no way to read that from inside a second, separately-nested container without extra host-level plumbing (e.g. bind-mounting the LXC's own already-`lxcfs`-corrected `/proc/meminfo` in).
+Rules, webhook URL formats, routes, reminders and escalation: [docs/alerts.md](docs/alerts.md).
 
 ## Contributing
 
@@ -264,17 +128,17 @@ Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE). You're free to use, self-host, and modify OpenDockWatch, including internally within an organization. If you distribute a modified version, or run a modified version as a service that other people/users interact with over a network, you must make that modified source available to them under the same license.
+AGPL-3.0-or-later. See [LICENSE](LICENSE). You may use, self-host and modify OpenDockWatch, including inside an organization. If you distribute a modified version, or run one as a network service for others, you must make its source available under the same license.
 
 ## Third-party libraries
 
-The frontend has no build step or bundler — these are vendored as plain `<script>` includes under `public/vendor/`, unmodified from upstream. All MIT-licensed:
+Vendored unmodified under `public/vendor/` (no build step). All MIT-licensed:
 
-| Library                                                                                                        | Used for                                                                                                   |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| [Vue](https://github.com/vuejs/core)                                                                           | the whole frontend UI                                                                                      |
-| [Cytoscape.js](https://github.com/cytoscape/cytoscape.js)                                                      | the Flow view's graph rendering and interaction                                                            |
-| [dagre](https://github.com/dagrejs/dagre) / [cytoscape-dagre](https://github.com/cytoscape/cytoscape.js-dagre) | automatic graph layout                                                                                     |
-| [cytoscape-node-html-label](https://github.com/kaluginserg/cytoscape-node-html-label)                          | the HTML-based node content (name, icons, metric bars, badges)                                             |
-| [cytoscape-expand-collapse](https://github.com/iVis-at-Bilkent/cytoscape.js-expand-collapse)                   | compose-group collapse/expand in the Flow view                                                             |
-| [html2canvas-pro](https://github.com/yorickshan/html2canvas-pro)                                               | Flow view's PNG export (screenshots the real DOM, since node content lives outside Cytoscape's own canvas) |
+| Library                                                                                                        | Used for                      |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| [Vue](https://github.com/vuejs/core)                                                                           | the frontend UI               |
+| [Cytoscape.js](https://github.com/cytoscape/cytoscape.js)                                                      | Flow view graph               |
+| [dagre](https://github.com/dagrejs/dagre) / [cytoscape-dagre](https://github.com/cytoscape/cytoscape.js-dagre) | automatic graph layout        |
+| [cytoscape-node-html-label](https://github.com/kaluginserg/cytoscape-node-html-label)                          | HTML node content             |
+| [cytoscape-expand-collapse](https://github.com/iVis-at-Bilkent/cytoscape.js-expand-collapse)                   | compose-group collapse/expand |
+| [html2canvas-pro](https://github.com/yorickshan/html2canvas-pro)                                               | Flow view PNG export          |

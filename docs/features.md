@@ -1,0 +1,86 @@
+# Features in detail
+
+The full feature reference. The [README](../README.md) has the short version.
+
+## Hosts tab
+
+Every monitored host on one screen, one row each: reachable or not (and for how long), running/total containers with any unhealthy or restarting ones called out, CPU and memory, and open alerts. Problem hosts sort to the top, and a one-line summary above the table answers "is anything wrong anywhere". Clicking a row switches to that host; clicking its alert count opens that host's Activity. Built from what the server already polls, so it adds no work on the hosts themselves. Can be made the landing tab from Settings → General or `DEFAULT_VIEW=overview`.
+
+## List view
+
+Containers grouped by `docker compose` project (collapsible), with live CPU/memory columns each carrying its own sparkline of the last couple of minutes, a one-click Logs button straight to the Log Viewer, and Start/Stop/Restart actions. Filter by All / Running / Stopped.
+
+- **Group actions** — a Start all / Stop all / Restart all row on each compose group's header batches the action across every container in that project, in `depends_on` order (dependencies first for start/restart, dependents first for stop; containers with no ordering relationship between them run in parallel). This is a real docker-CLI-level batch, not `docker compose up`/`down`/`pull` — those need the compose YAML itself, which OpenDockWatch never reads, so it works identically on a remote SSH host where there's no local copy of the file to hand a compose command anyway. One container failing doesn't stop the rest; the response reports each container's own result.
+- **Service logos** — each row starts with the logo of what the container runs (Postgres, Redis, nginx, Grafana and ~85 more, from [Simple Icons](https://simpleicons.org)), matched from the image name. When the name says nothing — a custom `myorg/app:latest` — the runtime is recognised from the environment variables its base image sets, so an app built `FROM eclipse-temurin` with Spring config shows the Spring logo (only variable _names_ are read; values never leave the server). Add an `opendockwatch.url` label (http/https only) to turn the container's name into a link to its own UI, also shown in the detail panel. Pin one explicitly with the `opendockwatch.icon` label, e.g. `opendockwatch.icon=springboot`. Anything unrecognised falls back to a lettered badge.
+- **Logs button** — opens that container on the Logs tab in single-pane mode, rather than the in-place viewer — that's where the multi-pane, timestamp-sync and match-strip tools live. The Detail panel's own Logs button still opens the viewer in place, for reading a container's log without leaving List/Flow.
+
+**Status icons carry health, not just state:** a running container's dot is green when healthy, **amber while `starting`**, and **red when `unhealthy`**, so "running" stops reading as "fine" during a failing healthcheck. A container that was `docker create`d but never started gets its own dashed blue square, distinct from the gray one meaning it ran and exited. The same colouring applies everywhere the icon appears — List, Detail, Flow (node borders included) and the Logs tab's container list — and survives the Flow view's SVG export.
+
+## Container metrics
+
+Clicking a row's CPU or memory sparkline opens that container's full recorded history: CPU, memory, network I/O and block I/O over a selectable 1h / 24h / 7d window, stacked and sharing one hover crosshair, so a CPU spike can be read against what memory and the network were doing at that same moment. The I/O charts are rates derived from Docker's cumulative counters rather than the counters themselves, so a container restart reads as a gap instead of a cliff.
+
+The host card's ⛶ Fullscreen view adds a **Live / 1h / 24h / 7d** range switch over the CPU and RAM charts, the same windows the per-container metrics modal offers.
+
+## Host card
+
+The host card's CPU/RAM tiles show two numbers: the Docker figure (sum of container stats, the same one used by the `host_cpu`/`host_mem` alert rules) and, for the local host only, a "host total" line — real host-wide usage from every process, not just Docker's. It's local-only because there's no way to read a remote SSH host's own `/proc` without installing an agent there; a remote host's tile just omits that second line.
+
+The RAM tile's "host total" figure is Node's own `/proc`-derived reading, which isn't cgroup-virtualized — if OpenDockWatch itself runs inside something that caps its memory below what that reading reports (most commonly a Proxmox LXC container, whose `lxcfs` virtualization corrects `dockerd`'s own view but doesn't reach into a second, separately-nested Docker container the way OpenDockWatch itself runs), the corner box auto-detects the mismatch (Docker's own reported total, from `docker info`, coming in more than 5% below the raw `/proc` total) and repurposes to an "LXC total" figure instead, demoting the raw physical-machine total to a small secondary "physical host" line. The "used" half of that LXC figure is an approximation — the summed usage of this app's own monitored Docker containers, not a true whole-LXC measurement including non-Docker processes (sshd, cron, `lxcfs`, systemd, ...), since there's no way to read that from inside a second, separately-nested container without extra host-level plumbing (e.g. bind-mounting the LXC's own already-`lxcfs`-corrected `/proc/meminfo` in).
+
+## Flow view
+
+A graph of containers, grouped visually by compose project, with zoom/fit controls, a name filter, per-edge-kind toggles, PNG/SVG export, and a Fullscreen toggle that hides the host stats card so the graph gets the room. Nodes show a state indicator, an uptime/status string, live CPU/RAM bars, network/disk I/O as current rates (not lifetime totals), published ports, and a badge for open alerts.
+
+- **PNG export** — captures exactly what's currently framed on screen (zoom/pan in first to crop to a specific area), at 2x pixel density for crisp text and lines.
+- **SVG export** — a vector alternative with no fixed size/resolution ceiling, drawn directly from the graph's own layout data rather than screenshotting the page, and always covers the whole graph regardless of current zoom/pan. Better for a host running a lot of compose projects: scales losslessly to any zoom level and stays a small file regardless of how big the graph gets.
+- **Compose-group collapse** — collapse a group to a single aggregate box (container count, summed CPU/RAM, worst health, total open alerts) via the +/- cue on the group or the Collapse/Expand-all buttons — drilling into a large host instead of staring at a hairball.
+- **Blast-radius selection** — selecting a node walks its `depends_on` chain both directions and tints the result: what it needs to be healthy (upstream) and what breaks if it dies (downstream) get distinct colors, with everything else dimmed — not just the immediate neighborhood.
+- **Semantic zoom** — below native size, nodes switch to a compact state/icon/name rendering instead of shrinking their full metrics down to unreadable, one zoom-in gesture away from the rest.
+- **Depends-on edges** — read straight from Compose's own `com.docker.compose.depends_on` label (service + startup condition), so it reflects the real `depends_on:` block — no compose file parsing needed, and it works for remote SSH hosts too.
+- **Auto (network) edges** — containers sharing a custom Docker network are connected, labeled with the network's name — but only across different compose projects (or when at least one side isn't grouped). Same-project network edges are suppressed, since the group box already conveys that relationship.
+- **Manual edges** — for relationships Docker can't see itself — e.g. a non-dockerized frontend calling a backend API, or cross-project dependencies. Preferred way is the `opendockwatch.depends_on` label on the dependent service itself: a comma-separated `target[:label]` list, e.g. `opendockwatch.depends_on: "payments-gateway:http,shop-db:reads"` on `shop-api`'s own `labels:` — `target` matches a service in the same compose project first, falling back to a literal container name for cross-project or non-dockerized targets. It lives in the compose file next to the service it describes and needs no separate config. `hosts.json` (`edges: [{ from, to, label }]`) is still there for the one case the label can't cover: a relationship where one end isn't a container at all.
+- **Tree mode** — a Graph/Tree toggle switches to a `project → container → (network | volume)` layout instead: no compose-group boxes, just a left-to-right dependency tree. A network or volume shared by more than one container renders once and gets multiple incoming edges, so shared infrastructure is immediately obvious. Container boxes are the same live nodes as Graph mode (CPU/RAM, health, badges); tapping a network/mount pill fades the graph down to just the containers using it and shows which ones in the toolbar. Networks/volumes can each be hidden via their own toggle. Positions, camera, and the mode itself are all remembered per host.
+
+## Logs tab
+
+A dedicated view for jumping between container logs: a compact, searchable, project-grouped list of every container on the left, and a full log viewer on the right that switches streams the moment you click a different one, with the host stats card tucked away so the log gets the room. Each compose project in the list has a **Search** button that looks for a piece of text (a request id, an email, an error) in every container of that project at once, stopped ones included, over the last 15 minutes to 7 days. The matches come back as one timeline tagged by container, and clicking one opens that container's log at the line.
+
+## Log Viewer
+
+Expand the preview into a full-width bottom panel with a tail-size selector (100/200/1000/5000 lines — capped, never loads unbounded history), level filters, and a live text filter that can be switched to regex matching (with a match count and invalid-pattern warning). The current tail can also be downloaded as a `.txt` file. **Go to** opens the log at a moment in the past — 5 minutes to 24 hours ago, or any date and time you type (in your local time) — starting a minute before it, with the line nearest that time highlighted; from there you can scroll back for older lines, forward for newer ones, or press **Latest** to go live again. Reachable from the details panel, directly via the Logs button on any row in List view, or from the Logs tab.
+
+Each log pane shows its container name on its own line, with a status badge under it reading **active**, **paused** or **suspended**. **Space bar pauses and resumes** the log — new lines are held rather than dropped, and the badge shows how many are waiting (with several panes open, space applies to the one under the cursor).
+
+A single pane also gets a **☰ Matches** toggle: a strip under the log listing every matching line for the current filter, where clicking one jumps to it in context. With the strip open the log itself stays unfiltered — the strip is the list of hits, so the log above it stays the place you read them in context. **Drag the strip's header bar** (the "N matching lines" row) to resize it — up for more matches, down for more log. It stops before squeezing the log out entirely, and the height you set is remembered while the pane stays open. The header is also focusable, so ↑/↓ resize it from the keyboard.
+
+Logs are streamed via Server-Sent Events (`docker logs -f --timestamps`), stdout and stderr both included.
+
+## Details panel
+
+Clicking a container (in either view) opens a side panel with status, image, CPU/mem, network/disk I/O rates, ports, networks, actions, and a small live log preview (last 100 lines). Created time, restart policy, environment variables, mounts, and labels — the things you'd otherwise `docker inspect` for — are one click away in collapsed sections. A container with a healthcheck also gets a **Healthcheck** section with the check's schedule, its command, and the last five results with their output — so "why is it unhealthy" is answered without a shell. It opens by itself while the container is unhealthy. Viewer accounts see the results but not the command, which can carry credentials.
+
+## Image updates
+
+Marks containers whose image is behind what its tag now points at on the registry: a ⬆ before the image in the List view, a line in the details panel showing the running and registry digests, and a count on the Hosts tab. Detection only — nothing is pulled or recreated. It is off until you set a check interval (Settings → General, or `IMAGE_UPDATE_CHECK_HOURS`), since it contacts each image's registry; an admin can also press **Check now** in the details panel at any time. Each check is one lightweight `HEAD` request per tag, which Docker Hub does not count against its pull limit, and the answer is cached so a restart does not ask again. No registry credentials are read, so images on private registries show as "not on its registry, or private" — as do images you built locally. An image pinned by digest, or run by id, has nothing to check.
+
+## Activity view
+
+Alerts and the raw container event log (start/stop/die/oom, etc.) side by side, each independently searchable and scrollable, with a count badge on the tab itself for alerts that are unacknowledged and still firing (one that has resolved stays listed but stops counting) and a checkmark on any alert you've acknowledged. See [alerts.md](alerts.md) for the rule list and webhook setup.
+
+The Alerts and Events columns each carry count badges in the top right — alerts broken down by rule, events by action — so a burst of one kind is visible without scrolling the list. They follow the column's search box, so filtering re-counts them. **Clicking a badge filters the list to that rule or action**, and clicking it again clears the filter — the other badges stay put while one is active, so you can move straight from one to the next. It's an exact match on the badge's own kind, independent of and combinable with the search box: filtering by `start` will not drag in `restart` rows the way typing it would. Both columns share one colour language: red for `die`/`kill`/`oom`/unhealthy, amber for `stop`/`restart`/`destroy`/`pause`, green for `start`/`create`/`unpause`/healthy, and no colour for routine actions like `exec_create` or `attach`. The row and its badge always agree.
+
+An admin can empty either column for the selected host with its **Clear alerts** / **Clear events** button. It takes two clicks — the first arms the button and turns it red, and clicking away (or waiting a few seconds) cancels. Both clears only hide what is already there; neither resets anything the app derives from it. A rule that is still breaching stays quiet for the rest of its 10-minute cooldown rather than immediately re-firing (and re-sending its webhook), so an alert that reappears after a clear is a condition that genuinely alerted again — and clearing the events column leaves crash-loop detection, the List view's 1h restart count and the Prometheus restart metric reading exactly what the containers actually did.
+
+## Uptime view
+
+A 24h/7d/30d SLA-style report, per container and for the host itself: reachable/up percentage, healthy percentage (for containers with a healthcheck), restart count, and total down time, reconstructed entirely from the container event log and host reachability history already kept for Activity/alerts — no extra sampling or retention window. A container that crashed badly enough to get replaced under a new id still shows up, tagged "removed", instead of silently dropping out of the report the moment it no longer exists.
+
+## Settings panel
+
+Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (General / Webhook / Thresholds / Container Rules / Hosts) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured. The General tab sets which tab (Hosts/List/Flow/Logs/Activity/Uptime) the app lands on after login for every user — `DEFAULT_VIEW` in `.env` is the optional config-file equivalent.
+
+## Access control
+
+- Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.
+- The optional viewer login (`VIEWER_USER`/`VIEWER_PASS_HASH`) can see everything but gets a 403 from the server (not just a hidden button) on any start/stop/restart request — enforced server-side, not just in the UI.

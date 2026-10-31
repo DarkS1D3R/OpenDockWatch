@@ -116,7 +116,7 @@ Everything else — a second read-only login, remote SSH hosts, alert thresholds
 
 ## Full documentation
 
-Setup details, remote-host configuration, the complete alerts/webhook reference, and the contributing guide live in the [README on GitHub](https://github.com/DarkS1D3R/OpenDockWatch#readme).
+Setup details and the contributing guide live in the [README on GitHub](https://github.com/DarkS1D3R/OpenDockWatch#readme); remote hosts in [docs/hosts.md](https://github.com/DarkS1D3R/OpenDockWatch/blob/main/docs/hosts.md) and the full alerts/webhook reference in [docs/alerts.md](https://github.com/DarkS1D3R/OpenDockWatch/blob/main/docs/alerts.md).
 
 ## License
 
