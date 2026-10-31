@@ -2851,7 +2851,6 @@ table.uptime-table {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
 }
 table.uptime-table th,
 table.uptime-table td {
@@ -2860,9 +2859,17 @@ table.uptime-table td {
   border-bottom: 1px solid var(--border);
   font-size: 14px;
 }
+/* Pinned under the sticky .topbar (91px, the same offset .detail-panel uses) so the column names
+   stay visible down a long report. No overflow:hidden on the table - it would clip the sticky - and
+   a collapsed border stays behind when the cell sticks, hence the inset shadow. */
 table.uptime-table th {
   color: var(--muted);
   font-weight: 600;
+  position: sticky;
+  top: 91px;
+  z-index: 1;
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 table.uptime-table tr:last-child td {
   border-bottom: none;
@@ -2888,7 +2895,6 @@ table.hosts-table {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
 }
 table.hosts-table th,
 table.hosts-table td {
@@ -2898,9 +2904,15 @@ table.hosts-table td {
   font-size: 14px;
   vertical-align: top;
 }
+/* Pinned under the topbar the same way as table.uptime-table th - see the comment there. */
 table.hosts-table th {
   color: var(--muted);
   font-weight: 600;
+  position: sticky;
+  top: 91px;
+  z-index: 1;
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 table.hosts-table tr:last-child td {
   border-bottom: none;
