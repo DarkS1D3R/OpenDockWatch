@@ -14,6 +14,7 @@ import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
+import { loadAppTheme, applyAppTheme, watchSystemScheme, APP_THEME_CHANGE_EVENT } from './lib/appTheme.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -218,7 +219,13 @@ const app = createApp({
   async mounted() {
     // Before session/host bootstrap, not after: this is a local rendering preference with nothing
     // to do with auth, and applying it early means a log pane never paints in the old colors first.
-    applyLogTheme(loadLogTheme());
+    // theme-boot.js already set data-theme before paint; this re-applies it and follows the OS.
+    // The log colours follow the app theme until chosen explicitly, so they re-apply on a switch.
+    const scheme = applyAppTheme(loadAppTheme());
+    applyLogTheme(loadLogTheme(scheme));
+    this.onAppThemeChange = (e) => applyLogTheme(loadLogTheme(e.detail.scheme));
+    document.addEventListener(APP_THEME_CHANGE_EVENT, this.onAppThemeChange);
+    this.unwatchSystemScheme = watchSystemScheme(() => loadAppTheme());
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     let session;
     try {
@@ -245,6 +252,8 @@ const app = createApp({
     await this.setView(session.defaultView || 'list');
   },
   beforeUnmount() {
+    if (this.unwatchSystemScheme) this.unwatchSystemScheme();
+    document.removeEventListener(APP_THEME_CHANGE_EVENT, this.onAppThemeChange);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.stopPolling();
     this.closeLogViewer();

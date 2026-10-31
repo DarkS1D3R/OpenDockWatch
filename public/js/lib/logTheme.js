@@ -14,11 +14,20 @@ export const LOG_THEME_PRESETS = [
   { id: 'high-contrast', label: 'High contrast', bg: '#000000', text: '#ffffff' },
   { id: 'solarized', label: 'Solarized dark', bg: '#002b36', text: '#93a1a1' },
   { id: 'paper', label: 'Paper (light)', bg: '#f5f5f0', text: '#1b1b1b' },
+  // Matches the light app theme's tile surface - a light log pane that isn't near-white.
+  { id: 'soft-light', label: 'Soft light', bg: '#e6e9ee', text: '#1f242c' },
   { id: 'amber', label: 'Amber terminal', bg: '#1a1005', text: '#ffb000' },
   { id: 'matrix', label: 'Matrix green', bg: '#060a06', text: '#33ff66' },
 ];
 
 export const DEFAULT_LOG_THEME = { bg: LOG_THEME_PRESETS[0].bg, text: LOG_THEME_PRESETS[0].text };
+
+// Until someone picks log colours, the log follows the app theme: Default on dark, Paper on light.
+// An explicit choice is stored and wins in both themes; Reset clears it back to following.
+export function defaultLogThemeFor(scheme) {
+  const preset = LOG_THEME_PRESETS.find((p) => p.id === (scheme === 'light' ? 'paper' : 'default'));
+  return { bg: preset.bg, text: preset.text };
+}
 
 // Accepts what a native <input type="color"> produces (#rrggbb) plus the shorter/alpha hex forms,
 // since this also has to survive a hand-edited localStorage entry. Anything else degrades to the
@@ -31,10 +40,10 @@ export function isValidLogColor(value) {
 // Validated on the way out, not merely parsed - same discipline as logsPersistence.js's
 // normalizeOpenPanes: a malformed or missing field degrades to the matching default field rather
 // than reaching applyLogTheme (and from there, the log body's actual color) unvalidated.
-export function normalizeLogTheme(raw) {
-  if (!raw || typeof raw !== 'object') return { ...DEFAULT_LOG_THEME };
-  const bg = isValidLogColor(raw.bg) ? toRrggbb(raw.bg) : DEFAULT_LOG_THEME.bg;
-  const text = isValidLogColor(raw.text) ? toRrggbb(raw.text) : DEFAULT_LOG_THEME.text;
+export function normalizeLogTheme(raw, fallback = DEFAULT_LOG_THEME) {
+  if (!raw || typeof raw !== 'object') return { ...fallback };
+  const bg = isValidLogColor(raw.bg) ? toRrggbb(raw.bg) : fallback.bg;
+  const text = isValidLogColor(raw.text) ? toRrggbb(raw.text) : fallback.text;
   return { bg, text };
 }
 
@@ -46,11 +55,29 @@ function toRrggbb(value) {
   return `#${hex.slice(0, 6)}`;
 }
 
-export function loadLogTheme() {
+export function loadLogTheme(scheme = 'dark') {
+  const fallback = defaultLogThemeFor(scheme);
   try {
-    return normalizeLogTheme(JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    return normalizeLogTheme(JSON.parse(localStorage.getItem(STORAGE_KEY)), fallback);
   } catch {
-    return { ...DEFAULT_LOG_THEME };
+    return fallback;
+  }
+}
+
+// Whether the log colours are an explicit choice, or still following the app theme.
+export function hasCustomLogTheme() {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+export function clearLogTheme() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* localStorage unavailable - nothing stored to clear */
   }
 }
 

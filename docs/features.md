@@ -80,6 +80,8 @@ A 24h/7d/30d SLA-style report, per container and for the host itself: reachable/
 
 Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (General / Webhook / Thresholds / Container Rules / Hosts) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured. The General tab sets which tab (Hosts/List/Flow/Logs/Activity/Uptime) the app lands on after login for every user — `DEFAULT_VIEW` in `.env` is the optional config-file equivalent.
 
+The Appearance tab holds two per-browser preferences, kept in that browser's local storage rather than on the server. **Theme** switches the whole app between Dark (the default), Light, and Match system, which follows the operating system's setting and changes with it. The light theme uses soft greys, not white, so it stays comfortable on a dashboard left open all day. **Log viewer** sets the log panes' own background and text colours from a few presets or a colour picker. Until you pick one, the log follows the app theme: Default with Dark, Paper with Light. Once you pick, your choice is kept in both themes (so a dark log can sit inside a light app), and **Follow app theme** goes back to following.
+
 ## Access control
 
 - Actions are limited to `start` / `stop` / `restart` — no `rm`, by design.

@@ -1,10 +1,11 @@
-import { ACCENT, MUTED, STATE_COLORS } from './theme.js';
+import { ACCENT, STATE_VARS } from './theme.js';
 import { LOGOS } from './lib/logos.js';
 
-// Values from theme.js, but the *mapping* lives here: docker's health axis says "healthy", the
-// state axis says "running", and they are one colour. Declared up here rather than beside
-// healthColor so the icons below can build from it at load - a const is in its TDZ until then.
-const HEALTH_COLOR = { healthy: STATE_COLORS.running, unhealthy: STATE_COLORS.unhealthy, starting: STATE_COLORS.starting };
+// The *mapping* lives here: docker's health axis says "healthy", the state axis says "running", and
+// they are one colour. Declared up here rather than beside healthColor so the icons below can build
+// from it at load - a const is in its TDZ until then. CSS vars, so the icons follow a theme switch.
+export const HEALTH_STATE = { healthy: 'running', unhealthy: 'unhealthy', starting: 'starting' };
+const HEALTH_COLOR = Object.fromEntries(Object.entries(HEALTH_STATE).map(([h, s]) => [h, STATE_VARS[s]]));
 
 // Running is the only state with a second axis worth showing - health. Same dot shape, colored per
 // HEALTH_COLOR rather than one flat green, so "running" stops reading as "fine" for a container
@@ -12,18 +13,18 @@ const HEALTH_COLOR = { healthy: STATE_COLORS.running, unhealthy: STATE_COLORS.un
 // there's no health to report once a container isn't running. Every icon carries role="img" and a
 // label: state is otherwise colour alone, which neither a screen reader nor a colour-blind eye gets.
 function runningIcon(color, label) {
-  return `<svg class="state-icon" role="img" aria-label="${label}" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" fill="none" stroke="${color}" stroke-width="1.4"/><circle cx="6" cy="6" r="2.2" fill="${color}"/></svg>`;
+  return `<svg class="state-icon" role="img" aria-label="${label}" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" fill="none" style="stroke:${color}" stroke-width="1.4"/><circle cx="6" cy="6" r="2.2" style="fill:${color}"/></svg>`;
 }
 const ICON_RUNNING = runningIcon(HEALTH_COLOR.healthy, 'Running');
 const ICON_RUNNING_STARTING = runningIcon(HEALTH_COLOR.starting, 'Running, health check starting');
 const ICON_RUNNING_UNHEALTHY = runningIcon(HEALTH_COLOR.unhealthy, 'Running, unhealthy');
-const ICON_RESTARTING = `<svg class="state-icon state-icon-spin" role="img" aria-label="Restarting" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 4.5A4 4 0 1 0 10 6.5" fill="none" stroke="${ACCENT}" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2v2.5H7" fill="none" stroke="${ACCENT}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const ICON_PAUSED = `<svg class="state-icon" role="img" aria-label="Paused" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="2" width="2" height="8" rx="0.6" fill="${MUTED}"/><rect x="7" y="2" width="2" height="8" rx="0.6" fill="${MUTED}"/></svg>`;
-const ICON_STOPPED = `<svg class="state-icon" role="img" aria-label="Stopped" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="${STATE_COLORS.stopped}" stroke-width="1.4"/></svg>`;
+const ICON_RESTARTING = `<svg class="state-icon state-icon-spin" role="img" aria-label="Restarting" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 4.5A4 4 0 1 0 10 6.5" fill="none" style="stroke:var(--accent)" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2v2.5H7" fill="none" style="stroke:var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_PAUSED = `<svg class="state-icon" role="img" aria-label="Paused" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="2" width="2" height="8" rx="0.6" style="fill:var(--muted)"/><rect x="7" y="2" width="2" height="8" rx="0.6" style="fill:var(--muted)"/></svg>`;
+const ICON_STOPPED = `<svg class="state-icon" role="img" aria-label="Stopped" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" style="stroke:${STATE_VARS.stopped}" stroke-width="1.4"/></svg>`;
 // Same square as ICON_STOPPED but dashed and in the created colour, not the stopped one: a
 // container that was `docker create`d but never started is not the same fact as one that ran and
 // exited, and the two used to be indistinguishable (both fell into the generic "else" branch below).
-const ICON_CREATED = `<svg class="state-icon" role="img" aria-label="Created, never started" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="${STATE_COLORS.created}" stroke-width="1.4" stroke-dasharray="2 1.5"/></svg>`;
+const ICON_CREATED = `<svg class="state-icon" role="img" aria-label="Created, never started" width="12" height="12" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" style="stroke:${STATE_VARS.created}" stroke-width="1.4" stroke-dasharray="2 1.5"/></svg>`;
 
 export function stateEmoji(state, health) {
   if (state === 'running') {

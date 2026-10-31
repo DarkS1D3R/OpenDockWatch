@@ -1,6 +1,7 @@
 import { healthColor, escapeHtml, badgeInnerHtml, badgeTitle, badgeIsTile } from './format.js';
 import { containerFullHeight, clampPct, CONTAINER_STATE_CLASSES } from './graph/elements.js';
-import { CY_STYLE, CPU_COLOR, MEM_COLOR } from './graph/style.js';
+import { cyStyleFor, graphPalette } from './graph/style.js';
+import { currentScheme } from './lib/appTheme.js';
 import { runLayout, updateCompactFlag, resolveNodeOverlap } from './graph/layout.js';
 import { loadCollapsedGroups, saveCollapsedGroups, saveNodePosition, saveViewport } from './graph/persistence.js';
 
@@ -193,7 +194,7 @@ export async function exportPng(cy) {
   await new Promise((resolve) => requestAnimationFrame(resolve));
 
   try {
-    const canvas = await html2canvas(container, { backgroundColor: '#14161a', scale: 1 });
+    const canvas = await html2canvas(container, { backgroundColor: graphPalette(currentScheme()).canvas, scale: 1 });
     const a = document.createElement('a');
     a.href = canvas.toDataURL('image/png');
     a.download = `opendockwatch-flow-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
@@ -233,11 +234,11 @@ export function containerNodeTpl(data) {
             <div class="cy-node-metrics">
               <div class="cy-node-metric-row">
                 <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:${CPU_COLOR}"></span></span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuPerc)}%;background:var(--accent)"></span></span>
               </div>
               <div class="cy-node-metric-row">
                 <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:${MEM_COLOR}"></span></span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memPerc)}%;background:var(--seq-mem)"></span></span>
               </div>
               <div class="cy-node-metric-row">
                 <span class="cy-node-metric-label">NET</span>
@@ -271,11 +272,11 @@ export function collapsedGroupTpl(data) {
             <div class="cy-node-metrics">
               <div class="cy-node-metric-row">
                 <span class="cy-node-metric-label">CPU</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:${CPU_COLOR}"></span></span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.cpuAvg)}%;background:var(--accent)"></span></span>
               </div>
               <div class="cy-node-metric-row">
                 <span class="cy-node-metric-label">RAM</span>
-                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:${MEM_COLOR}"></span></span>
+                <span class="cy-node-track"><span class="cy-node-bar-fill" style="width:${clampPct(data.memAvg)}%;background:var(--seq-mem)"></span></span>
               </div>
             </div>
             ${data.openAlerts > 0 ? `<span class="cy-node-alert-badge">${data.openAlerts}</span>` : ''}
@@ -287,7 +288,7 @@ export function createGraph(container, elements, onNodeTap, onEdgeTap, hostId, m
   const cy = cytoscape({
     container,
     elements,
-    style: CY_STYLE,
+    style: cyStyleFor(currentScheme()),
   });
   cy.scratch('_odw_mode', mode);
   cy.scratch('_odw_latestElements', elements);
@@ -426,4 +427,10 @@ export function collapseAllGroups(cy) {
 export function expandAllGroups(cy) {
   const api = cy && cy.scratch('_odw_expandCollapseApi');
   if (api) api.expandAll();
+}
+
+// Cytoscape's stylesheet is plain values, not CSS, so a theme switch has to replace it wholesale.
+// The DOM overlay (nodeHtmlLabel) is real markup and follows the CSS variables on its own.
+export function restyleGraph(cy, scheme = currentScheme()) {
+  if (cy) cy.style().fromJson(cyStyleFor(scheme)).update();
 }

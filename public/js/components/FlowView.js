@@ -2,7 +2,8 @@ import { buildElements, buildTreeElements } from '../graph/elements.js';
 import { loadFlowMode, saveFlowMode } from '../graph/persistence.js';
 import { resetView } from '../graph/layout.js';
 import { exportSvg } from '../graph/svgExport.js';
-import { createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups } from '../graph.js';
+import { createGraph, updateGraph, applyFading, exportPng, collapseAllGroups, expandAllGroups, restyleGraph } from '../graph.js';
+import { APP_THEME_CHANGE_EVENT, currentScheme } from '../lib/appTheme.js';
 
 // The Flow view: the cytoscape instance, graph/tree mode switching, edge/state filters,
 // fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show like
@@ -84,7 +85,13 @@ export default {
       if (this.flowMode === 'tree') this.renderGraph();
     },
   },
+  mounted() {
+    // Stays mounted across tab switches (v-show), so a theme change made in Settings lands here live.
+    this.onThemeChange = (e) => restyleGraph(this.cy, e.detail.scheme);
+    document.addEventListener(APP_THEME_CHANGE_EVENT, this.onThemeChange);
+  },
   beforeUnmount() {
+    document.removeEventListener(APP_THEME_CHANGE_EVENT, this.onThemeChange);
     if (this.cy) this.cy.destroy();
   },
   methods: {
@@ -187,7 +194,7 @@ export default {
       await exportPng(this.cy);
     },
     async exportFlowSvg() {
-      await exportSvg(this.cy);
+      await exportSvg(this.cy, currentScheme());
     },
     collapseAll() {
       collapseAllGroups(this.cy);
