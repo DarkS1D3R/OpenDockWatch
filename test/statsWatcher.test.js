@@ -221,8 +221,9 @@ test('retainContainers', async (t) => {
 test('staleness', async (t) => {
   await t.test('stops serving samples once the stream has gone quiet', (t2) => {
     const s = withFakeStream(t2);
-    s.child().stdout.emit('data', Buffer.from(rowLine()));
+    // Read before the row lands, so lastRowAt >= now - read after, a 1ms tick put the first check past the edge.
     const now = Date.now();
+    s.child().stdout.emit('data', Buffer.from(rowLine()));
     assert.ok(statsWatcher.getSamples('h1', now + statsWatcher.STALE_SAMPLES_MS));
     assert.equal(statsWatcher.getSamples('h1', now + statsWatcher.STALE_SAMPLES_MS + 1000), null);
   });
