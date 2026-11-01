@@ -38,6 +38,8 @@ export default {
     // collector outage otherwise reads as a shorter series. 0 for an unbucketed live buffer.
     bucketMs: { type: Number, default: 0 },
     detailed: { type: Boolean, default: false }, // finer grid + more axis ticks, for a chart with real height to spend
+    // A panned window's right-edge bucket (historyWindow.js's windowAnchorTs); null anchors on the newest sample.
+    windowEndTs: { type: Number, default: null },
   },
   emits: ['hover', 'leave'],
   computed: {
@@ -49,13 +51,14 @@ export default {
       return this.bucketMs > 0 && this.samples.length > 0 && this.sampleTimes.length === this.samples.length;
     },
     anchorTs() {
-      return this.bucketed ? this.sampleTimes[this.sampleTimes.length - 1] : null;
+      if (!this.bucketed) return null;
+      return this.windowEndTs != null ? this.windowEndTs : this.sampleTimes[this.sampleTimes.length - 1];
     },
     chartSlots() {
-      return alignSlots(this.samples, this.sampleTimes, this.slotCount, this.bucketMs);
+      return alignSlots(this.samples, this.sampleTimes, this.slotCount, this.bucketMs, this.anchorTs);
     },
     secondaryChartSlots() {
-      return alignSlots(this.secondarySamples || [], this.sampleTimes, this.slotCount, this.bucketMs);
+      return alignSlots(this.secondarySamples || [], this.sampleTimes, this.slotCount, this.bucketMs, this.anchorTs);
     },
     // A bucketed range has a time for every slot, empty ones included, so the axis is the real
     // window rather than only the parts a sample landed in.

@@ -60,9 +60,11 @@ async function statsFor(host) {
   return getStats(host);
 }
 
-function hostHistoryFor(hostId, rangeKey) {
+// untilMs (exclusive) pans the window into the past; null means "ending now".
+function hostHistoryFor(hostId, rangeKey, untilMs = null) {
   const range = HISTORY_RANGES[rangeKey] || HISTORY_RANGES['1h'];
-  return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+  if (untilMs === null) return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+  return db.getHostMetricsHistory(hostId, untilMs - range.sinceMs, range.bucketMs, untilMs);
 }
 
 async function topologyFor(host) {

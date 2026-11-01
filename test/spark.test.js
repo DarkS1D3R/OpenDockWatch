@@ -159,6 +159,11 @@ test('alignSlots', async (t) => {
     assert.deepEqual(spark.alignSlots([1, 2, 3], [1000, 2000, 3000], 2, B), [2, 3]);
   });
 
+  // A panned window holding data only in its first half must draw there, not slide right.
+  await t.test('anchors on an explicit window end when given one', () => {
+    assert.deepEqual(spark.alignSlots([1, 2], [1000, 2000], 5, B, 5000), [1, 2, null, null, null]);
+  });
+
   await t.test('falls back to padSlots without a bucket width', () => {
     assert.deepEqual(spark.alignSlots([1, 2], [1000, 4000], 4, 0), [null, null, 1, 2]);
   });

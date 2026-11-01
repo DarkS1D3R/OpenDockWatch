@@ -450,7 +450,7 @@ const stmts = {
       MAX(block_read_bytes) AS blockReadTotal,
       MAX(block_write_bytes) AS blockWriteTotal
     FROM container_metrics
-    WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs
+    WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs AND ts < @untilTs
     GROUP BY bucket
     ORDER BY bucket ASC
   `),
@@ -463,7 +463,7 @@ const stmts = {
       AVG(system_mem_used_bytes) AS systemMemUsedBytes,
       AVG(system_mem_total_bytes) AS systemMemTotalBytes
     FROM host_metrics
-    WHERE host_id = @hostId AND ts >= @sinceTs
+    WHERE host_id = @hostId AND ts >= @sinceTs AND ts < @untilTs
     GROUP BY bucket
     ORDER BY bucket ASC
   `),
@@ -825,12 +825,13 @@ function ping() {
   stmts.ping.get();
 }
 
-function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
-  return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs }));
+// untilTs is exclusive; omitted, the window runs up to now (the panned charts pass a past one).
+function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs, untilTs = Number.MAX_SAFE_INTEGER) {
+  return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs, untilTs }));
 }
 
-function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
-  return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs });
+function getHostMetricsHistory(hostId, sinceTs, bucketMs, untilTs = Number.MAX_SAFE_INTEGER) {
+  return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs, untilTs });
 }
 
 function rowToContainerAlertRule(row) {

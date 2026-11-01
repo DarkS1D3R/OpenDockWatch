@@ -89,6 +89,20 @@ test('insertMetrics', async (t) => {
     assert.equal(rows.length, 1, 'both samples should fall in one 15s bucket');
     assert.equal(rows[0].cpuPerc, 15, 'bucket should average the two cpu samples');
   });
+
+  // untilTs is what the panned charts page with: exclusive, so consecutive windows never share a row.
+  await t.test('the history query stops before untilTs', () => {
+    const base = nextTs + 60_000;
+    db.insertMetrics([sample('c-until', { ts: base, cpuPerc: 10 }), sample('c-until', { ts: base + 30_000, cpuPerc: 50 })]);
+    const before = db.getContainerMetricsHistory(HOST, 'c-until', base - 1000, 15_000, base + 30_000);
+    assert.deepEqual(
+      before.map((r) => r.cpuPerc),
+      [10],
+      'the sample at exactly untilTs belongs to the next window'
+    );
+    const all = db.getContainerMetricsHistory(HOST, 'c-until', base - 1000, 15_000);
+    assert.equal(all.length, 2, 'omitting untilTs should read up to now');
+  });
 });
 
 // clearEvents is a soft delete for the same reason clearAlerts below is: the events table is the

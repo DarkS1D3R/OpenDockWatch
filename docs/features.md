@@ -35,6 +35,8 @@ Clicking a row's CPU or memory sparkline opens that container's full recorded hi
 
 The host card's ⛶ Fullscreen view adds a **Live / 1h / 24h / 7d** range switch over the CPU and RAM charts, the same windows the per-container metrics modal offers.
 
+Both history views can move back through time: **◀ Earlier** and **Later ▶** step the chart one whole window at a time (an hour on 1h, a day on 24h, a week on 7d), the label between them shows the period on screen, and **Now** jumps back to the live window. How far back you can go is set by `METRICS_RETENTION_DAYS` (7 days by default).
+
 ## Host card
 
 The host card's CPU/RAM tiles show two numbers: the Docker figure (sum of container stats, the same one used by the `host_cpu`/`host_mem` alert rules) and, for the local host only, a "host total" line — real host-wide usage from every process, not just Docker's. It's local-only because there's no way to read a remote SSH host's own `/proc` without installing an agent there; a remote host's tile just omits that second line.

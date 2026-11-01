@@ -170,6 +170,23 @@ body {
 .host-range-toggle {
   flex: none;
 }
+/* Earlier / window label / Later / Now under a history chart's header - see lib/historyWindow.js. */
+.history-pan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.metrics-modal .history-pan {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.history-pan-label {
+  min-width: 13em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .host-range-status {
   margin: 0 0 8px;
 }

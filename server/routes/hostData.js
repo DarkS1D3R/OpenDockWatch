@@ -187,11 +187,25 @@ router.get('/hosts/:hostId/inventory', requireHost, (req, res) => {
   res.json(inventory.getInventory(req.odwHost, { force: req.query.refresh === '1', containers: known ? snapshot.containers : null }));
 });
 
+// `until` (epoch ms, exclusive) pans the window back in time; missing, invalid or in the future
+// means the window ends now, exactly as before the charts could pan.
 router.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
   const { containerId } = req.query;
-  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range));
+  const now = Date.now();
+  const until = intParam(req.query.until, null);
+  const untilMs = until !== null && until > 0 && until < now ? until : null;
+  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range, untilMs));
   const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
-  res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
+  const end = untilMs === null ? now : untilMs;
+  res.json(
+    db.getContainerMetricsHistory(
+      req.params.hostId,
+      containerId,
+      end - range.sinceMs,
+      range.bucketMs,
+      untilMs === null ? undefined : untilMs
+    )
+  );
 });
 
 const UPTIME_DAYS_DEFAULT = 30;

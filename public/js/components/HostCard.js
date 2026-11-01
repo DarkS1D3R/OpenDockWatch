@@ -3,6 +3,7 @@ import { apiGetDiskUsageImages, apiGetMetricsHistory } from '../api.js';
 import { resolveHostMemoryDisplay } from '../lib/hostMemory.js';
 import { engineLabel } from '../lib/hostOverview.js';
 import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS, HOST_METRICS_HISTORY_LEN } from '../constants.js';
+import { panUntil, windowAnchorTs, windowLabel } from '../lib/historyWindow.js';
 import SparkTile from './SparkTile.js';
 
 // 'live' is the root's rolling window (the metricsHistory prop, refreshed every poll); the other
@@ -48,6 +49,8 @@ export default {
       rangeRows: [],
       rangeLoading: false,
       rangeError: null,
+      // Exclusive end of a panned window (epoch ms); null follows now. See lib/historyWindow.js.
+      untilMs: null,
       // Per-image breakdown - fetched lazily the first time the Images disclosure opens (see
       // onImagesToggle), not alongside the regular disk-usage poll, since walking every image's
       // layer sizes is extra work nobody needs unless they're actually looking at the list.
@@ -70,7 +73,11 @@ export default {
       // than leaving them on screen under the new host's name until a refetch lands.
       this.resetRange();
     },
+    // A new range starts back at now; the historyQuery watcher does the one fetch for both changes.
     range() {
+      this.untilMs = null;
+    },
+    historyQuery() {
       this.fetchRangeHistory();
       this.restartRangeRefresh();
     },
@@ -84,6 +91,18 @@ export default {
     if (this._rangeTimer) clearInterval(this._rangeTimer);
   },
   computed: {
+    historyQuery() {
+      return this.range + '|' + this.untilMs;
+    },
+    windowMs() {
+      return this.slotCount * this.bucketMs;
+    },
+    windowEndTs() {
+      return windowAnchorTs(this.untilMs, this.bucketMs);
+    },
+    windowText() {
+      return windowLabel(this.untilMs, this.windowMs);
+    },
     // The single source every series below reads, so switching range swaps all of them at once
     // and the two tiles can never end up drawing different windows.
     activeHistory() {
@@ -101,6 +120,9 @@ export default {
     },
     rangeEmpty() {
       return this.range !== 'live' && !this.rangeLoading && !this.rangeError && !this.activeHistory.length;
+    },
+    emptyText() {
+      return this.untilMs === null ? 'over the last ' + this.range : 'in this window';
     },
     cpuSamples() {
       return this.activeHistory.map((s) => s.cpuPercent);
@@ -153,40 +175,44 @@ export default {
     toggleFullscreen() {
       this.$emit('update:fullscreen', !this.fullscreen);
     },
+    panBy(direction) {
+      this.untilMs = panUntil(this.untilMs, direction, this.windowMs, this.bucketMs, Date.now());
+    },
     resetRange() {
       this.range = 'live';
+      this.untilMs = null;
       this.rangeRows = [];
       this.rangeError = null;
       this.rangeLoading = false;
       this.restartRangeRefresh();
     },
-    // Only 1h keeps refreshing: its buckets are 15s wide so a poll actually moves the chart, while
-    // 24h/7d buckets are 5 and 30 minutes wide and would redraw an identical chart for minutes.
-    // 'live' needs no timer of its own - the root's poll updates the metricsHistory prop.
+    // Only 1h ending now refreshes: its 15s buckets move on a poll, 24h/7d's 5/30-minute ones don't, and a
+    // panned window is fixed history. 'live' needs no timer - the root's poll updates metricsHistory.
     restartRangeRefresh() {
       if (this._rangeTimer) clearInterval(this._rangeTimer);
       this._rangeTimer = null;
-      if (this.range === '1h') {
+      if (this.range === '1h' && this.untilMs === null) {
         this._rangeTimer = setInterval(() => this.fetchRangeHistory({ silent: true }), POLL_MS);
       }
     },
     async fetchRangeHistory({ silent = false } = {}) {
       if (this.range === 'live' || !this.hostId) return;
-      const { range, hostId } = this;
+      const { range, hostId, untilMs } = this;
+      const stale = () => this.range !== range || this.hostId !== hostId || this.untilMs !== untilMs;
       // A background refresh must not flash the loading state over a chart already on screen -
       // only an explicit range switch does that.
       if (!silent) this.rangeLoading = true;
       try {
-        const rows = await apiGetMetricsHistory(hostId, { range });
+        const rows = await apiGetMetricsHistory(hostId, { range, until: untilMs });
         // A slow request for a range (or host) the user has since switched away from must not
         // land over the newer one's data - same guard the root's own fetches use.
-        if (this.range !== range || this.hostId !== hostId) return;
+        if (stale()) return;
         this.rangeRows = rows;
         this.rangeError = null;
       } catch (err) {
-        if (this.range === range && this.hostId === hostId) this.rangeError = err.message;
+        if (!stale()) this.rangeError = err.message;
       } finally {
-        if (this.range === range && this.hostId === hostId) this.rangeLoading = false;
+        if (!stale()) this.rangeLoading = false;
       }
     },
     onImagesToggle(event) {
@@ -235,9 +261,15 @@ export default {
           {{ fullscreen ? '⤡ Exit fullscreen' : '⛶ Fullscreen' }}
         </button>
       </div>
+      <div v-if="fullscreen && range !== 'live'" class="history-pan" role="group" aria-label="Move through history">
+        <button class="small-btn" @click="panBy(-1)" :title="'Back ' + range">◀ Earlier</button>
+        <span class="history-pan-label" aria-live="polite">{{ windowText }}</span>
+        <button class="small-btn" :disabled="untilMs === null" @click="panBy(1)" :title="'Forward ' + range">Later ▶</button>
+        <button class="small-btn" :disabled="untilMs === null" @click="untilMs = null" title="Back to the window ending now">Now</button>
+      </div>
       <p v-if="rangeError" class="error host-range-status">{{ rangeError }}</p>
       <p v-else-if="rangeLoading && !activeHistory.length" class="muted small host-range-status">Loading {{ range }} history…</p>
-      <p v-else-if="rangeEmpty" class="muted small host-range-status">No host metrics recorded over the last {{ range }}.</p>
+      <p v-else-if="rangeEmpty" class="muted small host-range-status">No host metrics recorded {{ emptyText }}.</p>
       <div class="host-tiles">
         <spark-tile
           variant="cpu"
@@ -249,6 +281,7 @@ export default {
           :sample-times="sampleTimes"
           :slot-count="slotCount"
           :bucket-ms="bucketMs"
+          :window-end-ts="windowEndTs"
           :hover-index="hoverIndex"
           :detailed="fullscreen"
           @hover="hoverIndex = $event"
@@ -271,6 +304,7 @@ export default {
           :sample-times="sampleTimes"
           :slot-count="slotCount"
           :bucket-ms="bucketMs"
+          :window-end-ts="windowEndTs"
           :hover-index="hoverIndex"
           :detailed="fullscreen"
           @hover="hoverIndex = $event"

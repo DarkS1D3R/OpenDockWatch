@@ -156,8 +156,8 @@ export async function apiGetInventory(hostId, { refresh = false } = {}) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/inventory${refresh ? '?refresh=1' : ''}`));
 }
 
-export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
-  const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}) });
+export async function apiGetMetricsHistory(hostId, { range = '1h', containerId, until } = {}) {
+  const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}), ...(until != null ? { until } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));
 }
 

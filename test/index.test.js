@@ -1167,6 +1167,29 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
     );
   });
 
+  // The panned charts' contract: `until` moves the whole window back, and one at or past now is
+  // ignored rather than producing a window that ends in the future.
+  await t.test('GET /metrics/history?until pans the window back in time', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    // 4.5h back, so the window [5.5h, 4.5h) ago holds the 5h-old seed row with room either side.
+    const until = Date.now() - 4.5 * 3_600_000;
+    const panned = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=${until}`);
+    assert.equal(panned.status, 200);
+    assert.ok(panned.body.length > 0, 'the row five hours back should sit in the window');
+    assert.ok(
+      panned.body.every((r) => r.bucket >= until - 3_600_000 - 15_000 && r.bucket < until),
+      'a bucket fell outside [until - 1h, until)'
+    );
+
+    const live = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h`);
+    const future = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=${Date.now() + 3_600_000}`);
+    const junk = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=nope`);
+    assert.ok(live.body.length > 0, 'nothing to compare - the seed did not land');
+    assert.deepEqual(future.body, live.body, 'a future until should mean "ending now"');
+    assert.deepEqual(junk.body, live.body, 'an invalid until should mean "ending now"');
+  });
+
   await t.test('its alerts match GET /alerts for the same host and limit', async (t2) => {
     withSnapshot(t2);
     const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
