@@ -11,7 +11,7 @@ import { ALERT_RULES } from '../constants.js';
 import { maskWebhookUrl, routeSummary, blankRoute, routeDraft, routePayload } from '../lib/webhookRoutes.js';
 import ConfirmButton from './ConfirmButton.js';
 
-// The routes half of Settings > Webhook: extra destinations, each taking the alerts its host, rules
+// The routes half of Settings > Alerts > Webhook: extra destinations, each taking the alerts its host, rules
 // and severity filters match. One form serves add and edit (editingId null means add). Emits `count`
 // so the parent can offer "main webhook gets only unmatched alerts" once there is a route to match.
 export default {

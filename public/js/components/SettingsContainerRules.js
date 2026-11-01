@@ -21,7 +21,7 @@ function blankRule() {
   return { hostId: '', matchType: 'name', matchValue: '', cpuThreshold: '', memThreshold: '', sustainMinutes: '', mutedRules: [] };
 }
 
-// The Settings panel's Container Rules tab: per-container/name/compose-project overrides on top
+// The Settings panel's Container Rules section (Settings > Alerts): per-container/name/compose-project overrides on top
 // of SettingsThresholds' global defaults - see alerts.js's resolveContainerConfig for the
 // first-match-wins ordered-list semantics this list is editing.
 export default {
@@ -107,7 +107,7 @@ export default {
   template: `
     <div>
       <p class="muted small">
-        Per-container overrides on top of the global Thresholds tab. Rules are checked in order -
+        Per-container overrides on top of the global thresholds above. Rules are checked in order -
         the <strong>first</strong> one whose host and matcher fit a container is used in full for
         it (not merged with any other rule); a blank threshold on the matched rule still inherits
         the global default. Match by container name (case-insensitive, contains) or an exact

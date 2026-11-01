@@ -1,7 +1,7 @@
 import { apiGetThresholdConfig, apiSaveThresholdConfig, apiClearThresholdConfig } from '../api.js';
 import { withStatus } from '../lib/settingsSection.js';
 
-// The Settings panel's (global) Thresholds tab. Per-container overrides live in
+// The Settings panel's (global) Thresholds section (Settings > Alerts). Per-container overrides live in
 // SettingsContainerRules.js instead - see alerts.js's resolveContainerConfig.
 export default {
   name: 'SettingsThresholds',
@@ -48,7 +48,7 @@ export default {
         rule. CPU% is raw <code>docker stats</code> CPU (per-core cumulative, so 4 cores fully busy reads 400%).
         Mem% needs a container memory limit set to mean much. Docker disk usage is Docker's own footprint
         (images/containers/volumes/cache), not host free disk space — it's a prune reminder, not a disk-full alert.
-        These are the global defaults - see the Container Rules tab for per-container/name/compose-project
+        These are the global defaults - see Container rules below for per-container/name/compose-project
         overrides, and the <code>opendockwatch.alerts=off</code> label to skip a container entirely.
       </p>
       <label class="modal-field">

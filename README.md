@@ -112,7 +112,7 @@ SSH setup, Podman, and the reverse-proxy details: [docs/hosts.md](docs/hosts.md)
 
 ## Alerts
 
-Event rules (crash, unexpected exit, OOM kill, crash loop, unhealthy, host unreachable) are always on. Threshold rules are off until you set them, in `.env` or Settings → Thresholds:
+Event rules (crash, unexpected exit, OOM kill, crash loop, unhealthy, host unreachable) are always on. Threshold rules are off until you set them, in `.env` or Settings → Alerts:
 
 | Variable                  | Enables                                      |
 | ------------------------- | -------------------------------------------- |

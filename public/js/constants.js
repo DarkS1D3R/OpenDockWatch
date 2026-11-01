@@ -1,3 +1,5 @@
+import { viewLabel } from './lib/viewGroups.js';
+
 export const POLL_MS = 5000;
 // Every alert rule, as a webhook route's rule filter offers them. Mirrors ALERT_RULES in
 // server/alerts.js, enforced by test/sharedConstants.test.js.
@@ -14,17 +16,13 @@ export const ALERT_RULES = [
   { value: 'docker_disk', label: 'Docker disk' },
   { value: 'host_unreachable', label: 'Host unreachable' },
 ];
-// The topbar's tabs, in order, as the Settings default-tab select offers them. Mirrors VALID_VIEWS
+// Every view, as the Settings default-tab select offers them. Mirrors VALID_VIEWS
 // in server/views.js, enforced by test/sharedConstants.test.js.
-export const VIEWS = [
-  { value: 'overview', label: 'Hosts' },
-  { value: 'list', label: 'List' },
-  { value: 'flow', label: 'Flow' },
-  { value: 'logs', label: 'Logs' },
-  { value: 'activity', label: 'Activity' },
-  { value: 'uptime', label: 'Uptime' },
-  { value: 'resources', label: 'Resources' },
-];
+// Labelled by the tab each sits under (lib/viewGroups.js), e.g. "Containers › Flow".
+export const VIEWS = ['overview', 'list', 'flow', 'logs', 'activity', 'uptime', 'resources'].map((value) => ({
+  value,
+  label: viewLabel(value),
+}));
 // Ceiling for the poll loop's failure backoff. A host unreachable for an hour isn't worth six
 // requests every five seconds, but the loop must never stop entirely or the dashboard sits on
 // stale data after the host comes back.

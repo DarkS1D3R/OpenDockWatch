@@ -104,7 +104,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
 
-  -- Webhook destinations beside the main one (Settings > Webhook). Every enabled route whose host,
+  -- Webhook destinations beside the main one (Settings > Alerts > Webhook). Every enabled route whose host,
   -- rules and severity filters match gets the alert; rules is a JSON array, empty meaning all.
   CREATE TABLE IF NOT EXISTS webhook_routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

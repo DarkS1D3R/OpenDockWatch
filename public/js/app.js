@@ -14,6 +14,7 @@ import ResourcesView from './components/ResourcesView.js';
 import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
+import { VIEW_GROUPS, STATE_FILTER_VIEWS, groupOf, viewForGroup } from './lib/viewGroups.js';
 import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
 import { loadAppTheme, applyAppTheme, watchSystemScheme, APP_THEME_CHANGE_EVENT } from './lib/appTheme.js';
 import {
@@ -113,7 +114,9 @@ const app = createApp({
       groupActionInFlight: {},
 
       view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' | 'resources' - reset to the configured default once the session loads, see mounted()
-      stateFilter: 'all', // 'all' | 'running' | 'stopped'
+      stateFilter: 'all', // 'all' | 'running' | 'stopped' - shown only where it applies (STATE_FILTER_VIEWS)
+      viewGroups: VIEW_GROUPS,
+      lastViewByGroup: {}, // groupId -> the view last open in it, so a tab returns to where you were
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
 
@@ -159,6 +162,18 @@ const app = createApp({
     },
     isAdmin() {
       return this.role === 'admin';
+    },
+    currentGroup() {
+      return groupOf(this.view);
+    },
+    showStateFilter() {
+      return STATE_FILTER_VIEWS.includes(this.view);
+    },
+    // Hidden in every fullscreen mode: those size themselves as a viewport calc that counts only the
+    // topbar above them (see style.css), and fullscreen is a request for room anyway.
+    showSubbar() {
+      if (this.logViewerFullscreen || this.flowFullscreen || this.hostCardFullscreen) return false;
+      return (this.currentGroup && this.currentGroup.views.length > 1) || this.showStateFilter;
     },
     filteredContainers() {
       if (this.stateFilter === 'running') return this.containers.filter((c) => c.state === 'running');
@@ -439,8 +454,13 @@ const app = createApp({
         if (arr.length > METRICS_HISTORY_LEN) arr.splice(0, arr.length - METRICS_HISTORY_LEN);
       }
     },
+    async openGroup(groupId) {
+      await this.setView(viewForGroup(groupId, this.lastViewByGroup));
+    },
     async setView(v) {
       this.view = v;
+      const group = groupOf(v);
+      if (group) this.lastViewByGroup = { ...this.lastViewByGroup, [group.id]: v };
       if (v !== 'flow') this.flowFullscreen = false;
       // The host card only renders in List/Flow, so it unmounts on the way anywhere else with
       // nothing left to clear this - and .layout stays hidden while it's true, which is the
@@ -605,25 +625,37 @@ const app = createApp({
           </option>
         </select>
         <nav class="view-toggle" aria-label="Views">
-          <button :class="{active: view==='overview'}" :aria-current="view==='overview' ? 'page' : null" @click="setView('overview')" title="Every host at a glance">Hosts</button>
-          <button :class="{active: view==='list'}" :aria-current="view==='list' ? 'page' : null" @click="setView('list')">List</button>
-          <button :class="{active: view==='flow'}" :aria-current="view==='flow' ? 'page' : null" @click="setView('flow')">Flow</button>
-          <button :class="{active: view==='logs'}" :aria-current="view==='logs' ? 'page' : null" @click="setView('logs')">Logs</button>
-          <button :class="{active: view==='activity'}" :aria-current="view==='activity' ? 'page' : null" @click="setView('activity')">
-            Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
+          <button
+            v-for="g in viewGroups"
+            :key="g.id"
+            :class="{active: currentGroup && currentGroup.id === g.id}"
+            :aria-current="currentGroup && currentGroup.id === g.id ? 'page' : null"
+            @click="openGroup(g.id)"
+          >
+            {{ g.label }}<span v-if="g.id === 'activity' && openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
           </button>
-          <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
-          <button :class="{active: view==='resources'}" :aria-current="view==='resources' ? 'page' : null" @click="setView('resources')" title="Images, volumes and networks on this host">Resources</button>
         </nav>
-        <div class="view-toggle" role="group" aria-label="Show containers" :title="view === 'overview' ? 'The Hosts tab shows every host, not containers - this filter applies to the other tabs' : view === 'resources' ? 'The Resources tab lists images, volumes and networks, not containers' : null">
-          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
-          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
-          <button :disabled="view === 'overview' || view === 'resources'" :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
-        </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
         <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Settings" :aria-expanded="String(settingsOpen)">⚙ Settings</button>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
+
+      <div v-if="showSubbar" class="subbar" :class="{ 'with-detail': detailPanelVisible || settingsOpen, 'settings-open': settingsOpen }">
+        <div v-if="currentGroup && currentGroup.views.length > 1" class="view-toggle" role="group" :aria-label="currentGroup.label + ' views'">
+          <button
+            v-for="v in currentGroup.views"
+            :key="v.id"
+            :class="{active: view === v.id}"
+            :aria-current="view === v.id ? 'page' : null"
+            @click="setView(v.id)"
+          >{{ v.label }}</button>
+        </div>
+        <div v-if="showStateFilter" class="view-toggle subbar-filter" role="group" aria-label="Show containers">
+          <button :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
+          <button :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
+          <button :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
+        </div>
+      </div>
 
       <p v-if="containersError" class="error" role="alert">{{ containersError }}</p>
 
@@ -655,6 +687,7 @@ const app = createApp({
               :group-action-in-flight="groupActionInFlight"
               :selected-container-id="selectedContainerId"
               :is-admin="isAdmin"
+              :host-mem-total-bytes="hostInfo ? hostInfo.memTotalBytes : null"
               @select="selectContainerById"
               @action="doAction"
               @group-action="doGroupAction"

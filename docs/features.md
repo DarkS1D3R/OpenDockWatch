@@ -2,6 +2,19 @@
 
 The full feature reference. The [README](../README.md) has the short version.
 
+## Navigation
+
+The topbar has four tabs, and a row under it switches between the views inside the current one:
+
+| Tab        | Views                   |
+| ---------- | ----------------------- |
+| Hosts      | All hosts, Resources    |
+| Containers | List, Flow              |
+| Logs       | Logs                    |
+| Activity   | Alerts & events, Uptime |
+
+A tab reopens the view you last used in it. The All / Running / Stopped filter sits at the right of that row on the views it applies to: List, Flow and Logs.
+
 ## Hosts tab
 
 Every monitored host on one screen, one row each: reachable or not (and for how long), running/total containers with any unhealthy or restarting ones called out, CPU and memory, and open alerts. Problem hosts sort to the top, and a one-line summary above the table answers "is anything wrong anywhere". Clicking a row switches to that host; clicking its alert count opens that host's Activity. Built from what the server already polls, so it adds no work on the hosts themselves. Can be made the landing tab from Settings → General or `DEFAULT_VIEW=overview`.
@@ -84,7 +97,7 @@ Nothing here changes anything on the host: there is no prune or remove button. S
 
 ## Settings panel
 
-Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (General / Webhook / Thresholds / Container Rules / Hosts) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured. The General tab sets which tab (Hosts/List/Flow/Logs/Activity/Uptime/Resources) the app lands on after login for every user — `DEFAULT_VIEW` in `.env` is the optional config-file equivalent.
+Instead of (or in addition to) `.env`, an admin account can set the webhook and the resource thresholds from the UI: the ⚙ Settings button in the topbar opens a tabbed panel (General / Alerts / Hosts / Appearance / Audit log; Alerts holds the webhook, thresholds and container rules) to save them, clear an override back to the `.env` default, and (for the webhook) send a test alert. Values saved from the UI are stored in the database and take effect immediately (no restart) — a saved value always wins over `.env`, even set to empty/0 to deliberately disable something `.env` configured. The General tab sets which view (for example Containers › List or Activity › Uptime) the app lands on after login for every user — `DEFAULT_VIEW` in `.env` is the optional config-file equivalent.
 
 The Appearance tab holds two per-browser preferences, kept in that browser's local storage rather than on the server. **Theme** switches the whole app between Dark (the default), Light, and Match system, which follows the operating system's setting and changes with it. The light theme uses soft greys, not white, so it stays comfortable on a dashboard left open all day. **Log viewer** sets the log panes' own background and text colours from a few presets or a colour picker. Until you pick one, the log follows the app theme: Default with Dark, Paper with Light. Once you pick, your choice is kept in both themes (so a dark log can sit inside a light app), and **Follow app theme** goes back to following.
 

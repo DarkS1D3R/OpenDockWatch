@@ -1,11 +1,12 @@
 import { healthColor, healthLabel, formatBytes, iconFor, badgeInnerHtml, badgeTitle, badgeIsTile } from '../format.js';
 import { SORT_KEYS, DEFAULT_SORT_DIR, sortContainers, loadSort, saveSort } from '../lib/containerSort.js';
+import { rowActions, groupActions, actionLabel, shortStatus, memoryCell, portsCell } from '../lib/containerRow.js';
 import MiniSpark from './MiniSpark.js';
 
 const SORT_LABELS = { name: 'Name', cpu: 'CPU', mem: 'Memory', restarts: 'Restarts (1h)' };
 
-// The List view: containers grouped by compose project, with mini sparklines and
-// start/stop/restart/Logs actions. Selection/actions/log-viewer/metrics-modal are owned by the
+// The List view: containers grouped by compose project, with mini sparklines, Logs, and the
+// start/stop/restart actions that apply to each container's state (lib/containerRow.js). Selection/actions/log-viewer/metrics-modal are owned by the
 // root; this component only emits what happened. collapsedGroups is the one bit of local UI state.
 export default {
   name: 'ContainerList',
@@ -18,6 +19,8 @@ export default {
     groupActionInFlight: { type: Object, default: () => ({}) },
     selectedContainerId: { type: String, default: null },
     isAdmin: { type: Boolean, default: false },
+    // Docker's view of host memory, to tell a real memory limit from "no limit" in docker stats.
+    hostMemTotalBytes: { type: Number, default: null },
   },
   emits: ['select', 'action', 'group-action', 'open-logs', 'open-metrics'],
   data() {
@@ -78,6 +81,17 @@ export default {
     },
     toggleGroup(name) {
       this.collapsedGroups = { ...this.collapsedGroups, [name]: !this.collapsedGroups[name] };
+    },
+    rowActions(c) {
+      return rowActions(c.state).map((action) => ({ action, label: actionLabel(action) }));
+    },
+    groupActions(items) {
+      return groupActions(items).map((action) => ({ action, label: `${actionLabel(action)} all` }));
+    },
+    shortStatus,
+    portsCell,
+    memoryCell(id) {
+      return memoryCell(this.statFor(id).memUsage, this.hostMemTotalBytes);
     },
     statFor(id) {
       return this.stats[id] || {};
@@ -151,9 +165,7 @@ export default {
             {{ groupName }} <span class="muted">({{ items.length }})</span>
           </button>
           <div v-if="isAdmin && isRealGroup(groupName)" class="group-actions" @click.stop title="Batch action for every container in this compose project">
-            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'start')">Start all</button>
-            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'stop')">Stop all</button>
-            <button :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, 'restart')">Restart all</button>
+            <button v-for="g in groupActions(items)" :key="g.action" :disabled="!!groupActionInFlight[groupName]" @click="$emit('group-action', groupName, g.action)">{{ g.label }}</button>
           </div>
         </div>
         <table v-show="!collapsedGroups[groupName]" class="containers">
@@ -184,7 +196,7 @@ export default {
               <td class="muted"><span v-if="c.imageUpdate && c.imageUpdate.status === 'outdated'" class="image-update-badge" role="img" aria-label="Newer image available" title="Newer image available">⬆</span>{{ c.image }}</td>
               <td>
                 <div class="status-cell">
-                  <span class="status-text" :class="stateClass(c)" :title="c.status">{{ c.status }}</span>
+                  <span class="status-text" :class="stateClass(c)" :title="c.status">{{ shortStatus(c.status) }}</span>
                   <span
                     v-if="c.health"
                     class="health-dot"
@@ -211,7 +223,7 @@ export default {
               </td>
               <td class="muted">
                 <div class="cell-metric-row">
-                  <span>{{ statFor(c.id).memUsage || '—' }}</span>
+                  <span :title="statFor(c.id).memUsage">{{ memoryCell(c.id) || '—' }}</span>
                   <button
                     class="mini-spark-btn"
                     :title="sparkTitle(c.id, 'mem')"
@@ -222,13 +234,11 @@ export default {
                   </button>
                 </div>
               </td>
-              <td class="muted" :title="c.ports">{{ c.ports }}</td>
+              <td class="muted" :title="c.ports">{{ portsCell(c.ports) }}</td>
               <td class="actions" @click.stop>
                 <button @click="$emit('open-logs', c.id)" title="Open the log viewer for this container">Logs</button>
                 <template v-if="isAdmin">
-                  <button :disabled="!!actionInFlight[c.id]" @click="$emit('action', c, 'start')">Start</button>
-                  <button :disabled="!!actionInFlight[c.id]" @click="$emit('action', c, 'stop')">Stop</button>
-                  <button :disabled="!!actionInFlight[c.id]" @click="$emit('action', c, 'restart')">Restart</button>
+                  <button v-for="a in rowActions(c)" :key="a.action" :disabled="!!actionInFlight[c.id]" @click="$emit('action', c, a.action)">{{ a.label }}</button>
                 </template>
                 <span v-else class="muted small">read-only</span>
               </td>

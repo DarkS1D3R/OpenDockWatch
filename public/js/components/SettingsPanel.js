@@ -7,8 +7,9 @@ import SettingsAppearance from './SettingsAppearance.js';
 import SettingsAudit from './SettingsAudit.js';
 import { rememberFocus, modalOpenAbove } from '../lib/focus.js';
 
-// The Settings panel: a tab strip over seven independent sections, each owning its own data/fetch
-// (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance/Audit - see those files). v-if, not v-show,
+// The Settings panel: a tab strip over independent sections, each owning its own data/fetch
+// (General/Webhook/Thresholds/ContainerRules/Hosts/Appearance/Audit - see those files). The Alerts
+// tab stacks Webhook, Thresholds and Container Rules, each still saving on its own. v-if, not v-show,
 // per tab: each child is a cheap admin-only GET-config panel with no stream to preserve across a
 // switch, so remounting fresh keeps data always-current (e.g. add a host, then flip to Container
 // Rules and see it in the dropdown) at the cost of one harmless refetch per tab click - Appearance
@@ -52,18 +53,27 @@ export default {
       </div>
       <div class="view-toggle settings-tabs" role="group" aria-label="Settings sections">
         <button :class="{active: activeTab==='general'}" :aria-current="activeTab==='general' ? 'true' : null" @click="activeTab='general'">General</button>
-        <button :class="{active: activeTab==='webhook'}" :aria-current="activeTab==='webhook' ? 'true' : null" @click="activeTab='webhook'">Webhook</button>
-        <button :class="{active: activeTab==='thresholds'}" :aria-current="activeTab==='thresholds' ? 'true' : null" @click="activeTab='thresholds'">Thresholds</button>
-        <button :class="{active: activeTab==='container-rules'}" :aria-current="activeTab==='container-rules' ? 'true' : null" @click="activeTab='container-rules'">Container Rules</button>
+        <button :class="{active: activeTab==='alerts'}" :aria-current="activeTab==='alerts' ? 'true' : null" @click="activeTab='alerts'">Alerts</button>
         <button :class="{active: activeTab==='hosts'}" :aria-current="activeTab==='hosts' ? 'true' : null" @click="activeTab='hosts'">Hosts</button>
         <button :class="{active: activeTab==='appearance'}" :aria-current="activeTab==='appearance' ? 'true' : null" @click="activeTab='appearance'">Appearance</button>
         <button :class="{active: activeTab==='audit'}" :aria-current="activeTab==='audit' ? 'true' : null" @click="activeTab='audit'">Audit log</button>
       </div>
       <div class="detail-body">
         <settings-general v-if="activeTab==='general'"></settings-general>
-        <settings-webhook v-if="activeTab==='webhook'"></settings-webhook>
-        <settings-thresholds v-if="activeTab==='thresholds'"></settings-thresholds>
-        <settings-container-rules v-if="activeTab==='container-rules'"></settings-container-rules>
+        <template v-if="activeTab==='alerts'">
+          <section class="settings-section" aria-labelledby="settings-alerts-webhook">
+            <h3 id="settings-alerts-webhook" class="settings-section-heading">Webhook</h3>
+            <settings-webhook></settings-webhook>
+          </section>
+          <section class="settings-section" aria-labelledby="settings-alerts-thresholds">
+            <h3 id="settings-alerts-thresholds" class="settings-section-heading">Thresholds</h3>
+            <settings-thresholds></settings-thresholds>
+          </section>
+          <section class="settings-section" aria-labelledby="settings-alerts-rules">
+            <h3 id="settings-alerts-rules" class="settings-section-heading">Container rules</h3>
+            <settings-container-rules></settings-container-rules>
+          </section>
+        </template>
         <settings-hosts v-if="activeTab==='hosts'" @hosts-changed="$emit('hosts-changed')"></settings-hosts>
         <settings-appearance v-if="activeTab==='appearance'"></settings-appearance>
         <settings-audit v-if="activeTab==='audit'"></settings-audit>

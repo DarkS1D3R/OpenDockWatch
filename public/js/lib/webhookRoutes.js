@@ -1,4 +1,4 @@
-// Display logic for Settings > Webhook's routes list (SettingsWebhookRoutes.js), kept pure so it is
+// Display logic for Settings > Alerts > Webhook's routes list (SettingsWebhookRoutes.js), kept pure so it is
 // unit-tested without mounting the component. See server/CLAUDE.md for how routes are matched.
 
 import { ALERT_RULES } from '../constants.js';
