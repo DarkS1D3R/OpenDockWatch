@@ -588,6 +588,18 @@ body {
   align-items: center;
   gap: 8px;
 }
+/* The logo + name is a button back to the default view; it keeps the plain heading look. */
+button.brand-home,
+button.brand-home:hover:not(:disabled):not(.active) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
 .brand-logo {
   width: 52px;
   height: 52px;

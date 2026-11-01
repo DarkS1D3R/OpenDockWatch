@@ -25,7 +25,7 @@ export default {
     SettingsAppearance,
     SettingsAudit,
   },
-  emits: ['close', 'hosts-changed'],
+  emits: ['close', 'hosts-changed', 'default-view-changed'],
   data() {
     return { activeTab: 'general' };
   },
@@ -59,7 +59,7 @@ export default {
         <button :class="{active: activeTab==='audit'}" :aria-current="activeTab==='audit' ? 'true' : null" @click="activeTab='audit'">Audit log</button>
       </div>
       <div class="detail-body">
-        <settings-general v-if="activeTab==='general'"></settings-general>
+        <settings-general v-if="activeTab==='general'" @default-view-changed="$emit('default-view-changed', $event)"></settings-general>
         <template v-if="activeTab==='alerts'">
           <section class="settings-section" aria-labelledby="settings-alerts-webhook">
             <h3 id="settings-alerts-webhook" class="settings-section-heading">Webhook</h3>

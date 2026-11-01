@@ -114,6 +114,7 @@ const app = createApp({
       groupActionInFlight: {},
 
       view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' | 'resources' - reset to the configured default once the session loads, see mounted()
+      defaultView: 'list', // the configured landing view - the brand button returns here, see goHome
       stateFilter: 'all', // 'all' | 'running' | 'stopped' - shown only where it applies (STATE_FILTER_VIEWS)
       viewGroups: VIEW_GROUPS,
       lastViewByGroup: {}, // groupId -> the view last open in it, so a tab returns to where you were
@@ -266,7 +267,8 @@ const app = createApp({
     }
     // setView (not a direct assignment) so a configured 'flow' default also gets its topology
     // fetched immediately, same as clicking the Flow tab by hand - see setView.
-    await this.setView(session.defaultView || 'list');
+    this.defaultView = session.defaultView || 'list';
+    await this.setView(this.defaultView);
   },
   beforeUnmount() {
     if (this.unwatchSystemScheme) this.unwatchSystemScheme();
@@ -454,6 +456,12 @@ const app = createApp({
         if (arr.length > METRICS_HISTORY_LEN) arr.splice(0, arr.length - METRICS_HISTORY_LEN);
       }
     },
+    // The brand button: back to the landing view with nothing open on top, like a fresh login.
+    async goHome() {
+      this.settingsOpen = false;
+      this.selectedContainerId = null;
+      await this.setView(this.defaultView);
+    },
     async openGroup(groupId) {
       await this.setView(viewForGroup(groupId, this.lastViewByGroup));
     },
@@ -618,7 +626,7 @@ const app = createApp({
       </div>
       <template v-else>
       <header class="topbar">
-        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
+        <h1><button type="button" class="brand-home" @click="goHome" title="Go to the default view"><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span></button><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
         <select v-model="selectedHostId" aria-label="Host" @change="selectHost(selectedHostId)">
           <option v-for="h in hosts" :key="h.id" :value="h.id">
             {{ h.name }} {{ h.reachable ? '' : '(unreachable)' }}
@@ -759,7 +767,7 @@ const app = createApp({
         @close="closeLogViewer"
       ></log-viewer>
 
-      <settings-panel v-if="settingsOpen" @close="closeSettings" @hosts-changed="loadHosts"></settings-panel>
+      <settings-panel v-if="settingsOpen" @close="closeSettings" @hosts-changed="loadHosts" @default-view-changed="defaultView = $event"></settings-panel>
 
       <container-metrics-modal
         v-if="metricsContainerId && selectedHostId"
