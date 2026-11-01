@@ -1,6 +1,6 @@
-import { healthColor } from '../format.js';
+import { HEALTH_STATE } from '../format.js';
 import { LOGOS } from '../lib/logos.js';
-import { STATE_COLORS, SELECTED } from '../theme.js';
+import { stateColorsFor, resolveStateVars } from '../theme.js';
 import {
   NODE_WIDTH,
   FULL_LEAF_HEIGHT,
@@ -10,24 +10,11 @@ import {
   clampPct,
   CONTAINER_STATE_CLASSES,
 } from './elements.js';
-import {
-  CPU_COLOR,
-  MEM_COLOR,
-  SHARED_MOUNT_COLOR,
-  BLAST_UPSTREAM_COLOR,
-  BLAST_DOWNSTREAM_COLOR,
-  NETWORK_COLOR,
-  PROJ_ICON_SVG,
-  NET_ICON_SVG,
-  MOUNT_BIND_ICON_SVG,
-  MOUNT_VOLUME_ICON_SVG,
-} from './style.js';
+import { graphPalette, pillIconSvg } from './style.js';
 
 // A vector export has no resolution ceiling to manage, unlike exportPng's EXPORT_SCALE dance -
 // the viewBox just grows to fit. extractSvgGeometry (impure, reads live cy) and renderSvg (pure,
 // geometry -> markup) mirror buildElements' pure-core/impure-adapter split; renderSvg is unit-tested.
-
-const ALERT_BADGE_COLOR = '#e5534b';
 
 function svgEscape(str) {
   return String(str ?? '')
@@ -149,23 +136,23 @@ export function extractSvgGeometry(cy) {
 // Mirrors .cy-node-metric-row: a "CPU"/"RAM" label (20px, matching .cy-node-metric-label's own
 // width) then the track fills the rest - the live template has never had bars with no label next
 // to them, so a bar alone here read as broken rather than just "0%".
-function svgMetricBars(x, y, width, cpuPct, memPct) {
+function svgMetricBars(p, x, y, width, cpuPct, memPct) {
   const labelWidth = 20;
   const trackX = x + labelWidth + 4;
   const trackWidth = width - labelWidth - 4;
   const rowGap = 6;
   return (
-    `<text x="${x}" y="${y + 2.5}" font-size="5" font-weight="700" fill="#8b909c">CPU</text>` +
-    `<rect x="${trackX}" y="${y}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
-    `<rect x="${trackX}" y="${y}" width="${(trackWidth * clampPct(cpuPct)) / 100}" height="3" rx="1.5" fill="${CPU_COLOR}"/>` +
-    `<text x="${x}" y="${y + rowGap + 2.5}" font-size="5" font-weight="700" fill="#8b909c">RAM</text>` +
-    `<rect x="${trackX}" y="${y + rowGap}" width="${trackWidth}" height="3" rx="1.5" fill="rgba(255,255,255,0.07)"/>` +
-    `<rect x="${trackX}" y="${y + rowGap}" width="${(trackWidth * clampPct(memPct)) / 100}" height="3" rx="1.5" fill="${MEM_COLOR}"/>`
+    `<text x="${x}" y="${y + 2.5}" font-size="5" font-weight="700" fill="${p.muted}">CPU</text>` +
+    `<rect x="${trackX}" y="${y}" width="${trackWidth}" height="3" rx="1.5" fill="${p.track}"/>` +
+    `<rect x="${trackX}" y="${y}" width="${(trackWidth * clampPct(cpuPct)) / 100}" height="3" rx="1.5" fill="${p.cpu}"/>` +
+    `<text x="${x}" y="${y + rowGap + 2.5}" font-size="5" font-weight="700" fill="${p.muted}">RAM</text>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${trackWidth}" height="3" rx="1.5" fill="${p.track}"/>` +
+    `<rect x="${trackX}" y="${y + rowGap}" width="${(trackWidth * clampPct(memPct)) / 100}" height="3" rx="1.5" fill="${p.mem}"/>`
   );
 }
 
-function svgAlertBadge(x, y, count) {
-  return `<circle cx="${x + 6}" cy="${y + 6}" r="6" fill="${ALERT_BADGE_COLOR}"/><text x="${x + 6}" y="${y + 9}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
+function svgAlertBadge(p, x, y, count) {
+  return `<circle cx="${x + 6}" cy="${y + 6}" r="6" fill="${p.alert}"/><text x="${x + 6}" y="${y + 9}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
 }
 
 // The 17px service badge at (x, y), mirroring .cy-node-icon: a 24-unit logo glyph scaled to 11px in
@@ -191,41 +178,42 @@ function svgBadge(x, y, icon) {
 
 // Mirrors the .cy-node-box HTML template's layout (public/style.css:491-618): state icon top
 // right, service badge + name, CPU/RAM bar rows, NET/DISK text, port/alert badges.
-function svgContainerNode(n) {
+function svgContainerNode(n, p) {
   const d = n.data;
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
   // The same precedence CY_STYLE gets from selector order (created -> starting -> unhealthy ->
   // selected), spelled out because there are no cascading selectors here - but off the same
-  // theme.js values, so the export can no longer drift from the screen. See public/CLAUDE.md.
-  let border = n.created ? STATE_COLORS.created : n.stopped ? STATE_COLORS.stopped : STATE_COLORS.running;
-  if (n.starting) border = STATE_COLORS.starting;
-  if (n.unhealthy) border = STATE_COLORS.unhealthy;
-  if (n.selected) border = SELECTED;
+  // theme.js values, so the export can no longer drift from the screen. See docs/architecture/frontend.md.
+  const states = p.states;
+  let border = n.created ? states.created : n.stopped ? states.stopped : states.running;
+  if (n.starting) border = states.starting;
+  if (n.unhealthy) border = states.unhealthy;
+  if (n.selected) border = p.accent;
   const dash = n.created ? ' stroke-dasharray="6 4"' : '';
   let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
   if (n.blastUpstream)
-    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_UPSTREAM_COLOR}" fill-opacity="0.22"/>`;
+    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${p.blastUpstream}" fill-opacity="0.22"/>`;
   if (n.blastDownstream)
-    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${BLAST_DOWNSTREAM_COLOR}" fill-opacity="0.22"/>`;
-  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="${border}" stroke-width="2"${dash}/>`;
-  if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${d.emoji}</g>`;
-  if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="#8b909c">${svgEscape(svgTruncate(d.status, 22))}</text>`;
+    svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${p.blastDownstream}" fill-opacity="0.22"/>`;
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${p.surface}" stroke="${border}" stroke-width="2"${dash}/>`;
+  if (d.emoji) svg += `<g transform="translate(${x1 + n.width - 17}, ${y1 + 2})">${resolveStateVars(d.emoji, p.scheme)}</g>`;
+  if (d.status) svg += `<text x="${x1 + 18}" y="${y1 + 10}" font-size="9" fill="${p.muted}">${svgEscape(svgTruncate(d.status, 22))}</text>`;
   if (d.icon) svg += svgBadge(x1 + 6, y1 + 16, d.icon);
-  svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(svgTruncate(d.name, 18))}</text>`;
+  svg += `<text x="${n.x}" y="${y1 + 28}" text-anchor="middle" font-size="11" fill="${p.text}">${svgEscape(svgTruncate(d.name, 18))}</text>`;
   // Fixed offsets from FULL_LEAF_HEIGHT (single-port-line box height), not n.height - n.height
   // grows to fit a wrapped port list, and that extra room must land below this cluster, not
   // stretch the gap above it (which anchoring to the real, taller n.height would do).
-  svg += svgMetricBars(x1 + 8, y1 + FULL_LEAF_HEIGHT - 32, n.width - 16, d.cpuPerc, d.memPerc);
-  svg += `<text x="${x1 + 8}" y="${y1 + FULL_LEAF_HEIGHT - 10}" font-size="5" fill="#8b909c">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
+  svg += svgMetricBars(p, x1 + 8, y1 + FULL_LEAF_HEIGHT - 32, n.width - 16, d.cpuPerc, d.memPerc);
+  svg += `<text x="${x1 + 8}" y="${y1 + FULL_LEAF_HEIGHT - 10}" font-size="5" fill="${p.muted}">NET ${svgEscape(d.netIO)}  DISK ${svgEscape(d.blockIO)}</text>`;
   if (d.ports) {
     const portTspans = d.ports
       .split('\n')
       .map((line, i) => `<tspan x="${x1 + 6}" y="${y1 + FULL_LEAF_HEIGHT - 2 + i * PORT_EXTRA_LINE_HEIGHT}">${svgEscape(line)}</tspan>`)
       .join('');
-    svg += `<text font-size="8" fill="#8b909c">${portTspans}</text>`;
+    svg += `<text font-size="8" fill="${p.muted}">${portTspans}</text>`;
   }
-  if (d.openAlerts > 0) svg += svgAlertBadge(x1 + 4, y1 + 2, d.openAlerts);
+  if (d.openAlerts > 0) svg += svgAlertBadge(p, x1 + 4, y1 + 2, d.openAlerts);
   svg += `</g>`;
   return svg;
 }
@@ -233,38 +221,38 @@ function svgContainerNode(n) {
 // Collapsed compose group - mirrors the cy-expand-collapse-collapsed-node HTML template (health
 // dot, container count, averaged CPU/RAM). An *expanded* group (svgGroupBox below) shows none of
 // that - it's just the padded outline + label the live view actually draws for one.
-function svgGroupNode(n) {
+function svgGroupNode(n, p) {
   const d = n.data;
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
   const count = d.count || 0;
   let svg = `<g opacity="${n.faded ? 0.15 : 1}">`;
-  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#8b909c" stroke-width="1.5"/>`;
-  if (d.health) svg += `<circle cx="${x1 + n.width - 10}" cy="${y1 + 8}" r="3.5" fill="${healthColor(d.health)}"/>`;
-  svg += `<text x="${n.x}" y="${y1 + 26}" text-anchor="middle" font-size="11" fill="#e4e6eb">${svgEscape(d.label)}</text>`;
-  svg += `<text x="${n.x}" y="${y1 + 42}" text-anchor="middle" font-size="9" fill="#8b909c">${count} container${count === 1 ? '' : 's'}</text>`;
-  svg += svgMetricBars(x1 + 8, y1 + n.height - 24, n.width - 16, d.cpuAvg, d.memAvg);
-  if (d.openAlerts > 0) svg += svgAlertBadge(x1 + 4, y1 + 2, d.openAlerts);
+  svg += `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${p.surface}" stroke="${p.muted}" stroke-width="1.5"/>`;
+  if (d.health) svg += `<circle cx="${x1 + n.width - 10}" cy="${y1 + 8}" r="3.5" fill="${p.states[HEALTH_STATE[d.health]] || p.muted}"/>`;
+  svg += `<text x="${n.x}" y="${y1 + 26}" text-anchor="middle" font-size="11" fill="${p.text}">${svgEscape(d.label)}</text>`;
+  svg += `<text x="${n.x}" y="${y1 + 42}" text-anchor="middle" font-size="9" fill="${p.muted}">${count} container${count === 1 ? '' : 's'}</text>`;
+  svg += svgMetricBars(p, x1 + 8, y1 + n.height - 24, n.width - 16, d.cpuAvg, d.memAvg);
+  if (d.openAlerts > 0) svg += svgAlertBadge(p, x1 + 4, y1 + 2, d.openAlerts);
   svg += `</g>`;
   return svg;
 }
 
-function svgGroupBox(n) {
+function svgGroupBox(n, p) {
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
   return (
     `<g opacity="${n.faded ? 0.15 : 1}">` +
-    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="#1d2027" stroke="#8b909c" stroke-width="1.5"/>` +
-    `<text x="${n.x}" y="${y1 + 16}" text-anchor="middle" font-size="12" fill="#8b909c">${svgEscape(n.data.label)}</text>` +
+    `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="8" fill="${p.surface}" stroke="${p.muted}" stroke-width="1.5"/>` +
+    `<text x="${n.x}" y="${y1 + 16}" text-anchor="middle" font-size="12" fill="${p.muted}">${svgEscape(n.data.label)}</text>` +
     `</g>`
   );
 }
 
-// Mirrors the live view's CY_STYLE background-image icons (style.js's PROJ_ICON_SVG etc.) -
+// Mirrors the live view's CY_STYLE background-image icons (style.js's pillIconSvg) -
 // drawn as real SVG elements since the exporter has no canvas to reference a background-image
 // on. Icon coordinates are already in the shared 0-12 space; this just positions it at the pill's edge.
-function svgPillIcon(kind, x1, cy) {
-  const svg = { proj: PROJ_ICON_SVG, net: NET_ICON_SVG, 'mount-bind': MOUNT_BIND_ICON_SVG, 'mount-volume': MOUNT_VOLUME_ICON_SVG }[kind];
+function svgPillIcon(kind, x1, cy, p) {
+  const svg = pillIconSvg(kind, p);
   if (!svg) return '';
   return `<g transform="translate(${x1 + 2}, ${cy - 6})">${svg}</g>`;
 }
@@ -276,7 +264,7 @@ const PILL_ICON_TEXT_SHIFT = 8;
 // Tree mode's project/network/mount pills, matching CY_STYLE's node.proj/.net/.mount(-bind|-volume).
 // Mount labels already carry \n for wrapped paths, split into one <tspan> per line. The box is
 // always exactly n.height (dagre spaced siblings by it); line spacing shrinks to fit instead of the box growing.
-function svgPillNode(n, { border, text, bg, fontSize = 10 }) {
+function svgPillNode(n, p, { border, text, bg, fontSize = 10 }) {
   const lines = String(n.data.label || '').split('\n');
   const x1 = n.x - n.width / 2;
   const y1 = n.y - n.height / 2;
@@ -290,45 +278,45 @@ function svgPillNode(n, { border, text, bg, fontSize = 10 }) {
   return (
     `<g opacity="${n.faded ? 0.15 : 1}">` +
     `<rect x="${x1}" y="${y1}" width="${n.width}" height="${n.height}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1"/>` +
-    svgPillIcon(n.kind, x1, n.y) +
+    svgPillIcon(n.kind, x1, n.y, p) +
     `<text x="${textX}" text-anchor="middle" font-size="${fontSize}" fill="${text}">${tspans}</text>` +
     `</g>`
   );
 }
 
-function svgNode(n) {
+function svgNode(n, p) {
   switch (n.kind) {
     case 'container':
-      return svgContainerNode(n);
+      return svgContainerNode(n, p);
     case 'group-collapsed':
-      return svgGroupNode(n);
+      return svgGroupNode(n, p);
     case 'group-expanded':
-      return svgGroupBox(n);
+      return svgGroupBox(n, p);
     case 'proj':
-      return svgPillNode(n, { border: '#2d5fa8', text: '#e4e6eb', bg: '#1d2027', fontSize: 11 });
+      return svgPillNode(n, p, { border: p.projBorder, text: p.text, bg: p.surface, fontSize: 11 });
     case 'net':
-      return svgPillNode(n, { border: '#4f8cff', text: '#4f8cff', bg: '#182234' });
+      return svgPillNode(n, p, { border: p.accent, text: p.accent, bg: p.netBg });
     case 'mount-bind':
       return n.data.shared
-        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
-        : svgPillNode(n, { border: '#d29922', text: '#d29922', bg: '#241d14' });
+        ? svgPillNode(n, p, { border: p.shared, text: p.shared, bg: p.sharedBg })
+        : svgPillNode(n, p, { border: p.bind, text: p.bind, bg: p.bindBg });
     case 'mount-volume':
       return n.data.shared
-        ? svgPillNode(n, { border: SHARED_MOUNT_COLOR, text: SHARED_MOUNT_COLOR, bg: '#2e1c0f' })
-        : svgPillNode(n, { border: '#e8c766', text: '#e8c766', bg: '#2b2413' });
+        ? svgPillNode(n, p, { border: p.shared, text: p.shared, bg: p.sharedBg })
+        : svgPillNode(n, p, { border: p.volume, text: p.volume, bg: p.volumeBg });
     default:
       return '';
   }
 }
 
-const EDGE_SVG_STYLE = {
-  network: { color: NETWORK_COLOR, dash: '6,4', arrow: false, taxi: false },
-  depends_on: { color: '#199e70', dash: null, arrow: true, taxi: false },
-  manual: { color: '#4f8cff', dash: null, arrow: true, taxi: false },
-  'tree-proj': { color: '#3a3f4b', dash: null, arrow: false, taxi: true },
-  'tree-net': { color: '#4f8cff', dash: '6,4', arrow: false, taxi: false },
-  'tree-mount': { color: '#d29922', dash: null, arrow: false, taxi: true },
-};
+const edgeSvgStyle = (p) => ({
+  network: { color: p.network, dash: '6,4', arrow: false, taxi: false },
+  depends_on: { color: p.mem, dash: null, arrow: true, taxi: false },
+  manual: { color: p.accent, dash: null, arrow: true, taxi: false },
+  'tree-proj': { color: p.treeEdge, dash: null, arrow: false, taxi: true },
+  'tree-net': { color: p.accent, dash: '6,4', arrow: false, taxi: false },
+  'tree-mount': { color: p.bind, dash: null, arrow: false, taxi: true },
+});
 
 // Matches CY_STYLE's taxi-turn: '50%' - a horizontal-vertical-horizontal elbow turning at the
 // x-midpoint between source and target, same formula cytoscape itself uses for edge-tree-proj/
@@ -347,28 +335,28 @@ function svgArrowHead(from, to, color) {
   return `<polygon points="${to.x},${to.y} ${p1.x},${p1.y} ${p2.x},${p2.y}" fill="${color}"/>`;
 }
 
-// Mirrors CY_STYLE's edge-tree-mount line-color function: EDGE_SVG_STYLE's flat color is only
+// Mirrors CY_STYLE's edge-tree-mount line-color function: edgeSvgStyle's flat color is only
 // the mount-bind default. A shared mount/volume wins over kind, same as the live view - losing
 // that here would lose the point of the shared-mount signal the legend advertises.
-function treeMountColor(e, fallback) {
-  if (e.mountShared) return SHARED_MOUNT_COLOR;
-  if (e.mountVolume) return '#e8c766';
+function treeMountColor(e, fallback, p) {
+  if (e.mountShared) return p.shared;
+  if (e.mountVolume) return p.volume;
   return fallback;
 }
 
 // Graph-mode edges (network/depends-on/manual) are bezier-curved in the live view - drawn here
 // as straight lines rather than reverse-engineering cytoscape's bezier control-point math, which
 // isn't worth the complexity for a visual difference this minor.
-function svgEdge(e) {
-  const style = EDGE_SVG_STYLE[e.kind];
+function svgEdge(e, p) {
+  const style = edgeSvgStyle(p)[e.kind];
   if (!style) return '';
-  let color = e.kind === 'tree-mount' ? treeMountColor(e, style.color) : style.color;
+  let color = e.kind === 'tree-mount' ? treeMountColor(e, style.color, p) : style.color;
   let width = 1.5;
   if (e.blastUpstream) {
-    color = BLAST_UPSTREAM_COLOR;
+    color = p.blastUpstream;
     width = 3;
   } else if (e.blastDownstream) {
-    color = BLAST_DOWNSTREAM_COLOR;
+    color = p.blastDownstream;
     width = 3;
   }
   const points = style.taxi ? taxiPoints(e.source, e.target) : [e.source, e.target];
@@ -382,7 +370,7 @@ function svgEdge(e) {
     const my = (e.source.y + e.target.y) / 2;
     const label = svgEscape(e.label);
     const boxWidth = label.length * 5.5 + 8;
-    svg += `<rect x="${mx - boxWidth / 2}" y="${my - 7}" width="${boxWidth}" height="14" fill="#14161a"/>`;
+    svg += `<rect x="${mx - boxWidth / 2}" y="${my - 7}" width="${boxWidth}" height="14" fill="${p.canvas}"/>`;
     svg += `<text x="${mx}" y="${my + 4}" text-anchor="middle" font-size="10" fill="${color}">${label}</text>`;
   }
   svg += `</g>`;
@@ -392,7 +380,9 @@ function svgEdge(e) {
 // Pure: geometry (from extractSvgGeometry, or a synthetic fixture in tests) -> a complete <svg>
 // document string. The viewBox grows to fit every node's bounds plus padding - no fixed
 // resolution/size decision to make, unlike the PNG export.
-export function renderSvg(geometry, { background = '#14161a' } = {}) {
+export function renderSvg(geometry, { scheme = 'dark', background } = {}) {
+  const p = { ...graphPalette(scheme), states: stateColorsFor(scheme), scheme };
+  background = background || p.canvas;
   const { nodes, edges } = geometry;
   if (!nodes.length) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="${background}"/></svg>`;
@@ -415,8 +405,8 @@ export function renderSvg(geometry, { background = '#14161a' } = {}) {
   const width = maxX - minX;
   const height = maxY - minY;
 
-  const edgesSvg = edges.map(svgEdge).join('\n');
-  const nodesSvg = nodes.map(svgNode).join('\n');
+  const edgesSvg = edges.map((e) => svgEdge(e, p)).join('\n');
+  const nodesSvg = nodes.map((n) => svgNode(n, p)).join('\n');
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}" font-family="sans-serif">`,
@@ -430,12 +420,12 @@ export function renderSvg(geometry, { background = '#14161a' } = {}) {
 // cy.fit-to-all before extracting, matching exportPng - always captures the whole graph, not
 // just the viewport. No container-resize/frame-wait needed like exportPng: this reads
 // cytoscape's own bounding boxes, current the moment fit() returns, and never touches the DOM overlay.
-export async function exportSvg(cy) {
+export async function exportSvg(cy, scheme = 'dark') {
   if (!cy) return;
   const savedViewport = { zoom: cy.zoom(), pan: { ...cy.pan() } };
   cy.fit(undefined, 30);
 
-  const svgString = renderSvg(extractSvgGeometry(cy));
+  const svgString = renderSvg(extractSvgGeometry(cy), { scheme });
   const blob = new Blob([svgString], { type: 'image/svg+xml' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

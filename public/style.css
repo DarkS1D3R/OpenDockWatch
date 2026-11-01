@@ -25,6 +25,62 @@
      deutan dE 2.5. Re-validate rather than eyeball if these ever change. */
   --seq-net: #d160a8;
   --seq-block: #b07d2e;
+  /* The graph's unhealthy border, as a property so format.js's state icons can reference it and
+     follow a theme switch. Not --danger: that is a different red, for error text. */
+  --unhealthy: #f85149;
+  /* Surfaces between --bg and --panel, and the one-off hues that used to be literals in the rules
+     below. Each has a light counterpart in the block that follows. */
+  --tile-bg: #171a20;
+  --raised: #23262e;
+  --raised-soft: #1b1e25;
+  --row-selected: #202535;
+  --sunken: #0d0e11;
+  --tint-rgb: 255, 255, 255;
+  --shadow-rgb: 0, 0, 0;
+  --on-warn: #1a1305;
+  --on-muted: #14161a;
+  --blast-upstream: #a371f7;
+  --blast-downstream: #f0883e;
+  --volume: #e8c766;
+  --proj: #2d5fa8;
+  --star: #e3b341;
+}
+
+/* Light theme (lib/appTheme.js sets data-theme). Deliberately not white: the page is a cool mid
+   grey and panels a step lighter, so a dashboard left open all day doesn't glare. Every hue is a
+   darker step than its dark-theme twin so it still clears 4.5:1 as text on --panel; the four
+   series hues were re-validated as a categorical set against --tile-bg (all checks pass, worst
+   CVD pair --seq-net/--seq-mem at protan dE 11.7). --ok/--muted/--accent/--warn/--unhealthy
+   mirror theme.js's PALETTES.light - test/theme.test.js reads both blocks. See docs/architecture/frontend.md. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #e2e6eb;
+  --panel: #eceff3;
+  --border: #c4cad3;
+  --text: #1f242c;
+  --muted: #5b626e;
+  --accent: #2860c8;
+  --danger: #b62d28;
+  --ok: #17702f;
+  --warn: #865a00;
+  --seq-mem: #117a55;
+  --seq-net: #cc4f9a;
+  --seq-block: #956419;
+  --unhealthy: #c0202b;
+  --tile-bg: #e6e9ee;
+  --raised: #dde1e7;
+  --raised-soft: #e2e6eb;
+  --row-selected: #d5deec;
+  --sunken: #e6e9ee;
+  --tint-rgb: 20, 30, 45;
+  --shadow-rgb: 40, 50, 70;
+  --on-warn: #ffffff;
+  --on-muted: #ffffff;
+  --blast-upstream: #7c4fd1;
+  --blast-downstream: #c45d12;
+  --volume: #76620f;
+  --proj: #4f74b8;
+  --star: #9a6a00;
 }
 
 * {
@@ -114,6 +170,23 @@ body {
 .host-range-toggle {
   flex: none;
 }
+/* Earlier / window label / Later / Now under a history chart's header - see lib/historyWindow.js. */
+.history-pan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.metrics-modal .history-pan {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.history-pan-label {
+  min-width: 13em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .host-range-status {
   margin: 0 0 8px;
 }
@@ -152,7 +225,7 @@ body {
   flex: 1;
   border-radius: 10px;
   padding: 12px 14px;
-  background: #171a20;
+  background: var(--tile-bg);
   border: 1px solid var(--border);
 }
 .host-tile-top {
@@ -225,7 +298,7 @@ body {
   width: 100%;
   margin-top: 4px;
   cursor: crosshair;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.06);
 }
 /* Fullscreen host-usage tiles are full-width and stacked instead of sharing a row with their
    sibling, so there's plenty of vertical room to spare - a taller chart plus the finer grid/axis
@@ -341,11 +414,11 @@ body {
   opacity: 0.7;
 }
 .spark-grid-line {
-  stroke: rgba(255, 255, 255, 0.05);
+  stroke: rgba(var(--tint-rgb), 0.05);
   stroke-width: 1;
 }
 .spark-hover-line {
-  stroke: rgba(255, 255, 255, 0.25);
+  stroke: rgba(var(--tint-rgb), 0.25);
   stroke-width: 1;
   stroke-dasharray: 2, 2;
   pointer-events: none;
@@ -477,7 +550,7 @@ body {
   display: block;
   width: 100%;
   height: 100%;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
 }
 /* A button rather than a div: this is the click target that opens the metrics modal, so it should
    be reachable and operable from the keyboard like every other action in the row. Stripped back to
@@ -502,7 +575,7 @@ body {
 .mini-spark-btn:hover,
 .mini-spark-btn:focus-visible {
   border-color: var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint-rgb), 0.04);
 }
 
 .topbar {
@@ -531,6 +604,18 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* The logo + name is a button back to the default view; it keeps the plain heading look. */
+button.brand-home,
+button.brand-home:hover:not(:disabled):not(.active) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
 }
 .brand-logo {
   width: 52px;
@@ -586,7 +671,7 @@ body {
   border-radius: 6px;
 }
 .view-toggle button:hover:not(.active):not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint-rgb), 0.06);
   border-color: transparent;
 }
 .view-toggle button.active {
@@ -594,12 +679,25 @@ body {
   border-color: var(--accent);
   color: #fff;
 }
-/* Greyed rather than hidden on the Hosts tab, so the topbar doesn't shift when switching to it. The
-   selected filter keeps a neutral fill so it still reads as the one that comes back. */
-.view-toggle button.active:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: transparent;
-  color: var(--muted);
+/* The row under the topbar: the current tab's views on the left, the All/Running/Stopped filter on
+   the right, only on the views it filters. Not sticky - the 91px offsets that pin the detail panel
+   and table headers under the topbar count the topbar alone. Hidden in fullscreen (see showSubbar). */
+.subbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -8px 0 16px;
+  transition: margin-right 0.15s ease;
+}
+/* Clears the fixed detail/Settings panel the same way .host-card does, or the filter sits under it. */
+.subbar.with-detail {
+  margin-right: 520px;
+}
+.subbar.with-detail.settings-open {
+  margin-right: 660px;
+}
+.subbar-filter {
+  margin-left: auto;
 }
 
 /* The filter box and the sort controls share one row, wrapping the sort under the filter only when
@@ -699,7 +797,7 @@ button {
 }
 button:hover:not(:disabled):not(.active) {
   border-color: var(--accent);
-  background: #23262e;
+  background: var(--raised);
 }
 button:disabled {
   opacity: 0.5;
@@ -856,7 +954,7 @@ table.containers th.sortable:hover {
   align-items: center;
   gap: 8px;
 }
-/* Actions is a fixed pixel width and every other column a percentage, which is what keeps the four
+/* Actions is a fixed pixel width and every other column a percentage, which is what keeps the
    buttons on one line at any viewport. The six percentages deliberately sum to 100% on their own,
    so together with the fixed column the table is always over-subscribed: the fixed width is
    honoured exactly and the percentage columns absorb the shortfall proportionally - "everything
@@ -864,15 +962,15 @@ table.containers th.sortable:hover {
    Actions on a wide screen (296px at 2560, measured) where it strands beside the buttons instead
    of going to the data.
 
-   272px is the four buttons' natural single-line width (248px measured, in this font) plus real
-   headroom - at 260px they already encroached on the cell's right padding, which a platform
-   rendering the labels a few percent wider would turn into a clipped Restart. Re-measure if a
-   button is ever added or renamed: the cell is nowrap with overflow hidden, so too small a width
-   cuts the last button off rather than wrapping it.
+   A row shows at most three buttons (Logs, Stop, Restart - lib/containerRow.js offers only the
+   actions that apply to its state). 216px is their natural width, ~77% of the old four-button
+   248px, plus the same ~24px headroom the four had, so a platform rendering labels a few percent
+   wider doesn't clip Restart. Re-measure if a button is ever added or renamed: the cell is nowrap
+   with overflow hidden, so too small a width cuts the last button off rather than wrapping it.
 
    Among the percentage columns, CPU and Memory each carry a value plus a sparkline, so they're the
    two with a real minimum; Image and Ports are single truncating strings that lose nothing but
-   ellipsis length. Memory is widest because its value is a pair ("634.5MiB / 1GiB"). */
+   ellipsis length. Memory shows a pair ("634.5MiB / 1GiB") only for a container with a limit. */
 table.containers th:nth-child(1),
 table.containers td:nth-child(1) {
   width: 14%;
@@ -883,7 +981,7 @@ table.containers td:nth-child(2) {
 } /* Image */
 table.containers th:nth-child(3),
 table.containers td:nth-child(3) {
-  width: 11%;
+  width: 13%;
 } /* Status */
 table.containers th:nth-child(4),
 table.containers td:nth-child(4) {
@@ -891,7 +989,7 @@ table.containers td:nth-child(4) {
 } /* CPU */
 table.containers th:nth-child(5),
 table.containers td:nth-child(5) {
-  width: 29%;
+  width: 27%;
 } /* Memory */
 table.containers th:nth-child(6),
 table.containers td:nth-child(6) {
@@ -899,7 +997,7 @@ table.containers td:nth-child(6) {
 } /* Ports */
 table.containers th:nth-child(7),
 table.containers td:nth-child(7) {
-  width: 272px;
+  width: 216px;
   white-space: nowrap;
 } /* Actions */
 .muted {
@@ -940,10 +1038,10 @@ table.containers td:nth-child(7) {
   cursor: pointer;
 }
 .row-clickable:hover {
-  background: #23262e;
+  background: var(--raised);
 }
 .row-selected {
-  background: #202535 !important;
+  background: var(--row-selected) !important;
 }
 .row-selected td {
   color: var(--text);
@@ -1101,7 +1199,7 @@ table.containers td:nth-child(7) {
   border-radius: 50%;
   vertical-align: middle;
   /* A hairline ring so the near-black and dark-navy brands keep an edge on the dark panel. */
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint-rgb), 0.12);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -1176,7 +1274,7 @@ table.containers td:nth-child(7) {
   flex: 1;
   height: 3px;
   border-radius: 1.5px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint-rgb), 0.07);
   overflow: hidden;
 }
 .cy-node-bar-fill {
@@ -1281,11 +1379,11 @@ table.containers td:nth-child(7) {
 }
 .swatch-blast-upstream {
   border: none;
-  background: #a371f7;
+  background: var(--blast-upstream);
 }
 .swatch-blast-downstream {
   border: none;
-  background: #f0883e;
+  background: var(--blast-downstream);
 }
 .line {
   width: 22px;
@@ -1312,13 +1410,13 @@ table.containers td:nth-child(7) {
   border-top: 2px solid var(--warn);
 }
 .line-tree-volume {
-  border-top: 2px solid #e8c766;
+  border-top: 2px solid var(--volume);
 }
 .line-tree-shared {
-  border-top: 2px solid #f0883e;
+  border-top: 2px solid var(--blast-downstream);
 }
 .swatch-proj {
-  border-color: #2d5fa8;
+  border-color: var(--proj);
 }
 .swatch-mount {
   border-color: var(--warn);
@@ -1386,7 +1484,7 @@ table.containers td:nth-child(7) {
   border: none;
   border-left: 1px solid var(--border);
   border-radius: 0;
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
+  box-shadow: -8px 0 32px rgba(var(--shadow-rgb), 0.45);
   z-index: 20;
 }
 /* Settings is wider than the container detail panel this class is shared with: six tabs (one two
@@ -1689,7 +1787,7 @@ table.containers td:nth-child(7) {
 }
 .log-match-pane-header:hover,
 .log-match-pane.resizing .log-match-pane-header {
-  background: #1b1e25;
+  background: var(--raised-soft);
 }
 .log-match-pane-header:hover::after,
 .log-match-pane-header:focus-visible::after,
@@ -1725,7 +1823,7 @@ table.containers td:nth-child(7) {
   height: 132px;
   min-height: 60px;
   overflow: auto;
-  background: #0d0e11;
+  background: var(--sunken);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1738,7 +1836,7 @@ table.containers td:nth-child(7) {
   cursor: pointer;
 }
 .log-match-row:hover {
-  background: var(--row-hover, rgba(255, 255, 255, 0.06));
+  background: var(--row-hover, rgba(var(--tint-rgb), 0.06));
 }
 .log-match-row.active {
   background: rgba(88, 166, 255, 0.18);
@@ -1924,7 +2022,7 @@ table.containers td:nth-child(7) {
 .log-level-toggle button.level-warn.active {
   background: var(--warn);
   border-color: var(--warn);
-  color: #1a1305;
+  color: var(--on-warn);
 }
 .log-level-toggle button.level-info.active {
   background: var(--accent);
@@ -1934,7 +2032,7 @@ table.containers td:nth-child(7) {
 .log-level-toggle button.level-debug.active {
   background: var(--muted);
   border-color: var(--muted);
-  color: #14161a;
+  color: var(--on-muted);
 }
 
 /* The narrow-pane fallback for .log-level-toggle above - hidden until the @container rule near
@@ -1959,7 +2057,7 @@ table.containers td:nth-child(7) {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.4);
   font-size: 12px;
 }
 .log-jump-presets {
@@ -1987,7 +2085,7 @@ table.containers td:nth-child(7) {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.4);
   white-space: nowrap;
 }
 /* Same colored buttons as .log-level-toggle-full (same color rules, keyed off the shared
@@ -2083,7 +2181,7 @@ table.containers td:nth-child(7) {
 
 /* The standalone viewer reaches each tier earlier: on top of the shared controls it carries
    Matches/Fullscreen/Wrap/Close, and since Go to it needs 1224px at full size, 961px with labels
-   hidden and 841px with the level dropdown (2px sweep). See public/CLAUDE.md. */
+   hidden and 841px with the level dropdown (2px sweep). See docs/architecture/frontend.md. */
 @container log-panel (max-width: 1230px) {
   .log-panel:not(.embedded) .btn-label {
     position: absolute;
@@ -2194,7 +2292,8 @@ table.containers td:nth-child(7) {
 .log-ansi {
   color: var(--ansi);
 }
-:root[data-log-scheme='light'] .log-view .log-ansi {
+:root[data-log-scheme='light'] .log-view .log-ansi,
+:root[data-theme='light'] .log-match-list .log-ansi {
   color: color-mix(in srgb, var(--ansi) 45%, #000);
 }
 .hide-ts .log-ts {
@@ -2216,9 +2315,11 @@ table.containers td:nth-child(7) {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: rgba(13, 14, 17, 0.85);
+  /* Over the log body, so derived from the log pair (like .log-ts) rather than the app's own
+     --muted, which is tuned for the app panel and is wrong on whichever log theme it isn't. */
+  background: color-mix(in srgb, var(--log-bg, #0d0e11) 85%, transparent);
   border-radius: 6px;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--log-text, var(--text)) 62%, var(--log-bg, #0d0e11));
   font-size: 13px;
   z-index: 1;
   pointer-events: none;
@@ -2233,9 +2334,9 @@ table.containers td:nth-child(7) {
   gap: 8px;
   padding: 3px 10px;
   border-radius: 999px;
-  background: rgba(13, 14, 17, 0.9);
+  background: color-mix(in srgb, var(--log-bg, #0d0e11) 90%, transparent);
   border: 1px solid var(--border);
-  color: var(--muted);
+  color: color-mix(in srgb, var(--log-text, var(--text)) 62%, var(--log-bg, #0d0e11));
   font-size: 12px;
   z-index: 1;
   pointer-events: none;
@@ -2262,7 +2363,7 @@ table.containers td:nth-child(7) {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.4);
 }
 .scroll-bottom-btn:hover {
   opacity: 0.9;
@@ -2555,10 +2656,10 @@ button.log-pane-main-btn:hover {
   color: var(--text);
 }
 .log-pane-main-btn.active {
-  color: #e3b341;
+  color: var(--star);
 }
 button.log-pane-main-btn.active:hover {
-  color: #e3b341;
+  color: var(--star);
 }
 
 .activity-wrap {
@@ -2628,7 +2729,7 @@ button.log-pane-main-btn.active:hover {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.4);
 }
 .scroll-top-btn:hover {
   opacity: 0.9;
@@ -2645,6 +2746,16 @@ button.log-pane-main-btn.active:hover {
 .settings-subheading {
   margin: 12px 0 6px;
   font-size: 13px;
+}
+/* Settings > Alerts stacks three sections that used to be tabs of their own. */
+.settings-section + .settings-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.settings-section-heading {
+  margin: 0 0 6px;
+  font-size: 15px;
 }
 .checkbox-grid {
   display: grid;
@@ -3056,6 +3167,22 @@ table.hosts-table tr:last-child td {
   margin-top: 12px;
   flex-wrap: wrap;
 }
+.appearance-heading {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.appearance-heading:not(:first-child) {
+  margin-top: 20px;
+}
+.app-theme-options {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.app-theme-btn.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .log-theme-presets {
   display: flex;
   flex-wrap: wrap;
@@ -3113,4 +3240,56 @@ table.hosts-table tr:last-child td {
   border: none;
   border-top: 1px solid var(--border);
   margin: 16px 0;
+}
+
+/* The Resources tab (ResourcesView.js). Reuses the Uptime report's table and filter box; the
+   status flag is a small pill so "Unused" can be spotted down a long list without reading it. */
+.resources-refresh {
+  margin-left: auto;
+}
+.resources-summary {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.resources-build-cache {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.resources-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 0;
+}
+.resources-filters .uptime-search-wrap {
+  margin-bottom: 0;
+  flex: 1;
+}
+.resources-net-containers {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+.resource-flag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.resource-flag-unused {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.resource-flag-used {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.resources-view .log-section-header {
+  justify-content: flex-start;
+  gap: 14px;
+}
+.resources-count {
+  opacity: 0.75;
 }

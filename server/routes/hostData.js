@@ -11,6 +11,7 @@ const metricsCollector = require('../metricsCollector');
 const logger = require('../logger');
 const { hostDisplayName, hostOverview } = require('../overview');
 const imageUpdates = require('../imageUpdates');
+const inventory = require('../inventory');
 const { requireHost, requireContainerId, intParam, dockerError } = require('./middleware');
 const { containersFor, statsFor, hostHistoryFor, topologyFor, dashboardExtrasFor } = require('./dashboardData');
 
@@ -178,18 +179,40 @@ router.get('/hosts/:hostId/disk-usage/images', requireHost, async (req, res) => 
   }
 });
 
+// The Resources tab. Answers from memory at once and refreshes in the background - `system df -v`
+// can outlast REQUEST_TIMEOUT_MS on a slow host - so the client polls while `refreshing` is true.
+router.get('/hosts/:hostId/inventory', requireHost, (req, res) => {
+  const snapshot = metricsCollector.getSnapshot(req.params.hostId);
+  const known = snapshot && snapshot.ts && snapshot.reachable && Array.isArray(snapshot.containers);
+  res.json(inventory.getInventory(req.odwHost, { force: req.query.refresh === '1', containers: known ? snapshot.containers : null }));
+});
+
+// `until` (epoch ms, exclusive) pans the window back in time; missing, invalid or in the future
+// means the window ends now, exactly as before the charts could pan.
 router.get('/hosts/:hostId/metrics/history', requireHost, (req, res) => {
   const { containerId } = req.query;
-  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range));
+  const now = Date.now();
+  const until = intParam(req.query.until, null);
+  const untilMs = until !== null && until > 0 && until < now ? until : null;
+  if (!containerId) return res.json(hostHistoryFor(req.params.hostId, req.query.range, untilMs));
   const range = HISTORY_RANGES[req.query.range] || HISTORY_RANGES['1h'];
-  res.json(db.getContainerMetricsHistory(req.params.hostId, containerId, Date.now() - range.sinceMs, range.bucketMs));
+  const end = untilMs === null ? now : untilMs;
+  res.json(
+    db.getContainerMetricsHistory(
+      req.params.hostId,
+      containerId,
+      end - range.sinceMs,
+      range.bucketMs,
+      untilMs === null ? undefined : untilMs
+    )
+  );
 });
 
 const UPTIME_DAYS_DEFAULT = 30;
 const UPTIME_DAYS_MAX = 90;
 
 // Reconstructed from history already retained for events and host_reachability - no new sampling,
-// no docker call, so no try/catch. See server/uptime.js and server/CLAUDE.md.
+// no docker call, so no try/catch. See server/uptime.js and docs/architecture/server.md.
 router.get('/hosts/:hostId/uptime', requireHost, (req, res) => {
   const hostId = req.params.hostId;
   const days = intParam(req.query.days, UPTIME_DAYS_DEFAULT, UPTIME_DAYS_MAX) || UPTIME_DAYS_DEFAULT;

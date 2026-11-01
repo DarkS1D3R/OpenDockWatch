@@ -37,7 +37,7 @@ something that has more than one container in it.
 The stack deliberately contains an unhealthy container, a crash-looping one, and one that has
 exited, so the health dots, restart badges and alert rules all have something to show.
 
-Taking the shots themselves is `npm run screenshots`, which drives a real browser through all ten:
+Taking the shots themselves is `npm run screenshots`, which drives a real browser through all fourteen:
 
 ```
 npx playwright install chromium          # once - CI skips the browser download, see ci.yml
@@ -52,7 +52,7 @@ It waits 30 minutes before the first shot on purpose: the row sparklines fill fr
 in-memory buffer that starts empty on page load, and the host card's chart covers 30 minutes, so
 leave the stack running a while before shooting or those charts render as slivers. `SCREENSHOT_SCALE=2`
 renders at 2x for a hidpi-crisp result, at approximately four times the file size — the committed
-set is 1x, which keeps all ten to about 2.3MB.
+set is 1x, which keeps the set small (the first ten came to about 2.3MB).
 
 Settings that matter when retaking the set:
 

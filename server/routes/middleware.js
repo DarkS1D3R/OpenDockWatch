@@ -48,7 +48,7 @@ function requireContainerAction(req, res, next) {
 
 // Resolves :hostId to a configured host so route handlers don't each repeat the getHost()/404
 // pair. The property is `odwHost` and must not be `host`: express defines req.host as a getter-only
-// property (the Host header), so assigning it silently no-ops and handlers get a string. See server/CLAUDE.md.
+// property (the Host header), so assigning it silently no-ops and handlers get a string. See docs/architecture/server.md.
 function requireHost(req, res, next) {
   const host = getHost(req.params.hostId);
   if (!host) return res.status(404).json({ error: 'unknown host' });

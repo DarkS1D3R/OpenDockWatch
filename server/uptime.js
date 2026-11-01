@@ -1,6 +1,6 @@
 // Reconstructs "how much of this window was the container up/healthy" and "how much was the host
 // reachable" purely from the durable event/transition history already retained for other reasons
-// (server/CLAUDE.md's events table, and host_reachability below it) - no new sampling, no new
+// (docs/architecture/server.md's events table, and host_reachability below it) - no new sampling, no new
 // retention window. Pure and exported so it's unit-tested without a database; server/index.js's
 // uptime route is the only caller and supplies the db reads and the live-state anchor.
 

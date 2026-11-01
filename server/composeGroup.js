@@ -38,7 +38,7 @@ function orderGroupLevels(containerIds, edges, action) {
 // A level's containers used to run via Promise.all - unbounded, so a level with many independent
 // containers claimed every one of docker.js's MAX_CONCURRENT slots for up to
 // CONTAINER_ACTION_TIMEOUT_MS each, starving every other host's poll and every other viewer's
-// request behind the same queue. Runs at most `limit` of `fn` at once instead. See server/CLAUDE.md.
+// request behind the same queue. Runs at most `limit` of `fn` at once instead. See docs/architecture/server.md.
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;

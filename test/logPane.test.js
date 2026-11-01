@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 // Everything here was inline in LogViewer.js, where none of it could be reached without a browser.
 // It is the pane's fiddliest logic - an inverted drag delta, a four-condition key guard - and it
-// was documented at length in public/CLAUDE.md and verified by nobody. See public/CLAUDE.md.
+// was documented at length in docs/architecture/frontend.md and verified by nobody. See docs/architecture/frontend.md.
 let logPane;
 before(async () => {
   logPane = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'js', 'lib', 'logPane.js')));

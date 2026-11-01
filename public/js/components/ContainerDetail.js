@@ -2,6 +2,7 @@ import { PREVIEW_TAIL } from '../constants.js';
 import { healthColor, healthLabel, formatRatePair } from '../format.js';
 import { logsUrl, apiGetContainerInspect, apiGetContainerTop, apiCheckImageUpdates } from '../api.js';
 import { imageUpdateText, checkedAgo, shortDigest } from '../lib/imageUpdate.js';
+import { rowActions, actionLabel } from '../lib/containerRow.js';
 import { createLogStream } from '../lib/logStream.js';
 import { decorateLines } from '../lib/logLines.js';
 import { cpuLimitLabel, memoryLimitLabel, pidsLimitLabel } from '../lib/resourceLimits.js';
@@ -122,6 +123,8 @@ export default {
   },
   methods: {
     shortDigest,
+    rowActions,
+    actionLabel,
     async checkImageNow() {
       this.imageCheckError = null;
       try {
@@ -365,9 +368,7 @@ export default {
         </template>
 
         <div class="detail-actions" v-if="isAdmin">
-          <button :disabled="!!actionInFlight[container.id]" @click="$emit('action', container, 'start')">Start</button>
-          <button :disabled="!!actionInFlight[container.id]" @click="$emit('action', container, 'stop')">Stop</button>
-          <button :disabled="!!actionInFlight[container.id]" @click="$emit('action', container, 'restart')">Restart</button>
+          <button v-for="a in rowActions(container.state)" :key="a" :disabled="!!actionInFlight[container.id]" @click="$emit('action', container, a)">{{ actionLabel(a) }}</button>
         </div>
 
         <div class="log-section-header">

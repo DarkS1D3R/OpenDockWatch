@@ -11,6 +11,7 @@ const { requireHost, dockerError } = require('./middleware');
 const { forgetDashboardCaches } = require('./dashboardData');
 const { VALID_VIEWS } = require('../views');
 const imageUpdates = require('../imageUpdates');
+const inventory = require('../inventory');
 
 const router = express.Router();
 
@@ -30,7 +31,7 @@ const ENV_DEFAULT_VIEW = (() => {
 })();
 
 // Validated on the way out too: a hand-edited or stale row would land the client on a tab nothing
-// renders. An unusable row counts as absent, which keeps `overridden` honest. See server/CLAUDE.md.
+// renders. An unusable row counts as absent, which keeps `overridden` honest. See docs/architecture/server.md.
 function dbDefaultView() {
   const val = db.getSetting(DEFAULT_VIEW_KEY);
   return val !== null && VALID_VIEWS.has(val) ? val : null;
@@ -328,6 +329,7 @@ router.put('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(updatedHost.id);
   forgetDashboardCaches(updatedHost.id);
   imageUpdates.forgetHost(updatedHost.id);
+  inventory.forgetHost(updatedHost.id);
   metricsCollector.addHost(updatedHost);
   eventWatcher.addHost(updatedHost);
   logger.info('settings.hosts.update', { user: req.session.username, host: updatedHost.id, dockerHost: dockerHost || 'local' });
@@ -343,6 +345,7 @@ router.delete('/settings/hosts/:id', requireAdmin, (req, res) => {
   eventWatcher.removeHost(req.params.id);
   forgetDashboardCaches(req.params.id);
   imageUpdates.forgetHost(req.params.id);
+  inventory.forgetHost(req.params.id);
   // Once the host is gone its alerts can't be shown, acknowledged or cleared from the UI, and an
   // open one would keep counting and keep getting reminders. A soft clear, as from the Activity tab.
   const alertsCleared = db.clearAlerts(req.params.id);

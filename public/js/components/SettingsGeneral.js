@@ -8,6 +8,7 @@ import SettingsImageUpdates from './SettingsImageUpdates.js';
 export default {
   name: 'SettingsGeneral',
   components: { SettingsImageUpdates },
+  emits: ['default-view-changed'],
   data() {
     return {
       defaultView: 'list',
@@ -33,6 +34,7 @@ export default {
         const config = await apiSaveDefaultView(this.defaultView);
         this.defaultView = config.defaultView;
         this.overridden = config.overridden;
+        this.$emit('default-view-changed', this.defaultView);
         this.status = 'Saved.';
       });
     },
@@ -41,6 +43,7 @@ export default {
         const config = await apiClearDefaultView();
         this.defaultView = config.defaultView;
         this.overridden = config.overridden;
+        this.$emit('default-view-changed', this.defaultView);
         this.status = 'Cleared - using the .env default.';
       });
     },

@@ -104,7 +104,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_lookup ON alerts (host_id, ts);
 
-  -- Webhook destinations beside the main one (Settings > Webhook). Every enabled route whose host,
+  -- Webhook destinations beside the main one (Settings > Alerts > Webhook). Every enabled route whose host,
   -- rules and severity filters match gets the alert; rules is a JSON array, empty meaning all.
   CREATE TABLE IF NOT EXISTS webhook_routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +159,7 @@ db.exec(`
   );
 
   -- Per-container/name/compose-project alert overrides, evaluated in sort_order as an ordered,
-  -- first-match-wins list by alerts.js's resolveContainerConfig - see server/CLAUDE.md. host_id NULL
+  -- first-match-wins list by alerts.js's resolveContainerConfig - see docs/architecture/server.md. host_id NULL
   -- means "all hosts"; cpu/mem/sustain NULL means "inherit the global threshold for that field".
   -- muted_rules is a JSON array (container_crashed/crash_loop/unhealthy/unexpected_exit/oom_killed) rather than one column
   -- per rule so a future event rule doesn't need an ALTER TABLE.
@@ -179,7 +179,7 @@ db.exec(`
 
 // host_metrics gained these three columns after the table already existed for upgrading installs
 // - CREATE TABLE IF NOT EXISTS only covers a fresh database, so ALTER TABLE backfills them onto
-// one that predates this, swallowing "duplicate column" once already applied (see server/CLAUDE.md).
+// one that predates this, swallowing "duplicate column" once already applied (see docs/architecture/server.md).
 for (const column of ['system_cpu_percent REAL', 'system_mem_used_bytes INTEGER', 'system_mem_total_bytes INTEGER']) {
   try {
     db.exec(`ALTER TABLE host_metrics ADD COLUMN ${column}`);
@@ -209,7 +209,7 @@ try {
 
 // And events' own Clear marker. Its partial index has to be created down here rather than in the
 // schema block: a CREATE INDEX naming a column the ALTER above has just added would throw on an
-// upgrading database, where the block runs against the old table. See server/CLAUDE.md.
+// upgrading database, where the block runs against the old table. See docs/architecture/server.md.
 try {
   db.exec(`ALTER TABLE events ADD COLUMN cleared_at INTEGER`);
 } catch {
@@ -253,7 +253,7 @@ const stmts = {
   `),
   ackAlert: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE id = ? AND cleared_at IS NULL`),
   // Used by index.js's ack route to know which host's dashboard cache to invalidate. Filtered same
-  // as ackAlert's own WHERE, so "not found" needs no CLEARED_AT_EXEMPT entry. See server/CLAUDE.md.
+  // as ackAlert's own WHERE, so "not found" needs no CLEARED_AT_EXEMPT entry. See docs/architecture/server.md.
   getAlertHostId: db.prepare(`SELECT host_id AS hostId FROM alerts WHERE id = ? AND cleared_at IS NULL`),
   ackAllAlerts: db.prepare(`UPDATE alerts SET acknowledged = 1 WHERE host_id = ? AND acknowledged = 0 AND cleared_at IS NULL`),
   insertWebhookDelivery: db.prepare(`
@@ -290,7 +290,7 @@ const stmts = {
   markAlertResolved: db.prepare(`UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`),
   // Candidates for a reminder or an escalation: unacknowledged, unresolved, uncleared, and either a
   // rule reminders apply to or recent enough to escalate - incidents never resolve, so without that
-  // they pile up and crowd a long outage out of the LIMIT. Newest first. See server/CLAUDE.md.
+  // they pile up and crowd a long outage out of the LIMIT. Newest first. See docs/architecture/server.md.
   getFollowUpAlerts: db.prepare(`
     SELECT id, ts, host_id AS hostId, container_id AS containerId, container_name AS containerName, rule, severity, message
     FROM alerts WHERE acknowledged = 0 AND resolved_at IS NULL AND cleared_at IS NULL
@@ -339,7 +339,7 @@ const stmts = {
   deleteBreachStart: db.prepare(`DELETE FROM alert_breaches WHERE key = ?`),
   getAllBreaches: db.prepare(`SELECT key, start_ts AS startTs FROM alert_breaches`),
   // The one alerts query that deliberately ignores cleared_at: this is alerts.js's cooldown, and
-  // clearing the Activity tab must not re-arm a rule that is still inside it. See server/CLAUDE.md.
+  // clearing the Activity tab must not re-arm a rule that is still inside it. See docs/architecture/server.md.
   lastAlertFire: db.prepare(`
     SELECT ts FROM alerts
     WHERE host_id = ? AND container_id IS ? AND rule = ?
@@ -381,7 +381,7 @@ const stmts = {
   `),
   // Backs the uptime route's container list for a container the live snapshot no longer has - one
   // that was removed, or recreated under a new id, during the window. Same cleared_at exemption
-  // and action filter as getContainerLifecycleEvents/-Seed above; see server/CLAUDE.md for why
+  // and action filter as getContainerLifecycleEvents/-Seed above; see docs/architecture/server.md for why
   // MAX(ts) is a real aggregate rather than just referenced.
   getContainersWithLifecycleEvents: db.prepare(`
     SELECT container_id AS containerId, container_name AS containerName, MAX(ts) AS ts FROM events
@@ -411,7 +411,7 @@ const stmts = {
   getLastHostReachability: db.prepare(`SELECT ts, reachable FROM host_reachability WHERE host_id = ? ORDER BY ts DESC LIMIT 1`),
   // The three big tables prune by rowid: walk up from the oldest row to the first one inside
   // retention and delete everything below it. "WHERE ts < ?" scanned the whole table (no index leads
-  // with ts) - 763ms of event-loop time on 6M rows, 81ms this way. See server/CLAUDE.md.
+  // with ts) - 763ms of event-loop time on 6M rows, 81ms this way. See docs/architecture/server.md.
   pruneContainerMetrics: db.prepare(`
     DELETE FROM container_metrics WHERE id < COALESCE((SELECT id FROM container_metrics WHERE ts >= ? ORDER BY id LIMIT 1), (SELECT MAX(id) FROM container_metrics) + 1)
   `),
@@ -438,7 +438,7 @@ const stmts = {
   `),
   // Buckets into `bucketMs`-wide windows and averages numeric columns; the four I/O columns use
   // MAX not AVG since they're cumulative counters - metricsHistory.js's withIoRates turns
-  // consecutive bucket totals into displayed rates. See server/CLAUDE.md for the restart-edge-case note.
+  // consecutive bucket totals into displayed rates. See docs/architecture/server.md for the restart-edge-case note.
   containerMetricsHistory: db.prepare(`
     SELECT
       ${BUCKET_EXPR} AS bucket,
@@ -450,7 +450,7 @@ const stmts = {
       MAX(block_read_bytes) AS blockReadTotal,
       MAX(block_write_bytes) AS blockWriteTotal
     FROM container_metrics
-    WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs
+    WHERE host_id = @hostId AND container_id = @containerId AND ts >= @sinceTs AND ts < @untilTs
     GROUP BY bucket
     ORDER BY bucket ASC
   `),
@@ -463,7 +463,7 @@ const stmts = {
       AVG(system_mem_used_bytes) AS systemMemUsedBytes,
       AVG(system_mem_total_bytes) AS systemMemTotalBytes
     FROM host_metrics
-    WHERE host_id = @hostId AND ts >= @sinceTs
+    WHERE host_id = @hostId AND ts >= @sinceTs AND ts < @untilTs
     GROUP BY bucket
     ORDER BY bucket ASC
   `),
@@ -496,7 +496,7 @@ const stmts = {
 
 // One transaction for the whole poll, not one commit per row - and that now includes the host
 // row, which used to be a loose .run() right after this one committed. A commit is not an fsync
-// here (WAL runs at synchronous=NORMAL) but it is still event-loop time. See server/CLAUDE.md.
+// here (WAL runs at synchronous=NORMAL) but it is still event-loop time. See docs/architecture/server.md.
 const insertMetricsTx = db.transaction((samples, hostSample) => {
   for (const sample of samples) stmts.insertContainerMetric.run(sample);
   if (hostSample) stmts.insertHostMetric.run(hostSample);
@@ -735,7 +735,7 @@ function getContainersWithLifecycleEvents(hostId, sinceTs) {
 }
 
 // Written by alerts.handleHostReachability on both directions of a reachability transition - see
-// server/CLAUDE.md and server/uptime.js's computeHostUptime, which this backs the same way
+// docs/architecture/server.md and server/uptime.js's computeHostUptime, which this backs the same way
 // getContainerLifecycleEvents backs the container side.
 function insertHostReachability(hostId, ts, reachable) {
   stmts.insertHostReachability.run(hostId, ts, reachable ? 1 : 0);
@@ -770,7 +770,7 @@ function getEvents(hostId, { sinceTs = 0, limit = 200 } = {}) {
 
 // Soft, like clearAlerts below: the row stays for countRestartsSince/getRestartCountsByContainer,
 // which are the crash_loop rule and the List view's restartCount1h, and only getEvents filters it
-// out. Distinct from pruneEvents above, which is the age-based retention sweep. See server/CLAUDE.md.
+// out. Distinct from pruneEvents above, which is the age-based retention sweep. See docs/architecture/server.md.
 function clearEvents(hostId) {
   return stmts.clearEventsByHost.run(Date.now(), hostId).changes;
 }
@@ -785,13 +785,13 @@ function getAlerts(hostId, { limit = 200 } = {}) {
 
 // Soft, unlike deleteEvents: the row stays so lastAlertFire can still see it, and every other
 // alerts query filters it out - clearing the tab must not re-arm alerts.js's cooldown and re-fire
-// a still-breaching rule (with its webhook) on the next poll. See server/CLAUDE.md. hostId is required.
+// a still-breaching rule (with its webhook) on the next poll. See docs/architecture/server.md. hostId is required.
 function clearAlerts(hostId) {
   return stmts.clearAlertsByHost.run(Date.now(), hostId).changes;
 }
 
 // Open = unacknowledged and unresolved; resolved_at = 0 (the pre-tracking backfill) counts as
-// resolved, as it does for follow-ups. See server/CLAUDE.md.
+// resolved, as it does for follow-ups. See docs/architecture/server.md.
 function countOpenAlerts(hostId) {
   return stmts.countOpenAlerts.get(hostId).n;
 }
@@ -825,12 +825,13 @@ function ping() {
   stmts.ping.get();
 }
 
-function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs) {
-  return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs }));
+// untilTs is exclusive; omitted, the window runs up to now (the panned charts pass a past one).
+function getContainerMetricsHistory(hostId, containerId, sinceTs, bucketMs, untilTs = Number.MAX_SAFE_INTEGER) {
+  return withIoRates(stmts.containerMetricsHistory.all({ hostId, containerId, sinceTs, bucketMs, untilTs }));
 }
 
-function getHostMetricsHistory(hostId, sinceTs, bucketMs) {
-  return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs });
+function getHostMetricsHistory(hostId, sinceTs, bucketMs, untilTs = Number.MAX_SAFE_INTEGER) {
+  return stmts.hostMetricsHistory.all({ hostId, sinceTs, bucketMs, untilTs });
 }
 
 function rowToContainerAlertRule(row) {

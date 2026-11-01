@@ -50,7 +50,7 @@ router.delete('/hosts/:hostId/events', requireAdmin, requireHost, (req, res) => 
 
 // Logged on both ends: these hold one of the browser's ~6 per-origin connections for as long as
 // the Activity tab is open, so "which streams are actually open right now" is worth being able to
-// reconstruct from the log when the UI goes unresponsive. See server/CLAUDE.md's connection budget.
+// reconstruct from the log when the UI goes unresponsive. See docs/architecture/server.md's connection budget.
 router.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
   const unsubscribe = eventWatcher.broadcaster.subscribe(res, req.params.hostId);
   const openedAt = Date.now();
@@ -67,7 +67,7 @@ router.get('/hosts/:hostId/events/stream', requireHost, (req, res) => {
 
 // Admin-only, unlike the alerts list below it: this is who ran what, and its `error` column carries
 // raw docker/ssh stderr. Same call as masking Config.Env for a viewer - read-only does not mean
-// "may read everything", and nothing in public/js reads this route at all. See server/CLAUDE.md.
+// "may read everything", and nothing in public/js reads this route at all. See docs/architecture/server.md.
 router.get('/audit', requireAdmin, (req, res) => {
   const limit = intParam(req.query.limit, 200, MAX_ROW_LIMIT);
   res.json(db.getAuditLog(req.query.hostId || null, { limit }));
@@ -79,7 +79,7 @@ router.get('/alerts', (req, res) => {
 });
 
 // Each of these mutates rows dashboardExtrasCache already answered from - must invalidate it, or
-// a clear/ack is invisible to /dashboard until the next statsTs tick. See server/CLAUDE.md.
+// a clear/ack is invisible to /dashboard until the next statsTs tick. See docs/architecture/server.md.
 router.post('/alerts/:id/ack', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid alert id' });

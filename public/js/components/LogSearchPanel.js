@@ -3,7 +3,7 @@ import { SEARCH_WINDOWS, DEFAULT_SEARCH_MINUTES, searchRows, searchSummary, sear
 
 // The Logs tab's compose-wide search: one query over every container in a project, merged into a
 // single timeline. A one-shot request, not a stream, so it costs no held connection. Clicking a
-// row asks LogsView to open that container's pane at the line. See public/CLAUDE.md.
+// row asks LogsView to open that container's pane at the line. See docs/architecture/frontend.md.
 export default {
   name: 'LogSearchPanel',
   props: {

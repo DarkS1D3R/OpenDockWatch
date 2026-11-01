@@ -1,6 +1,6 @@
 // Pure parsing of docker image references and RepoDigests, for imageUpdates.js. Follows the docker
 // CLI's own normalisation: no registry means Docker Hub, a one-part Hub name lives under library/,
-// and no tag means latest. See server/CLAUDE.md.
+// and no tag means latest. See docs/architecture/server.md.
 
 const DOCKER_HUB = 'docker.io';
 

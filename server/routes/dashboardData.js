@@ -11,7 +11,7 @@ const imageUpdates = require('../imageUpdates');
 // return, and two copies of "what a container row carries" would be free to drift apart silently.
 
 // Keyed off the collector's own statsTs, not a wall-clock timer, so this reruns once per poll
-// tick rather than once per request. See server/CLAUDE.md.
+// tick rather than once per request. See docs/architecture/server.md.
 const restartCountsCache = new Map(); // hostId -> { statsTs, counts }
 
 // Mirrors docker.js's/alerts.js's own forgetHost: without this, a host deleted (or edited, which
@@ -60,9 +60,11 @@ async function statsFor(host) {
   return getStats(host);
 }
 
-function hostHistoryFor(hostId, rangeKey) {
+// untilMs (exclusive) pans the window into the past; null means "ending now".
+function hostHistoryFor(hostId, rangeKey, untilMs = null) {
   const range = HISTORY_RANGES[rangeKey] || HISTORY_RANGES['1h'];
-  return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+  if (untilMs === null) return db.getHostMetricsHistory(hostId, Date.now() - range.sinceMs, range.bucketMs);
+  return db.getHostMetricsHistory(hostId, untilMs - range.sinceMs, range.bucketMs, untilMs);
 }
 
 async function topologyFor(host) {
@@ -73,12 +75,12 @@ async function topologyFor(host) {
 }
 
 // The /dashboard bundle: one request instead of four serial ones, all snapshot/sqlite with no
-// docker call. Topology is deliberately excluded (it can still shell out). See server/CLAUDE.md.
+// docker call. Topology is deliberately excluded (it can still shell out). See docs/architecture/server.md.
 const DASHBOARD_ALERT_LIMIT = 100;
 
 // Same reasoning as restartCountsFor, for the bundle's other two DB-only fields. Scoped to this
 // route's own fixed args rather than folded into hostHistoryFor/db.getAlerts, whose other callers
-// use args this cache doesn't cover. See server/CLAUDE.md.
+// use args this cache doesn't cover. See docs/architecture/server.md.
 const dashboardExtrasCache = new Map(); // hostId -> { statsTs, metricsHistory, alerts }
 
 function dashboardExtrasFor(host, statsTs) {

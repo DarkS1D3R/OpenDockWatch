@@ -102,7 +102,7 @@ if (process.env.TRUST_PROXY === 'true') {
 
 // No helmet dependency for five fixed headers. CSP is the load-bearing one: container log output
 // reaches the DOM through v-html, and the absence of 'unsafe-inline' below is what stops a crafted
-// log line's <img onerror=…> from running. See server/CLAUDE.md for what each escape hatch costs.
+// log line's <img onerror=…> from running. See docs/architecture/server.md for what each escape hatch costs.
 const CSP = [
   "default-src 'self'",
   // 'unsafe-eval' is not optional: with no build step, Vue compiles every component's `template`
@@ -156,7 +156,7 @@ function slowThresholdFor(path) {
 }
 
 app.use((req, res, next) => {
-  // SSE routes are held open by design (see the connection-budget section of server/CLAUDE.md) - logging
+  // SSE routes are held open by design (see the connection-budget section of docs/architecture/server.md) - logging
   // one every time a log/event stream finally closes after minutes or hours would be noise, not
   // signal, and those already get their own open/close pair with heldSec.
   if (STREAMING_PATH_RE.test(req.path)) return next();

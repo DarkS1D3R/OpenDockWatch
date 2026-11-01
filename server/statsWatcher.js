@@ -39,7 +39,7 @@ function ingestChunk(state, hostId, text) {
   }
 }
 
-// Restart/backoff/teardown is shared with eventWatcher.js via restartingWatcher.js - see server/CLAUDE.md.
+// Restart/backoff/teardown is shared with eventWatcher.js via restartingWatcher.js - see docs/architecture/server.md.
 // beforeRestart drops samples right before a restart, since stale CPU/mem is worse than the
 // one-shot call fallback getSamples returning null triggers.
 const watcher = createRestartingWatcher({

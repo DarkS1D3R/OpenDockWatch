@@ -123,7 +123,7 @@ test('loadLogTheme / saveLogTheme', async (t) => {
 
 test('logSchemeFor', () => {
   for (const p of logTheme.LOG_THEME_PRESETS) {
-    assert.equal(logTheme.logSchemeFor(p.bg), p.id === 'paper' ? 'light' : 'dark', p.id);
+    assert.equal(logTheme.logSchemeFor(p.bg), ['paper', 'soft-light'].includes(p.id) ? 'light' : 'dark', p.id);
   }
   // The short and alpha hex forms isValidLogColor lets through must classify too.
   assert.equal(logTheme.logSchemeFor('#fff'), 'light');
@@ -144,4 +144,37 @@ test('applyLogTheme', () => {
   assert.equal(setProperties.get('--log-text'), '#f0f0f0');
   assert.equal(setProperties.get('data-log-scheme'), 'dark');
   assert.deepEqual(out, { bg: '#101010', text: '#f0f0f0' });
+});
+
+// Paper on light, Default on dark - until the user picks log colours, after which their choice
+// holds in both themes. Reset clears the choice rather than saving Default, so it follows again.
+test('the default log theme follows the app theme until one is chosen', async (t) => {
+  const paper = logTheme.LOG_THEME_PRESETS.find((p) => p.id === 'paper');
+
+  await t.test('nothing saved: Paper on light, Default on dark', () => {
+    store.clear();
+    assert.deepEqual(logTheme.loadLogTheme('light'), { bg: paper.bg, text: paper.text });
+    assert.deepEqual(logTheme.loadLogTheme('dark'), logTheme.DEFAULT_LOG_THEME);
+    assert.equal(logTheme.hasCustomLogTheme(), false);
+  });
+
+  await t.test('an explicit choice wins in both themes', () => {
+    store.clear();
+    logTheme.saveLogTheme({ bg: '#002b36', text: '#93a1a1' });
+    assert.equal(logTheme.hasCustomLogTheme(), true);
+    assert.deepEqual(logTheme.loadLogTheme('light'), { bg: '#002b36', text: '#93a1a1' });
+    assert.deepEqual(logTheme.loadLogTheme('dark'), { bg: '#002b36', text: '#93a1a1' });
+  });
+
+  await t.test('clearing the choice goes back to following', () => {
+    logTheme.clearLogTheme();
+    assert.equal(logTheme.hasCustomLogTheme(), false);
+    assert.deepEqual(logTheme.loadLogTheme('light'), { bg: paper.bg, text: paper.text });
+  });
+
+  await t.test("a malformed field falls back to the current theme's default, not dark's", () => {
+    store.clear();
+    store.set('odw:logTheme', JSON.stringify({ bg: 'nope', text: '#222222' }));
+    assert.deepEqual(logTheme.loadLogTheme('light'), { bg: paper.bg, text: '#222222' });
+  });
 });

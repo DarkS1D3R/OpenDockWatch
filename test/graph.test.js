@@ -8,7 +8,7 @@ const { pathToFileURL } = require('node:url');
 // and renderSvg are pure data transforms that never touch cytoscape/DOM globals, so importing
 // them directly is safe without a browser or a mocked cytoscape. graph.js itself (the live
 // cytoscape controller the rest of graph/ feeds into) is mostly DOM-coupled and stays
-// syntax-check-only for everything else, per public/CLAUDE.md - but nothing at its module scope
+// syntax-check-only for everything else, per docs/architecture/frontend.md - but nothing at its module scope
 // touches a DOM/cytoscape global (those are all inside function bodies), and containerNodeTpl/
 // collapsedGroupTpl specifically are pure string builders with no such dependency of their own, so
 // importing it here to reach just those two is safe. pathToFileURL rather than a plain relative

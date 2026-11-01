@@ -10,10 +10,13 @@ import ContainerMetricsModal from './components/ContainerMetricsModal.js';
 import FlowView from './components/FlowView.js';
 import LogsView from './components/LogsView.js';
 import UptimeReport from './components/UptimeReport.js';
+import ResourcesView from './components/ResourcesView.js';
 import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
+import { VIEW_GROUPS, STATE_FILTER_VIEWS, groupOf, viewForGroup } from './lib/viewGroups.js';
 import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
+import { loadAppTheme, applyAppTheme, watchSystemScheme, APP_THEME_CHANGE_EVENT } from './lib/appTheme.js';
 import {
   apiGetHosts,
   apiGetContainers,
@@ -90,6 +93,7 @@ const app = createApp({
     FlowView,
     LogsView,
     UptimeReport,
+    ResourcesView,
     HostsOverview,
   },
   data() {
@@ -109,8 +113,11 @@ const app = createApp({
       actionInFlight: {},
       groupActionInFlight: {},
 
-      view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' - reset to the configured default once the session loads, see mounted()
-      stateFilter: 'all', // 'all' | 'running' | 'stopped'
+      view: 'list', // 'overview' | 'list' | 'flow' | 'logs' | 'activity' | 'uptime' | 'resources' - reset to the configured default once the session loads, see mounted()
+      defaultView: 'list', // the configured landing view - the brand button returns here, see goHome
+      stateFilter: 'all', // 'all' | 'running' | 'stopped' - shown only where it applies (STATE_FILTER_VIEWS)
+      viewGroups: VIEW_GROUPS,
+      lastViewByGroup: {}, // groupId -> the view last open in it, so a tab returns to where you were
       topology: { nodes: [], edges: [] },
       flowFullscreen: false,
 
@@ -157,6 +164,18 @@ const app = createApp({
     isAdmin() {
       return this.role === 'admin';
     },
+    currentGroup() {
+      return groupOf(this.view);
+    },
+    showStateFilter() {
+      return STATE_FILTER_VIEWS.includes(this.view);
+    },
+    // Hidden in every fullscreen mode: those size themselves as a viewport calc that counts only the
+    // topbar above them (see style.css), and fullscreen is a request for room anyway.
+    showSubbar() {
+      if (this.logViewerFullscreen || this.flowFullscreen || this.hostCardFullscreen) return false;
+      return (this.currentGroup && this.currentGroup.views.length > 1) || this.showStateFilter;
+    },
     filteredContainers() {
       if (this.stateFilter === 'running') return this.containers.filter((c) => c.state === 'running');
       if (this.stateFilter === 'stopped') return this.containers.filter((c) => c.state !== 'running');
@@ -186,7 +205,7 @@ const app = createApp({
       return this.alerts.filter((a) => !a.acknowledged && a.resolved_at === null).length;
     },
     // A browser allows ~6 connections per origin over HTTP/1.1, so a log-preview stream only
-    // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see public/CLAUDE.md.
+    // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see docs/architecture/frontend.md.
     // Gates the panel's *rendering* only; selectedContainerId itself survives a Logs tab trip.
     detailPanelVisible() {
       return !!this.selectedContainer && (this.view === 'list' || this.view === 'flow');
@@ -218,7 +237,13 @@ const app = createApp({
   async mounted() {
     // Before session/host bootstrap, not after: this is a local rendering preference with nothing
     // to do with auth, and applying it early means a log pane never paints in the old colors first.
-    applyLogTheme(loadLogTheme());
+    // theme-boot.js already set data-theme before paint; this re-applies it and follows the OS.
+    // The log colours follow the app theme until chosen explicitly, so they re-apply on a switch.
+    const scheme = applyAppTheme(loadAppTheme());
+    applyLogTheme(loadLogTheme(scheme));
+    this.onAppThemeChange = (e) => applyLogTheme(loadLogTheme(e.detail.scheme));
+    document.addEventListener(APP_THEME_CHANGE_EVENT, this.onAppThemeChange);
+    this.unwatchSystemScheme = watchSystemScheme(() => loadAppTheme());
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     let session;
     try {
@@ -242,9 +267,12 @@ const app = createApp({
     }
     // setView (not a direct assignment) so a configured 'flow' default also gets its topology
     // fetched immediately, same as clicking the Flow tab by hand - see setView.
-    await this.setView(session.defaultView || 'list');
+    this.defaultView = session.defaultView || 'list';
+    await this.setView(this.defaultView);
   },
   beforeUnmount() {
+    if (this.unwatchSystemScheme) this.unwatchSystemScheme();
+    document.removeEventListener(APP_THEME_CHANGE_EVENT, this.onAppThemeChange);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.stopPolling();
     this.closeLogViewer();
@@ -428,8 +456,19 @@ const app = createApp({
         if (arr.length > METRICS_HISTORY_LEN) arr.splice(0, arr.length - METRICS_HISTORY_LEN);
       }
     },
+    // The brand button: back to the landing view with nothing open on top, like a fresh login.
+    async goHome() {
+      this.settingsOpen = false;
+      this.selectedContainerId = null;
+      await this.setView(this.defaultView);
+    },
+    async openGroup(groupId) {
+      await this.setView(viewForGroup(groupId, this.lastViewByGroup));
+    },
     async setView(v) {
       this.view = v;
+      const group = groupOf(v);
+      if (group) this.lastViewByGroup = { ...this.lastViewByGroup, [group.id]: v };
       if (v !== 'flow') this.flowFullscreen = false;
       // The host card only renders in List/Flow, so it unmounts on the way anywhere else with
       // nothing left to clear this - and .layout stays hidden while it's true, which is the
@@ -587,31 +626,44 @@ const app = createApp({
       </div>
       <template v-else>
       <header class="topbar">
-        <h1><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
+        <h1><button type="button" class="brand-home" @click="goHome" title="Go to the default view"><img src="/assets/logo.svg" alt="" class="brand-logo" /><span class="brand-name"><span class="brand-open">Open</span><span class="brand-dock">Dock</span><span class="brand-watch">Watch</span></span></button><span v-if="appVersion" class="brand-version">v{{ appVersion }}</span></h1>
         <select v-model="selectedHostId" aria-label="Host" @change="selectHost(selectedHostId)">
           <option v-for="h in hosts" :key="h.id" :value="h.id">
             {{ h.name }} {{ h.reachable ? '' : '(unreachable)' }}
           </option>
         </select>
         <nav class="view-toggle" aria-label="Views">
-          <button :class="{active: view==='overview'}" :aria-current="view==='overview' ? 'page' : null" @click="setView('overview')" title="Every host at a glance">Hosts</button>
-          <button :class="{active: view==='list'}" :aria-current="view==='list' ? 'page' : null" @click="setView('list')">List</button>
-          <button :class="{active: view==='flow'}" :aria-current="view==='flow' ? 'page' : null" @click="setView('flow')">Flow</button>
-          <button :class="{active: view==='logs'}" :aria-current="view==='logs' ? 'page' : null" @click="setView('logs')">Logs</button>
-          <button :class="{active: view==='activity'}" :aria-current="view==='activity' ? 'page' : null" @click="setView('activity')">
-            Activity <span v-if="openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
+          <button
+            v-for="g in viewGroups"
+            :key="g.id"
+            :class="{active: currentGroup && currentGroup.id === g.id}"
+            :aria-current="currentGroup && currentGroup.id === g.id ? 'page' : null"
+            @click="openGroup(g.id)"
+          >
+            {{ g.label }}<span v-if="g.id === 'activity' && openAlertsCount" class="alert-count-badge">{{ openAlertsCount }}<span class="visually-hidden"> open alert{{ openAlertsCount === 1 ? '' : 's' }}</span></span>
           </button>
-          <button :class="{active: view==='uptime'}" :aria-current="view==='uptime' ? 'page' : null" @click="setView('uptime')">Uptime</button>
         </nav>
-        <div class="view-toggle" role="group" aria-label="Show containers" :title="view === 'overview' ? 'The Hosts tab shows every host, not containers - this filter applies to the other tabs' : null">
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
-          <button :disabled="view === 'overview'" :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
-        </div>
         <span v-if="!isAdmin" class="readonly-badge" title="Read-only account - no start/stop/restart access">Read-only</span>
         <button v-if="isAdmin" class="settings-btn" @click="toggleSettings" title="Settings" :aria-expanded="String(settingsOpen)">⚙ Settings</button>
         <button class="logout-btn" @click="logout">Logout</button>
       </header>
+
+      <div v-if="showSubbar" class="subbar" :class="{ 'with-detail': detailPanelVisible || settingsOpen, 'settings-open': settingsOpen }">
+        <div v-if="currentGroup && currentGroup.views.length > 1" class="view-toggle" role="group" :aria-label="currentGroup.label + ' views'">
+          <button
+            v-for="v in currentGroup.views"
+            :key="v.id"
+            :class="{active: view === v.id}"
+            :aria-current="view === v.id ? 'page' : null"
+            @click="setView(v.id)"
+          >{{ v.label }}</button>
+        </div>
+        <div v-if="showStateFilter" class="view-toggle subbar-filter" role="group" aria-label="Show containers">
+          <button :class="{active: stateFilter==='all'}" :aria-pressed="String(stateFilter==='all')" @click="stateFilter='all'">All</button>
+          <button :class="{active: stateFilter==='running'}" :aria-pressed="String(stateFilter==='running')" @click="stateFilter='running'">Running</button>
+          <button :class="{active: stateFilter==='stopped'}" :aria-pressed="String(stateFilter==='stopped')" @click="stateFilter='stopped'">Stopped</button>
+        </div>
+      </div>
 
       <p v-if="containersError" class="error" role="alert">{{ containersError }}</p>
 
@@ -643,6 +695,7 @@ const app = createApp({
               :group-action-in-flight="groupActionInFlight"
               :selected-container-id="selectedContainerId"
               :is-admin="isAdmin"
+              :host-mem-total-bytes="hostInfo ? hostInfo.memTotalBytes : null"
               @select="selectContainerById"
               @action="doAction"
               @group-action="doGroupAction"
@@ -685,6 +738,8 @@ const app = createApp({
 
           <uptime-report v-if="view === 'uptime'" :host-id="selectedHostId"></uptime-report>
 
+          <resources-view v-if="view === 'resources'" :host-id="selectedHostId"></resources-view>
+
           <hosts-overview v-if="view === 'overview'" :selected-host-id="selectedHostId" @open-host="openHost"></hosts-overview>
         </main>
 
@@ -712,7 +767,7 @@ const app = createApp({
         @close="closeLogViewer"
       ></log-viewer>
 
-      <settings-panel v-if="settingsOpen" @close="closeSettings" @hosts-changed="loadHosts"></settings-panel>
+      <settings-panel v-if="settingsOpen" @close="closeSettings" @hosts-changed="loadHosts" @default-view-changed="defaultView = $event"></settings-panel>
 
       <container-metrics-modal
         v-if="metricsContainerId && selectedHostId"

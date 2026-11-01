@@ -1,5 +1,5 @@
 // Focus handling for the app's dialogs (ContainerMetricsModal, SettingsPanel): move focus in on open,
-// keep Tab inside a modal one, and hand focus back to whatever opened it on close. See public/CLAUDE.md.
+// keep Tab inside a modal one, and hand focus back to whatever opened it on close. See docs/architecture/frontend.md.
 
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';

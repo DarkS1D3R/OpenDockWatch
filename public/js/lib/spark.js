@@ -68,14 +68,15 @@ export function axisTickIndices(slots, count) {
 // Places bucketed samples at their real position in the window instead of padSlots' count-based
 // left-pad, which silently treats a missing bucket as "history hadn't started yet": the server's
 // GROUP BY emits no row for a bucket with no samples, so a collector outage shrank the left pad
-// and squashed the hole. Falls back to padSlots for an unbucketed series. See public/CLAUDE.md.
-export function alignSlots(samples, sampleTimes, slotCount, bucketMs) {
+// and squashed the hole. Falls back to padSlots for an unbucketed series. See docs/architecture/frontend.md.
+// anchorTs (optional) pins the right edge to a panned window's end instead of the newest bucket.
+export function alignSlots(samples, sampleTimes, slotCount, bucketMs, anchorTs = null) {
   if (!bucketMs || !samples.length || !sampleTimes || sampleTimes.length !== samples.length) {
     return padSlots(samples, slotCount);
   }
   // The newest bucket holds the right edge, exactly as padSlots put the newest sample there - so
   // the window is anchored to the data, not to a clock this pure function would have to read.
-  const anchor = sampleTimes[sampleTimes.length - 1];
+  const anchor = Number.isFinite(anchorTs) ? anchorTs : sampleTimes[sampleTimes.length - 1];
   if (!Number.isFinite(anchor)) return padSlots(samples, slotCount);
   const slots = Array(slotCount).fill(null);
   for (let i = 0; i < samples.length; i++) {

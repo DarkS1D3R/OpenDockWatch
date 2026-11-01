@@ -69,7 +69,7 @@ export async function apiGetContainers(hostId, { fresh = false } = {}) {
 
 // Containers, stats, host history and alerts in one request - everything the poll loop needs that
 // the server already holds in memory. Four serial fetches per cycle spent four round trips and
-// four of the browser's ~6 connections on it; see public/CLAUDE.md. Topology stays separate (it can
+// four of the browser's ~6 connections on it; see docs/architecture/frontend.md. Topology stays separate (it can
 // shell out) and the caller runs it alongside this one rather than after it.
 export async function apiGetDashboard(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/dashboard`));
@@ -151,8 +151,13 @@ export async function apiGetDiskUsageImages(hostId) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/disk-usage/images`, { timeoutMs: 40_000 }));
 }
 
-export async function apiGetMetricsHistory(hostId, { range = '1h', containerId } = {}) {
-  const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}) });
+// Answers from the server's cache at once; `refreshing` says a background re-read is under way.
+export async function apiGetInventory(hostId, { refresh = false } = {}) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/inventory${refresh ? '?refresh=1' : ''}`));
+}
+
+export async function apiGetMetricsHistory(hostId, { range = '1h', containerId, until } = {}) {
+  const qs = new URLSearchParams({ range, ...(containerId ? { containerId } : {}), ...(until != null ? { until } : {}) });
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/metrics/history?${qs}`));
 }
 

@@ -26,7 +26,7 @@ const MIN_LOG_BODY_PX = 120;
 
 // The full-size log panel: level/filter/tail controls, download, fullscreen, and the streamed
 // log body. Also renders `embedded` in LogsView's multi-pane grid (fullscreen/wrap/close/sync
-// controls differ by mode - see public/CLAUDE.md for the full embedded/multiPane/sync design).
+// controls differ by mode - see docs/architecture/frontend.md for the full embedded/multiPane/sync design).
 export default {
   name: 'LogViewer',
   // Registered locally, the same way SettingsPanel registers its five tabs: root registration in
@@ -144,7 +144,7 @@ export default {
     },
     // The actual hit list, independent of revealAll - the count/prev/next controls step through
     // matches only, even while filteredLines is showing every line for context. Derived from
-    // filteredLines rather than a second selectLines pass - see public/CLAUDE.md.
+    // filteredLines rather than a second selectLines pass - see docs/architecture/frontend.md.
     matchLines() {
       if (!this.searchActive) return [];
       return this.filteredLines.filter((l) => l.isMatch);
@@ -348,7 +348,7 @@ export default {
     },
     // "All" is a sliding window over the log, not the whole of it: a page is fetched when the user
     // reaches either end, added there, and the same number of lines dropped from the far end. See
-    // server/CLAUDE.md for the history route and public/CLAUDE.md for the window.
+    // docs/architecture/server.md for the history route and docs/architecture/frontend.md for the window.
     async loadPage(direction) {
       const older = direction === 'older';
       if (this.tail !== 'all' || this.paging || Date.now() < this._retryPagingAt) return;
@@ -516,7 +516,7 @@ export default {
     },
     // Every scroll this pane makes itself goes through here, because onScroll broadcasts to
     // siblings and a self-made move must not. Cleared a frame later, once the native scroll event
-    // it caused has fired and been ignored. See public/CLAUDE.md.
+    // it caused has fired and been ignored. See docs/architecture/frontend.md.
     scrollWithoutBroadcast(fn) {
       this._programmatic = true;
       fn();

@@ -9,7 +9,7 @@ const HEALTHY_AFTER_MS = 30000;
 
 // The restart/backoff/teardown lifecycle eventWatcher.js and statsWatcher.js each ran a verbatim
 // copy of, taking what differs between them (spawning, stdout parsing, a pre-restart hook) as
-// options. Restart hangs off 'close' not 'exit', and re-checks watcher identity - see server/CLAUDE.md.
+// options. Restart hangs off 'close' not 'exit', and re-checks watcher identity - see docs/architecture/server.md.
 function createRestartingWatcher({ logPrefix, spawnChild, wireChild, beforeRestart, initState = () => ({}) }) {
   const watchers = new Map(); // hostId -> { child, stopped, restartDelay, ...initState() }
 

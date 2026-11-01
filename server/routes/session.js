@@ -24,7 +24,7 @@ const clientErrorLimiter = rateLimit({
 });
 
 // Puts browser-side failures (a blank page from a broken template) in the server log. 204 with no
-// body: the client is fire-and-forget. See server/CLAUDE.md.
+// body: the client is fire-and-forget. See docs/architecture/server.md.
 router.post('/client-error', clientErrorLimiter, (req, res) => {
   const { kind, message, source, line } = req.body || {};
   logger.warn('client.error', {

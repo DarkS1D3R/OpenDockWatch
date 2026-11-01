@@ -86,6 +86,8 @@ services:
 
 ![Container metrics modal showing CPU, memory, network I/O and block I/O charts for a single container over a one-hour window](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/container-metrics.png)
 
+![Fullscreen host card over a one-hour window, with Earlier, Later and Now buttons for moving through recorded CPU and RAM history](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/host-history.png)
+
 ![Flow view, a topology graph of containers](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-view.png)
 
 ![Flow view with a node selected, tinting its upstream dependencies purple and downstream dependents orange](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/flow-blast-radius.png)
@@ -97,6 +99,12 @@ services:
 ![Container details panel with a live log preview and expanded environment/labels sections](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/details-panel.png)
 
 ![Full-width Log Viewer with level filters](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/log-viewer.png)
+
+![Uptime view, a per-container report of up and healthy percentages, down time and restarts over the last 24 hours](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/uptime-view.png)
+
+![Hosts tab, one row per monitored host with reachability, running containers, CPU, memory and open alerts](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/hosts-overview.png)
+
+![Resources view, a table of the host’s images with size, unique size, container count and an In use / Unused flag](https://raw.githubusercontent.com/DarkS1D3R/OpenDockWatch/main/screenshots/resources-view.png)
 
 ## Tags
 
@@ -116,7 +124,7 @@ Everything else — a second read-only login, remote SSH hosts, alert thresholds
 
 ## Full documentation
 
-Setup details, remote-host configuration, the complete alerts/webhook reference, and the contributing guide live in the [README on GitHub](https://github.com/DarkS1D3R/OpenDockWatch#readme).
+Setup details and the contributing guide live in the [README on GitHub](https://github.com/DarkS1D3R/OpenDockWatch#readme); remote hosts in [docs/hosts.md](https://github.com/DarkS1D3R/OpenDockWatch/blob/main/docs/hosts.md) and the full alerts/webhook reference in [docs/alerts.md](https://github.com/DarkS1D3R/OpenDockWatch/blob/main/docs/alerts.md).
 
 ## License
 

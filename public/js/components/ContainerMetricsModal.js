@@ -1,6 +1,7 @@
 import { POLL_MS, HISTORY_RANGE_SLOTS, HISTORY_RANGE_BUCKET_MS } from '../constants.js';
 import { formatBytes, formatRate } from '../format.js';
 import { apiGetMetricsHistory } from '../api.js';
+import { panUntil, windowAnchorTs, windowLabel } from '../lib/historyWindow.js';
 import SparkTile from './SparkTile.js';
 import { trapTab, rememberFocus } from '../lib/focus.js';
 
@@ -30,9 +31,23 @@ export default {
       loading: true,
       error: null,
       hoverIndex: null,
+      // Exclusive end of a panned window (epoch ms); null follows now. See lib/historyWindow.js.
+      untilMs: null,
     };
   },
   computed: {
+    historyQuery() {
+      return this.range + '|' + this.untilMs;
+    },
+    windowMs() {
+      return this.slotCount * this.bucketMs;
+    },
+    windowEndTs() {
+      return windowAnchorTs(this.untilMs, this.bucketMs);
+    },
+    windowText() {
+      return windowLabel(this.untilMs, this.windowMs, this.range);
+    },
     slotCount() {
       return HISTORY_RANGE_SLOTS[this.range];
     },
@@ -68,7 +83,11 @@ export default {
     },
   },
   watch: {
+    // A new range starts back at now; the historyQuery watcher does the one fetch for both changes.
     range() {
+      this.untilMs = null;
+    },
+    historyQuery() {
       this.fetchHistory();
       this.restartRefresh();
     },
@@ -92,32 +111,35 @@ export default {
     this._restoreFocus();
   },
   methods: {
-    // Only the 1h range keeps refreshing. Its buckets are 15s wide, so a 5s poll actually moves
-    // the chart; the 24h and 7d buckets are 5 and 30 minutes wide, where re-fetching every 5s
-    // would redraw an identical chart for minutes on end.
+    panBy(direction) {
+      this.untilMs = panUntil(this.untilMs, direction, this.windowMs, this.bucketMs, Date.now());
+    },
+    // Only 1h ending now refreshes: its 15s buckets move on a 5s poll, while 24h/7d buckets (5 and
+    // 30 minutes) would redraw an identical chart for minutes. A panned window is fixed history.
     restartRefresh() {
       if (this._refreshTimer) clearInterval(this._refreshTimer);
       this._refreshTimer = null;
-      if (this.range === '1h') {
+      if (this.range === '1h' && this.untilMs === null) {
         this._refreshTimer = setInterval(() => this.fetchHistory({ silent: true }), POLL_MS);
       }
     },
     async fetchHistory({ silent = false } = {}) {
-      const { range } = this;
+      const { range, untilMs } = this;
+      const stale = () => this.range !== range || this.untilMs !== untilMs;
       // The background refresh must not flash the loading state over a chart that's already on
       // screen - only an explicit open or range switch does that.
       if (!silent) this.loading = true;
       try {
-        const rows = await apiGetMetricsHistory(this.hostId, { range, containerId: this.containerId });
+        const rows = await apiGetMetricsHistory(this.hostId, { range, containerId: this.containerId, until: untilMs });
         // A slow request for the range the user has since switched away from must not land over
         // the newer one's data - same guard the root's own fetches use for a host switch.
-        if (this.range !== range) return;
+        if (stale()) return;
         this.rows = rows;
         this.error = null;
       } catch (err) {
-        if (this.range === range) this.error = err.message;
+        if (!stale()) this.error = err.message;
       } finally {
-        if (this.range === range) this.loading = false;
+        if (!stale()) this.loading = false;
       }
     },
     fmtPercent(v) {
@@ -153,11 +175,18 @@ export default {
           <button ref="closeBtn" aria-label="Close metrics" class="small-btn" @click="$emit('close')" title="Close">✕</button>
         </div>
 
+        <div class="history-pan" role="group" aria-label="Move through history">
+          <button class="small-btn" @click="panBy(-1)" :title="'Back ' + range">◀ Earlier</button>
+          <span class="history-pan-label" aria-live="polite">{{ windowText }}</span>
+          <button class="small-btn" :disabled="untilMs === null" @click="panBy(1)" :title="'Forward ' + range">Later ▶</button>
+          <button class="small-btn" :disabled="untilMs === null" @click="untilMs = null" title="Back to the window ending now">Now</button>
+        </div>
+
         <div class="metrics-modal-body">
           <p v-if="error" class="error" role="alert">{{ error }}</p>
           <p v-else-if="loading && !hasRows" class="muted">Loading…</p>
           <p v-else-if="!hasRows" class="muted">
-            No history recorded for this container over the last {{ range }}.
+            No history recorded for this container {{ untilMs === null ? 'over the last ' + range : 'in this window' }}.
           </p>
           <template v-else>
             <spark-tile
@@ -168,6 +197,7 @@ export default {
               :sample-times="sampleTimes"
               :slot-count="slotCount"
               :bucket-ms="bucketMs"
+              :window-end-ts="windowEndTs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -181,6 +211,7 @@ export default {
               :sample-times="sampleTimes"
               :slot-count="slotCount"
               :bucket-ms="bucketMs"
+              :window-end-ts="windowEndTs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -197,6 +228,7 @@ export default {
               :sample-times="sampleTimes"
               :slot-count="slotCount"
               :bucket-ms="bucketMs"
+              :window-end-ts="windowEndTs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"
@@ -213,6 +245,7 @@ export default {
               :sample-times="sampleTimes"
               :slot-count="slotCount"
               :bucket-ms="bucketMs"
+              :window-end-ts="windowEndTs"
               :hover-index="hoverIndex"
               :detailed="true"
               @hover="hoverIndex = $event"

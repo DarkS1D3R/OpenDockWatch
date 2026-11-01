@@ -151,7 +151,7 @@ test('security headers are set on every response', async (t) => {
       .find((d) => d.startsWith('script-src'));
     assert.ok(scriptSrc, 'no script-src directive');
     assert.equal(scriptSrc.includes("'unsafe-inline'"), false, 'script-src must not allow inline scripts');
-    // Present deliberately, and load-bearing - see server/CLAUDE.md. Asserted so removing it "to tighten
+    // Present deliberately, and load-bearing - see docs/architecture/server.md. Asserted so removing it "to tighten
     // the CSP" fails here rather than silently rendering every component blank in a browser.
     assert.match(scriptSrc, /'unsafe-eval'/);
   });
@@ -1167,6 +1167,29 @@ test('GET /hosts/:hostId/dashboard', async (t) => {
     );
   });
 
+  // The panned charts' contract: `until` moves the whole window back, and one at or past now is
+  // ignored rather than producing a window that ends in the future.
+  await t.test('GET /metrics/history?until pans the window back in time', async (t2) => {
+    withSnapshot(t2);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    // 4.5h back, so the window [5.5h, 4.5h) ago holds the 5h-old seed row with room either side.
+    const until = Date.now() - 4.5 * 3_600_000;
+    const panned = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=${until}`);
+    assert.equal(panned.status, 200);
+    assert.ok(panned.body.length > 0, 'the row five hours back should sit in the window');
+    assert.ok(
+      panned.body.every((r) => r.bucket >= until - 3_600_000 - 15_000 && r.bucket < until),
+      'a bucket fell outside [until - 1h, until)'
+    );
+
+    const live = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h`);
+    const future = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=${Date.now() + 3_600_000}`);
+    const junk = await agent.get(`/api/hosts/${hostId}/metrics/history?range=1h&until=nope`);
+    assert.ok(live.body.length > 0, 'nothing to compare - the seed did not land');
+    assert.deepEqual(future.body, live.body, 'a future until should mean "ending now"');
+    assert.deepEqual(junk.body, live.body, 'an invalid until should mean "ending now"');
+  });
+
   await t.test('its alerts match GET /alerts for the same host and limit', async (t2) => {
     withSnapshot(t2);
     const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
@@ -1383,6 +1406,60 @@ test('image update checks', async (t) => {
     assert.deepEqual((await admin.delete('/api/settings/image-updates')).body, { hours: 0, overridden: false });
     const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
     assert.equal((await viewer.get('/api/settings/image-updates')).status, 403);
+  });
+});
+
+test('GET /hosts/:hostId/inventory', async (t) => {
+  const hostId = loadHosts()[0].id;
+  const inventory = require('../server/inventory');
+  t.afterEach(() => inventory.forgetHost(hostId));
+
+  await t.test('answers from memory without waiting on system df, and joins networks to the snapshot', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({
+      ts: Date.now(),
+      reachable: true,
+      containers: [{ id: 'aaaaaaaaaaaa', name: 'shop-web-1', networks: ['shop_backend'] }],
+    }));
+    t2.mock.method(docker, 'getInventoryDf', () => new Promise(() => {})); // never settles
+    t2.mock.method(docker, 'getNetworks', async () => [
+      { id: '1', name: 'shop_backend', builtin: false },
+      { id: '2', name: 'old_default', builtin: false },
+    ]);
+    const agent = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    const first = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.refreshing, true);
+    assert.equal(first.body.images, null);
+
+    const second = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(second.body.refreshing, true);
+    assert.deepEqual(
+      second.body.networks.map((n) => [n.name, n.containers, n.unused]),
+      [
+        ['shop_backend', ['shop-web-1'], false],
+        ['old_default', [], true],
+      ]
+    );
+  });
+
+  await t.test('an unreachable host leaves network usage unknown rather than all unused', async (t2) => {
+    t2.mock.method(metricsCollector, 'getSnapshot', () => ({ ts: Date.now(), reachable: false, containers: [] }));
+    t2.mock.method(docker, 'getInventoryDf', async () => ({
+      images: [],
+      volumes: [],
+      buildCache: { count: 0, sizeBytes: 0, reclaimableBytes: 0 },
+    }));
+    t2.mock.method(docker, 'getNetworks', async () => [{ id: '2', name: 'old_default', builtin: false }]);
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await inventory.refresh({ id: hostId });
+    const res = await agent.get(`/api/hosts/${hostId}/inventory`);
+    assert.equal(res.body.networks[0].unused, null);
+  });
+
+  await t.test('an unknown host 404s and it needs a session', async () => {
+    const agent = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await agent.get(`/api/hosts/${FAKE_HOST_ID}/inventory`)).status, 404);
+    assert.equal((await request(app).get(`/api/hosts/${hostId}/inventory`)).status, 401);
   });
 });
 

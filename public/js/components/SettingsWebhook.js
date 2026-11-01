@@ -2,7 +2,7 @@ import { apiGetWebhookConfig, apiSaveWebhookConfig, apiClearWebhookConfig, apiTe
 import { withStatus } from '../lib/settingsSection.js';
 import SettingsWebhookRoutes from './SettingsWebhookRoutes.js';
 
-// The Settings panel's Webhook tab - split out of the former single SettingsPanel.js so each
+// The Settings panel's Webhook section (Settings > Alerts) - split out of the former single SettingsPanel.js so each
 // section owns its own data instead of one file juggling four prefixed copies of the same shape.
 export default {
   name: 'SettingsWebhook',

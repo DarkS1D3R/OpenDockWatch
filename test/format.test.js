@@ -50,9 +50,10 @@ test('stateEmoji', async (t) => {
     assert.notEqual(starting, healthy);
     assert.notEqual(unhealthy, healthy);
     assert.notEqual(starting, unhealthy);
-    assert.ok(starting.includes('#d29922'));
-    assert.ok(unhealthy.includes('#f85149'));
-    assert.ok(healthy.includes('#3fb950'));
+    // CSS variables rather than hexes, so an icon already on screen follows a theme switch.
+    assert.ok(starting.includes('var(--warn)'));
+    assert.ok(unhealthy.includes('var(--unhealthy)'));
+    assert.ok(healthy.includes('var(--ok)'));
   });
 
   await t.test('stopped/exited ignore health - no health to report once not running', () => {
@@ -63,7 +64,7 @@ test('stateEmoji', async (t) => {
     const created = format.stateEmoji('created');
     const stopped = format.stateEmoji('stopped');
     assert.notEqual(created, stopped);
-    assert.ok(created.includes('#4f8cff'));
+    assert.ok(created.includes('var(--accent)'));
   });
 });
 
@@ -298,8 +299,9 @@ test('parsePublishedPorts', async (t) => {
 
 test('healthColor / healthLabel', async (t) => {
   await t.test('known health states', () => {
-    assert.equal(format.healthColor('healthy'), '#3fb950');
-    assert.equal(format.healthColor('unhealthy'), '#f85149');
+    assert.equal(format.healthColor('healthy'), 'var(--ok)');
+    assert.equal(format.healthColor('unhealthy'), 'var(--unhealthy)');
+    assert.equal(format.healthColor('starting'), 'var(--warn)');
     assert.equal(format.healthLabel('starting'), 'health: starting');
     assert.equal(format.healthLabel('healthy'), 'healthy');
   });
