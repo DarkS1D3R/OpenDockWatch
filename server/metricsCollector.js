@@ -444,7 +444,7 @@ function removeHost(hostId) {
 function start() {
   for (const host of loadHosts()) addHost(host);
 
-  const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 7) * 86_400_000;
+  const metricsRetentionMs = (Number(process.env.METRICS_RETENTION_DAYS) || 30) * 86_400_000;
   const eventsRetentionMs = (Number(process.env.EVENTS_RETENTION_DAYS) || 30) * 86_400_000;
   logger.info('metrics.retention', {
     metricsDays: metricsRetentionMs / 86_400_000,

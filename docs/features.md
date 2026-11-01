@@ -35,7 +35,7 @@ Clicking a row's CPU or memory sparkline opens that container's full recorded hi
 
 The host card's ⛶ Fullscreen view adds a **Live / 1h / 24h / 7d** range switch over the CPU and RAM charts, the same windows the per-container metrics modal offers.
 
-Both history views can move back through time: **◀ Earlier** and **Later ▶** step the chart one whole window at a time (an hour on 1h, a day on 24h, a week on 7d), the label between them shows the period on screen, and **Now** jumps back to the live window. How far back you can go is set by `METRICS_RETENTION_DAYS` (7 days by default).
+Both history views can move back through time: **◀ Earlier** and **Later ▶** step the chart one whole window at a time (an hour on 1h, a day on 24h, a week on 7d), the label between them shows the period on screen, and **Now** jumps back to the live window. How far back you can go is set by `METRICS_RETENTION_DAYS` (30 days by default).
 
 ## Host card
 
