@@ -31,9 +31,13 @@ Full detail: [docs/features.md](docs/features.md).
 
 ![List view, containers grouped by Compose project](screenshots/list-view.png)
 
-**Container metrics** — recorded history over 1h / 24h / 7d, one shared hover crosshair
+**Container metrics** — recorded history over 1h / 24h / 7d, one shared hover crosshair, step back through earlier windows
 
 ![Container metrics modal showing CPU, memory, network I/O and block I/O charts for a single container over a one-hour window](screenshots/container-metrics.png)
+
+**Host history** — the host card fullscreen: CPU and RAM over live / 1h / 24h / 7d, paged back an hour, a day or a week at a time
+
+![Fullscreen host card over a one-hour window, with Earlier, Later and Now buttons for moving through recorded CPU and RAM history](screenshots/host-history.png)
 
 **Flow view** — topology graph with live stats and open-alert badges on each node
 
@@ -66,6 +70,18 @@ Full detail: [docs/features.md](docs/features.md).
 **Activity view** — alerts and the container event log side by side
 
 ![Activity view, searchable alerts with an acknowledged checkmark and a filtered event log](screenshots/activity-view.png)
+
+**Uptime** — per-container up / healthy percentages, down time and restarts over 24h / 7d / 30d
+
+![Uptime view, a per-container report of up and healthy percentages, down time and restarts over the last 24 hours](screenshots/uptime-view.png)
+
+**Hosts tab** — every monitored host on one screen, problem hosts first
+
+![Hosts tab, one row per monitored host with reachability, running containers, CPU, memory and open alerts](screenshots/hosts-overview.png)
+
+**Resources** — read-only inventory of images, volumes and networks, with what's unused
+
+![Resources view, a table of the host’s images with size, unique size, container count and an In use / Unused flag](screenshots/resources-view.png)
 
 ## Quick start
 

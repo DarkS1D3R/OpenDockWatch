@@ -46,6 +46,22 @@ async function main() {
   };
 
   const btn = (text) => page.locator('button', { hasText: text }).first();
+  // The topbar's four tabs and the row of views under the current one. Anchored, because Playwright's
+  // hasText is a case-insensitive substring match and "Hosts" would also hit the "All hosts" view.
+  const openTab = async (label) => {
+    await page
+      .locator('nav.view-toggle button', { hasText: new RegExp('^\\s*' + label) })
+      .first()
+      .click();
+    await page.waitForTimeout(1200);
+  };
+  const openView = async (label) => {
+    await page
+      .locator('.subbar .view-toggle button', { hasText: new RegExp('^\\s*' + label + '\\s*$') })
+      .first()
+      .click();
+    await page.waitForTimeout(1200);
+  };
   const fit = async () => {
     await btn('Fit').click();
     await page.waitForTimeout(1200);
@@ -103,8 +119,23 @@ async function main() {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(500);
 
+  console.log('host history');
+  // The fullscreen host card on its persisted 1h range, so the shot shows the range switch and the
+  // Earlier / Later / Now strip. One step back would be empty: the stack is only WARM_MS old.
+  await page.locator('.host-card button', { hasText: 'Fullscreen' }).first().click();
+  await page.waitForTimeout(1200);
+  await page.locator('.host-range-toggle button', { hasText: '1h' }).first().click();
+  await page.waitForSelector('.host-card .history-pan');
+  await page.waitForTimeout(3000);
+  const hostBox = await page.locator('.host-card .sparkline').first().boundingBox();
+  await page.mouse.move(hostBox.x + hostBox.width * 0.85, hostBox.y + hostBox.height * 0.5);
+  await page.waitForTimeout(700);
+  await shot('host-history', { fitHeight: false });
+  await page.locator('.host-card button', { hasText: 'Exit fullscreen' }).first().click();
+  await page.waitForTimeout(1200);
+
   console.log('flow view');
-  await page.locator('.view-toggle button', { hasText: 'Flow' }).first().click();
+  await openView('Flow');
   await page.waitForTimeout(4500);
   // Below COMPACT_ZOOM_THRESHOLD the nodes deliberately drop to a state/icon/name rendering, which
   // would hide the CPU/RAM bars this shot is meant to show. Fullscreen gives the canvas the
@@ -156,8 +187,7 @@ async function main() {
   await page.waitForTimeout(1200);
 
   console.log('logs tab');
-  await page.locator('.view-toggle button', { hasText: 'Logs' }).first().click();
-  await page.waitForTimeout(1200);
+  await openTab('Logs');
   // Multi mode is the default, but a remembered single-pane choice would hide the point of the tab.
   await page.locator('.logs-tab-viewmode button', { hasText: 'Multi' }).click();
   for (const name of ['demo-shop-api', 'demo-shop-worker', 'demo-blog-api', 'demo-shop-payments']) {
@@ -169,8 +199,9 @@ async function main() {
 
   console.log('details panel');
   await clearSelection();
-  await page.locator('.view-toggle button', { hasText: 'List' }).first().click();
-  await page.waitForTimeout(1500);
+  // The Containers tab reopens Flow (the last view used in it), so pick List explicitly.
+  await openTab('Containers');
+  await openView('List');
   // The name cell, not the row centre - the centre is the sparkline button, which stops
   // propagation and opens the metrics modal instead of selecting.
   await page.locator('table.containers tbody tr', { hasText: 'demo-shop-api' }).first().locator('td').first().click();
@@ -200,8 +231,9 @@ async function main() {
   // Otherwise the panel is still open from the details shot, squeezing the two columns this view
   // exists to show side by side.
   await clearSelection();
-  await page.locator('.view-toggle button', { hasText: 'Activity' }).first().click();
-  await page.waitForTimeout(3000);
+  await openTab('Activity');
+  await openView('Alerts & events');
+  await page.waitForTimeout(1800);
   // The caption promises an acknowledged alert and a filtered event log, so produce both.
   const ack = page.locator('.alert-row button', { hasText: 'Acknowledge' }).first();
   if (await ack.count()) {
@@ -211,6 +243,26 @@ async function main() {
   await page.locator('input[placeholder="Search events…"]').fill('demo-shop-flaky');
   await page.waitForTimeout(1200);
   await shot('activity-view');
+
+  console.log('uptime view');
+  await openView('Uptime');
+  await page.waitForSelector('table.uptime-table');
+  await page.waitForTimeout(1500);
+  await shot('uptime-view');
+
+  console.log('hosts overview');
+  await openTab('Hosts');
+  await openView('All hosts');
+  await page.waitForSelector('table.hosts-table');
+  await page.waitForTimeout(1500);
+  await shot('hosts-overview');
+
+  console.log('resources view');
+  await openView('Resources');
+  // `docker system df -v` is read in the background and can take a minute or more on WSL2.
+  await page.waitForSelector('table.resources-table', { timeout: 180_000 });
+  await page.waitForTimeout(1500);
+  await shot('resources-view');
 
   await browser.close();
 

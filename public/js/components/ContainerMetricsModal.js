@@ -46,7 +46,7 @@ export default {
       return windowAnchorTs(this.untilMs, this.bucketMs);
     },
     windowText() {
-      return windowLabel(this.untilMs, this.windowMs);
+      return windowLabel(this.untilMs, this.windowMs, this.range);
     },
     slotCount() {
       return HISTORY_RANGE_SLOTS[this.range];

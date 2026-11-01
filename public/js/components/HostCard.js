@@ -101,7 +101,7 @@ export default {
       return windowAnchorTs(this.untilMs, this.bucketMs);
     },
     windowText() {
-      return windowLabel(this.untilMs, this.windowMs);
+      return windowLabel(this.untilMs, this.windowMs, this.range);
     },
     // The single source every series below reads, so switching range swaps all of them at once
     // and the two tiles can never end up drawing different windows.

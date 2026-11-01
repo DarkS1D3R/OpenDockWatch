@@ -18,10 +18,10 @@ export function windowAnchorTs(untilMs, bucketMs) {
   return untilMs - bucketMs;
 }
 
-// "09:00 – 10:00, 1 Nov" style text for the pan strip; the day is spelled out on both sides
+// "09:00 – 10:00, 1 Nov" style text for the pan strip ("Last 1h" while live); the day is spelled out on both sides
 // only when the window crosses midnight.
-export function windowLabel(untilMs, windowMs, locale) {
-  if (untilMs == null) return 'Now';
+export function windowLabel(untilMs, windowMs, rangeKey, locale) {
+  if (untilMs == null) return 'Last ' + rangeKey;
   const start = new Date(untilMs - windowMs);
   const end = new Date(untilMs);
   const time = { hour: '2-digit', minute: '2-digit' };

@@ -51,19 +51,19 @@ test('windowAnchorTs', async (t) => {
 });
 
 test('windowLabel', async (t) => {
-  await t.test('reads "Now" for a live window', () => {
-    assert.equal(hw.windowLabel(null, HOUR), 'Now');
+  await t.test('reads "Last <range>" for a live window', () => {
+    assert.equal(hw.windowLabel(null, HOUR, '1h'), 'Last 1h');
   });
 
   await t.test('names the day once when the window sits inside one day', () => {
     const until = new Date(2026, 10, 1, 10, 0).getTime();
-    const label = hw.windowLabel(until, HOUR, 'en-GB');
+    const label = hw.windowLabel(until, HOUR, '1h', 'en-GB');
     assert.equal(label, '09:00 – 10:00, 1 Nov');
   });
 
   await t.test('names both days when the window crosses midnight', () => {
     const until = new Date(2026, 10, 2, 1, 0).getTime();
-    const label = hw.windowLabel(until, 2 * HOUR, 'en-GB');
+    const label = hw.windowLabel(until, 2 * HOUR, '24h', 'en-GB');
     assert.match(label, /1 Nov.*– .*2 Nov/);
   });
 });
