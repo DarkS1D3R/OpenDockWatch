@@ -31,7 +31,7 @@ const ENV_DEFAULT_VIEW = (() => {
 })();
 
 // Validated on the way out too: a hand-edited or stale row would land the client on a tab nothing
-// renders. An unusable row counts as absent, which keeps `overridden` honest. See server/CLAUDE.md.
+// renders. An unusable row counts as absent, which keeps `overridden` honest. See docs/architecture/server.md.
 function dbDefaultView() {
   const val = db.getSetting(DEFAULT_VIEW_KEY);
   return val !== null && VALID_VIEWS.has(val) ? val : null;

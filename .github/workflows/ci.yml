@@ -43,7 +43,7 @@ jobs:
       # This job exists to prove the image still builds; nothing consumes the result, so
       # type=cacheonly says exactly that - every step runs, no image is exported. Nothing compiles
       # in the build any more: better-sqlite3 v13 ships musl prebuilds in its own tarball, so the
-      # deps stage installs no toolchain (see the Dockerfile and CLAUDE.md). A cold build measured
+      # deps stage installs no toolchain (see the Dockerfile and docs/architecture/server.md). A cold build measured
       # 13.6s locally with base images already pulled; the ~107s pruned-builder figure this comment
       # used to quote predates that. With the cache restored and only the source changed - the
       # shape of a normal CI run - it is ~8s.

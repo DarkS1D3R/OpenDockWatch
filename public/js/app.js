@@ -204,7 +204,7 @@ const app = createApp({
       return this.alerts.filter((a) => !a.acknowledged && a.resolved_at === null).length;
     },
     // A browser allows ~6 connections per origin over HTTP/1.1, so a log-preview stream only
-    // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see public/CLAUDE.md.
+    // runs in the view its component is part of (List/Flow, Logs tab, Activity) - see docs/architecture/frontend.md.
     // Gates the panel's *rendering* only; selectedContainerId itself survives a Logs tab trip.
     detailPanelVisible() {
       return !!this.selectedContainer && (this.view === 'list' || this.view === 'flow');

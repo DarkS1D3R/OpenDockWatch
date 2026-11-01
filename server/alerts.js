@@ -305,7 +305,7 @@ function alertContext() {
 // The effective per-container config: the global threshold config, with any fields the matched
 // rule sets overriding it (a rule's own null field still inherits the global value), plus which
 // event rules are muted for this container. No matching rule (the common case) returns the global
-// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see server/CLAUDE.md.
+// config untouched. Deliberately separate from the opendockwatch.alerts=off label - see docs/architecture/server.md.
 function resolveContainerConfig({ hostId, containerName, composeProject }, ctx) {
   const { global, rules } = ctx || alertContext();
   const rule = findMatchingRule(rules, hostId, containerName, composeProject);
@@ -336,7 +336,7 @@ function mutedByRule(eventRule, { hostId, containerId, containerName, composePro
 
 // Consecutive-breach tracking keyed "hostId:containerId:rule": fires once a breach is sustained
 // for sustainMs (a single over-threshold sample is noise), resets on dipping under threshold
-// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see server/CLAUDE.md.
+// (hysteresis). Mirrored to alert_breaches so a restart mid-breach resumes counting - see docs/architecture/server.md.
 const breachStarts = new Map();
 
 // Restores breachStarts from before the last restart - called once at boot (index.js), not at
@@ -385,7 +385,7 @@ const runningSets = new Map(); // hostId -> the running-id signature retainConta
 
 // Called by metricsCollector with each poll's running containers. Drops breach counters for the
 // rest (host-level ones survive) and, when the running set changed, resolves their open
-// RUNNING_STATE_RULES alerts. See server/CLAUDE.md.
+// RUNNING_STATE_RULES alerts. See docs/architecture/server.md.
 function retainContainers(hostId, runningIds) {
   const keep = new Set(runningIds);
   for (const key of breachStarts.keys()) {
@@ -425,7 +425,7 @@ function forgetHost(hostId) {
 
 // A thrown message is not ours: undici says "fetch failed" today, but that wording is no contract
 // and other runtimes name the URL in it. Both URL forms and the raw one's path embed the token, so
-// each is swapped for its scheme before the message can be logged or answered. See server/CLAUDE.md.
+// each is swapped for its scheme before the message can be logged or answered. See docs/architecture/server.md.
 function redactWebhookUrls(message, ...urls) {
   let out = String(message == null ? '' : message);
   const present = urls.filter(Boolean);
@@ -506,7 +506,7 @@ function formatAge(ms) {
 
 // Closes the newest open alert for (host, container, rule), if there is one at or after sinceTs, and
 // sends a resolved notice to each destination its firing notice reached that wants one. Always
-// recorded; the notice itself is opt-in per destination. See server/CLAUDE.md.
+// recorded; the notice itself is opt-in per destination. See docs/architecture/server.md.
 function resolve({ hostId, containerId = null, containerName = null, rule, message, sinceTs = 0 }) {
   const open = db.getUnresolvedAlert({ hostId, containerId, rule, sinceTs });
   if (open) closeAlert(open, { hostId, containerId, containerName, rule, message });
@@ -629,7 +629,7 @@ function followUpPayload(alert, now, message, extra) {
 
 // The notices due right now for unacknowledged, unresolved alerts: an escalation to each delayed
 // route whose delay has passed, and a reminder to each destination that got the firing notice once
-// repeatMinutes has passed since it (or the last reminder). Pure - see server/CLAUDE.md.
+// repeatMinutes has passed since it (or the last reminder). Pure - see docs/architecture/server.md.
 function dueFollowUps({ alerts: open, noticesFor, main, routes, now }) {
   const repeatMs = main.repeatMinutes * 60_000;
   const delayed = routes.filter((r) => r.enabled && isDelayed(r));
@@ -844,7 +844,7 @@ function handleEvent(event) {
   }
 
   // Start only: Docker sends restart beside start for `docker restart`, and Podman for every
-  // restart, so counting both made one restart read as two. See server/CLAUDE.md.
+  // restart, so counting both made one restart read as two. See docs/architecture/server.md.
   if (action === 'start') {
     const sinceTs = ts - CRASH_LOOP_WINDOW_MS;
     const count = db.countRestartsSince(hostId, containerId, sinceTs);
@@ -918,7 +918,7 @@ function handleHostReachability(hostId, hostName, reachable, wasReachable) {
 // reads 400%, matching the UI); memPerc is MemPerc against the container's own limit.
 function handleSample({ hostId, containerId, containerName, composeProject, cpuPerc, memPerc, ts, alertsDisabled }, ctx) {
   // Unconditional, before any rules-table read - zero DB cost for a container opted out via the
-  // label, same as today. See server/CLAUDE.md for why this stays separate from container_alert_rules.
+  // label, same as today. See docs/architecture/server.md for why this stays separate from container_alert_rules.
   if (alertsDisabled) return;
   const cfg = resolveContainerConfig({ hostId, containerName, composeProject }, ctx);
   const sustainMs = cfg.sustainMinutes * 60_000;
@@ -975,7 +975,7 @@ function handleSample({ hostId, containerId, containerName, composeProject, cpuP
 
 // Called once per host per stats poll. cpuPercent is host-normalized (cpuSum /
 // ncpu, so 100% means all cores busy); memPercent is sum-of-container-usage
-// over host total memory. Takes the same ctx as handleSample - see server/CLAUDE.md.
+// over host total memory. Takes the same ctx as handleSample - see docs/architecture/server.md.
 function handleHostSample({ hostId, hostName, cpuPercent, memPercent, ts }, ctx) {
   const cfg = (ctx && ctx.global) || getThresholdConfig();
   const sustainMs = cfg.sustainMinutes * 60_000;

@@ -1,6 +1,6 @@
 // One row per host for GET /overview, built only from what the server already holds: the collector's
 // snapshot, the open-alert count and the last reachability transition. No docker call, so a host
-// that is down costs nothing to report. See server/CLAUDE.md.
+// that is down costs nothing to report. See docs/architecture/server.md.
 
 // The name /hosts shows: the configured one, else a local daemon's own hostname, else the id.
 function hostDisplayName(host, snapshot) {

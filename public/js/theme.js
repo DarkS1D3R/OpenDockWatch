@@ -1,9 +1,9 @@
 // The one source for the colours the container state and health axes are drawn in. They used to be
 // hex literals in four places - format.js's state icons, graph/style.js's CY_STYLE, svgExport.js's
-// hand-drawn nodes, and style.css - so changing one silently disagreed with the rest. See public/CLAUDE.md.
+// hand-drawn nodes, and style.css - so changing one silently disagreed with the rest. See docs/architecture/frontend.md.
 
 // One palette per app colour scheme (lib/appTheme.js picks which). Light is not dark inverted:
-// every hue is a darker step so it still clears 4.5:1 as text on the light panel. See public/CLAUDE.md.
+// every hue is a darker step so it still clears 4.5:1 as text on the light panel. See docs/architecture/frontend.md.
 export const PALETTES = {
   dark: {
     accent: '#4f8cff',
@@ -36,7 +36,7 @@ export const SELECTED = ACCENT;
 
 // The style.css custom property carrying each state's value, in both the :root block and the
 // light one, so test/theme.test.js can hold the two sides together across a boundary no import
-// can cross. DOM consumers (format.js's icons) reference these instead of a hex. See public/CLAUDE.md.
+// can cross. DOM consumers (format.js's icons) reference these instead of a hex. See docs/architecture/frontend.md.
 export const CSS_VAR_FOR_STATE = {
   running: '--ok',
   stopped: '--muted',

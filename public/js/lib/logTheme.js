@@ -3,7 +3,7 @@
 // pick it up without prop drilling - the same reason app.js applies it once at mount rather than
 // each pane reading storage itself. localStorage, not sessionStorage: this is a personal reading
 // preference worth keeping for weeks, the same grain as graph/persistence.js's node positions, not
-// a per-tab thing like logsPersistence.js's open panes. See public/CLAUDE.md.
+// a per-tab thing like logsPersistence.js's open panes. See docs/architecture/frontend.md.
 
 const STORAGE_KEY = 'odw:logTheme';
 

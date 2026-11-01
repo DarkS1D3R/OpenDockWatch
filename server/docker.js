@@ -437,7 +437,7 @@ async function getContainerImages(host, containerIds, exec = run) {
 }
 
 // RepoDigests per image id: the registry digests the image was pulled as (on the containerd image
-// store, a local build has one too - see server/CLAUDE.md). A line that won't parse is skipped.
+// store, a local build has one too - see docs/architecture/server.md). A line that won't parse is skipped.
 function parseImageRepoDigests(raw) {
   const out = new Map();
   for (const line of String(raw || '').split('\n')) {
@@ -462,7 +462,7 @@ async function getImageRepoDigests(host, imageIds, exec = run) {
 
 // Podman leaves health out of `docker ps`'s Status and sends its health events with no result, so
 // for a Podman host health is read with one batched inspect - when the running set changes or
-// Podman reports a check ran (markHealthDirty). See server/CLAUDE.md.
+// Podman reports a check ran (markHealthDirty). See docs/architecture/server.md.
 const healthState = new Map(); // hostId -> { signature, dirty, statuses: Map(shortId -> status) }
 // `index`, not `.State.Health`: the CLI templates over a map, and a container with no healthcheck
 // has no Health key - the dotted form errors and fails the whole batch (seen against Podman 5.8).
@@ -615,13 +615,13 @@ function statsRowToSample(raw) {
 
 // docker draws the stats table with cursor-control escapes even when its output is a pipe (each
 // refresh is `ESC[J ESC[H <rows> ESC[H <rows> ESC[K`) - a streamed row arrives with one glued to
-// the front of the JSON. Harmless no-op against the one-shot form's plain output. See server/CLAUDE.md.
+// the front of the JSON. Harmless no-op against the one-shot form's plain output. See docs/architecture/server.md.
 // eslint-disable-next-line no-control-regex
 const ANSI_CSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
 // One line of `docker stats` output -> `{id, sample}`, or null for anything unusable. Shared by
 // getStats below and statsWatcher's stream parser (re-exported from there), so a malformed row is
-// skipped rather than losing a whole poll in one and just a container in the other. See server/CLAUDE.md.
+// skipped rather than losing a whole poll in one and just a container in the other. See docs/architecture/server.md.
 function parseStatsLine(line) {
   const cleaned = (line || '').replace(ANSI_CSI_RE, '').trim();
   if (!cleaned) return null;
@@ -685,7 +685,7 @@ function networkEdges(containers) {
 
 // Shared by dependsOnEdges/customDependsOnEdges/parseMountsList - a `docker ps --format` blob is
 // one id/value pair per line. Splits on the *first* tab only, so a value containing one (a mounts
-// list, a depends_on triple list) stays whole. See server/CLAUDE.md.
+// list, a depends_on triple list) stays whole. See docs/architecture/server.md.
 function parseIdValueLines(raw) {
   const out = [];
   for (const line of (raw || '').split('\n')) {
@@ -805,7 +805,7 @@ const TOPOLOGY_META_TTL_MS = 60_000;
 const topologyMetaCache = new Map(); // hostId -> { ts, signature, dependsOnRaw, customDependsOnRaw, mountsRaw }
 
 // Pure half of getTopologyMeta below, split out so the field-splitting itself is unit-testable
-// without mocking child_process - see server/CLAUDE.md. `parts.slice(3).join('\t')` rather than
+// without mocking child_process - see docs/architecture/server.md. `parts.slice(3).join('\t')` rather than
 // `parts[3]` keeps a literal tab inside Mounts intact instead of truncating at the first one.
 function splitCombinedTopologyPs(combinedRaw) {
   const dependsOnLines = [];
@@ -829,7 +829,7 @@ function splitCombinedTopologyPs(combinedRaw) {
 
 // One `docker ps` (four tab-separated fields) instead of three - each is its own SSH round trip.
 // `--no-trunc` (needed for Mounts, which truncates like any other column) makes the id full-length
-// too; sliced back to 12 chars for the depends-on lines. See server/CLAUDE.md.
+// too; sliced back to 12 chars for the depends-on lines. See docs/architecture/server.md.
 async function getTopologyMeta(host, containers) {
   const signature = containers
     .map((c) => c.id)
@@ -1119,7 +1119,7 @@ const LOG_HISTORY_TIMEOUT_MS = 30_000;
 
 // One page of history older than `before`. Not `--tail`: json-file applies it to the whole log
 // before --until, so an older cursor came back empty. Reads the range, keeping each stream's last
-// `limit + 1` lines (server/CLAUDE.md). Holds a run() slot while it reads.
+// `limit + 1` lines (docs/architecture/server.md). Holds a run() slot while it reads.
 async function getLogsBefore(host, id, { before, limit }) {
   await acquire();
   try {

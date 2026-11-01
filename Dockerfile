@@ -7,12 +7,12 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts is what keeps this toolchain-free: better-sqlite3 ships a binding.gyp, so npm
 # fires an implicit `node-gyp rebuild` that needs python before it can even read the file and
-# discover it has nothing to build. No package in this tree declares an install script. CLAUDE.md.
+# discover it has nothing to build. No package in this tree declares an install script. See docs/architecture/server.md.
 RUN npm ci --omit=dev --ignore-scripts
 
 # better-sqlite3 v13 is N-API and ships prebuilt binaries for all 8 of its platforms inside the
 # npm tarball, musl included - so nothing compiles here and no build toolchain is installed. The
-# seven this image can never load are ~20MB of dead weight; drop them. See CLAUDE.md.
+# seven this image can never load are ~20MB of dead weight; drop them. See docs/architecture/server.md.
 RUN case "$(uname -m)" in \
       x86_64) keep='linuxmusl-x64' ;; \
       aarch64) keep='linuxmusl-arm64' ;; \

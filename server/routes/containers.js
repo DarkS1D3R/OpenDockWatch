@@ -2,7 +2,7 @@ const express = require('express');
 const { requireAdmin } = require('../auth');
 const { streamLogs, downloadLogs, CONTAINER_ACTION_TIMEOUT_MS, MAX_QUEUE_WAIT_MS, LOG_TS_RE } = require('../docker');
 // The module object, not a destructured reference, for the calls the compose-group route and
-// performContainerAction make - test/index.test.js mocks them afterwards. See server/CLAUDE.md.
+// performContainerAction make - test/index.test.js mocks them afterwards. See docs/architecture/server.md.
 const docker = require('../docker');
 const db = require('../db');
 const logger = require('../logger');
@@ -29,7 +29,7 @@ let openLogStreams = 0;
 
 // Shared by the single and compose-group routes so a group action writes the same audit_log row
 // and log-line pair - alerts.js's manual-stop suppression reads audit_log by ts. Never throws: a
-// failed action is a reportable {ok: false}, not an exception. See server/CLAUDE.md.
+// failed action is a reportable {ok: false}, not an exception. See docs/architecture/server.md.
 async function performContainerAction(host, containerId, action, { username, containerName }) {
   const logFields = { user: username, host: host.id, container: containerName || containerId };
   const startedAt = Date.now();
@@ -56,7 +56,7 @@ async function performContainerAction(host, containerId, action, { username, con
   try {
     // Module object, not the destructured containerAction above - mockable for the same reason
     // docker.listContainers/getTopologyMeta are, and metricsCollector.pollHost's own docker calls
-    // already go through the module object for the identical reason. See server/CLAUDE.md.
+    // already go through the module object for the identical reason. See docs/architecture/server.md.
     await docker.containerAction(host, containerId, action);
     db.updateAuditLogResult(auditId, 'ok', null);
     logger.info(`container.${action}`, { ...logFields, tookMs: Date.now() - startedAt });
@@ -90,11 +90,11 @@ router.post(
 
 // Group actions are batch start/stop/restart, not real `docker compose up`/`down` - the compose
 // YAML is never available here, so a group is identified by its compose project label alone.
-// See server/CLAUDE.md.
+// See docs/architecture/server.md.
 
 // Caps how many containers within one level run at once - leaves most of docker.js's
 // MAX_CONCURRENT slots free for other hosts' polls and other viewers' requests. See mapLimit
-// in composeGroup.js and server/CLAUDE.md.
+// in composeGroup.js and docs/architecture/server.md.
 const COMPOSE_LEVEL_CONCURRENCY = 4;
 
 router.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, requireContainerAction, async (req, res) => {
@@ -251,7 +251,7 @@ router.get('/hosts/:hostId/containers/:id/logs/history', requireHost, requireCon
 
 // Compose-wide log search: one `docker logs --since` scan per container, LOG_SEARCH_CONCURRENCY at a
 // time, sharing one deadline that stays inside REQUEST_TIMEOUT_MS even after a MAX_QUEUE_WAIT_MS wait
-// for a slot - so the route always answers, slow containers flagged as timed out. See server/CLAUDE.md.
+// for a slot - so the route always answers, slow containers flagged as timed out. See docs/architecture/server.md.
 const LOG_SEARCH_CONCURRENCY = 3;
 const LOG_SEARCH_DEADLINE_MS = 30_000;
 const LOG_SEARCH_MAX_QUERY = 200;

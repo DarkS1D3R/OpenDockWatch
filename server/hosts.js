@@ -42,7 +42,7 @@ function isValidHostId(id) {
 
 // Blank is the local socket; otherwise ssh://user@host, or unix:///absolute/path for another
 // socket on this machine (a mounted Podman socket). The leading-dash refusal is argv-injection
-// defence, same reasoning as index.js's CONTAINER_ID_RE. See server/CLAUDE.md.
+// defence, same reasoning as index.js's CONTAINER_ID_RE. See docs/architecture/server.md.
 function isValidDockerHostUrl(url) {
   if (!url) return true;
   if (typeof url !== 'string') return false;

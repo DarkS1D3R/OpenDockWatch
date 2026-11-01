@@ -51,7 +51,7 @@
    darker step than its dark-theme twin so it still clears 4.5:1 as text on --panel; the four
    series hues were re-validated as a categorical set against --tile-bg (all checks pass, worst
    CVD pair --seq-net/--seq-mem at protan dE 11.7). --ok/--muted/--accent/--warn/--unhealthy
-   mirror theme.js's PALETTES.light - test/theme.test.js reads both blocks. See public/CLAUDE.md. */
+   mirror theme.js's PALETTES.light - test/theme.test.js reads both blocks. See docs/architecture/frontend.md. */
 :root[data-theme='light'] {
   color-scheme: light;
   --bg: #e2e6eb;
@@ -2152,7 +2152,7 @@ table.containers td:nth-child(7) {
 
 /* The standalone viewer reaches each tier earlier: on top of the shared controls it carries
    Matches/Fullscreen/Wrap/Close, and since Go to it needs 1224px at full size, 961px with labels
-   hidden and 841px with the level dropdown (2px sweep). See public/CLAUDE.md. */
+   hidden and 841px with the level dropdown (2px sweep). See docs/architecture/frontend.md. */
 @container log-panel (max-width: 1230px) {
   .log-panel:not(.embedded) .btn-label {
     position: absolute;

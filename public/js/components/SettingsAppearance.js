@@ -15,7 +15,7 @@ import {
 // round trip and no wrong-order-of-operations to guard against, so withStatus's saving/error/status
 // dance (lib/settingsSection.js) would only add a step nothing here needs. Stored in localStorage
 // (lib/logTheme.js), so it's this browser's preference, not shared with other signed-in users - see
-// public/CLAUDE.md.
+// docs/architecture/frontend.md.
 export default {
   name: 'SettingsAppearance',
   data() {

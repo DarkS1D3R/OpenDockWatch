@@ -5,7 +5,7 @@ const path = require('path');
 
 // Structural accessibility checks over every component template, the same enforce-don't-document
 // approach as logger.test.js's console scan: three rules a new template can quietly break, each a
-// control that a keyboard or screen-reader user cannot reach or cannot name. See public/CLAUDE.md.
+// control that a keyboard or screen-reader user cannot reach or cannot name. See docs/architecture/frontend.md.
 const ROOT = path.join(__dirname, '..', 'public', 'js');
 const FILES = [path.join(ROOT, 'app.js'), ...fs.readdirSync(path.join(ROOT, 'components')).map((f) => path.join(ROOT, 'components', f))];
 

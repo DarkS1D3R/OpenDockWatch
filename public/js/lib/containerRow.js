@@ -1,4 +1,4 @@
-// Pure wording and action rules for a container row (List view, detail panel). See public/CLAUDE.md.
+// Pure wording and action rules for a container row (List view, detail panel). See docs/architecture/frontend.md.
 import { MEM_UNIT_BYTES, parsePublishedPorts } from '../format.js';
 
 // Which of start/stop/restart apply to a container in this docker state. Start does not unpause,

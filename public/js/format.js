@@ -40,7 +40,7 @@ export function stateEmoji(state, health) {
 
 // Keyword -> badge lookup, checked in order against "<image> <composeService>" (lowercase); first
 // match wins, so specific before generic and base-OS images last. `logo` names a lib/logos.js glyph
-// (colours come from there); no `logo` keeps a text badge on `bg`. Ordering rules: public/CLAUDE.md.
+// (colours come from there); no `logo` keeps a text badge on `bg`. Ordering rules: docs/architecture/frontend.md.
 export const SERVICE_BADGES = [
   [/opendockwatch/, { text: 'OD', logo: 'opendockwatch' }],
   // pgAdmin's logo is white "pg" on a blue rounded square - no Simple Icons glyph, but a text tile
@@ -487,7 +487,7 @@ export function buildLineMatcher(filterText, isRegex = false) {
 
 // Matches against the *raw* segment text and escapes each piece on the way out, rather than
 // escaping first and matching the raw filter against the escaped string - which let a match land
-// inside an escaped entity, or a search for "<"/"&" themselves highlight nothing. See public/CLAUDE.md.
+// inside an escaped entity, or a search for "<"/"&" themselves highlight nothing. See docs/architecture/frontend.md.
 function escapeAndHighlight(text, matcher) {
   if (!matcher) return escapeHtml(text);
   matcher.lastIndex = 0;

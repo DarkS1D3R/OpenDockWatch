@@ -14,7 +14,7 @@ import {
 } from '../lib/hostOverview.js';
 
 // The Hosts tab: one row per configured host from GET /api/overview. Mounted with v-if and owns its
-// own chained poll, so it costs one request per POLL_MS only while on screen. See public/CLAUDE.md.
+// own chained poll, so it costs one request per POLL_MS only while on screen. See docs/architecture/frontend.md.
 export default {
   name: 'HostsOverview',
   props: {

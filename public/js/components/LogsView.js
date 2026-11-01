@@ -6,7 +6,7 @@ import LogSearchPanel from './LogSearchPanel.js';
 
 // The Logs tab: a container list on the left and up to MAX_OPEN_LOG_PANES embedded LogViewers
 // on the right, scroll-synced by timestamp (peer-to-peer by default; a pane can be marked "main"
-// for leader-follower, or opt out of sync via `disabledSyncIds`). Full sync design in public/CLAUDE.md.
+// for leader-follower, or opt out of sync via `disabledSyncIds`). Full sync design in docs/architecture/frontend.md.
 export default {
   name: 'LogsView',
   components: { LogViewer, LogSearchPanel },
@@ -134,7 +134,7 @@ export default {
   methods: {
     // Deliberately does *not* filter against the current container list - after a host switch that
     // list is still the previous host's, so filtering would drop every restored id and persist the
-    // emptiness. The allContainers watcher prunes on the first real poll instead. See public/CLAUDE.md.
+    // emptiness. The allContainers watcher prunes on the first real poll instead. See docs/architecture/frontend.md.
     restoreOpenPanes(hostId) {
       const saved = loadOpenPanes(hostId);
       this.viewMode = saved ? saved.viewMode : 'multi';

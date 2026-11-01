@@ -1,6 +1,6 @@
 // Image-update detection: does the image a container runs still match what its tag points at on the
 // registry? Detection only - nothing is pulled or recreated. Periodic checks are opt-in (they reach
-// out to registries); an admin's "Check now" works either way. See server/CLAUDE.md.
+// out to registries); an admin's "Check now" works either way. See docs/architecture/server.md.
 const db = require('./db');
 const logger = require('./logger');
 // Module objects, not destructured, so test/imageUpdates.test.js can stub them.

@@ -122,7 +122,7 @@ async function pollHost(host) {
   const prev = snapshots.get(host.id);
   // No in-memory prev on a cold start (process restart, or a host just added) - defaulting to true
   // there silently swallowed the recovery transition whenever the process restarted mid-outage, so
-  // fall back to the last stored transition instead. See server/CLAUDE.md.
+  // fall back to the last stored transition instead. See docs/architecture/server.md.
   const wasReachable = prev ? prev.reachable : (db.getHostReachabilitySeed(host.id, Date.now()) ?? true);
 
   // Sampled here rather than inside the reachable/hostInfo block below since it doesn't touch
@@ -211,7 +211,7 @@ async function pollHost(host) {
     // Not awaited: an inspect only when the container set changed, and a missing hint only costs a
     // badge its runtime logo for one poll - never worth delaying or failing the poll over.
     docker.refreshIconHints(host, containers).catch(() => {});
-    // Podman only, same not-awaited shape: health its list and events leave out. See server/CLAUDE.md.
+    // Podman only, same not-awaited shape: health its list and events leave out. See docs/architecture/server.md.
     const byId = new Map(containers.map((c) => [c.id, c]));
     docker
       .refreshPodmanHealth(host, containers, ({ id, status }) => {
@@ -232,7 +232,7 @@ async function pollHost(host) {
     let memSum = 0;
     // Collected first, then written in one transaction and only then alerted on. Inserting per
     // container cost a commit each; alerting per container mid-loop would have put
-    // its own db writes - and fire()'s async webhook - inside that transaction. See server/CLAUDE.md.
+    // its own db writes - and fire()'s async webhook - inside that transaction. See docs/architecture/server.md.
     const samples = [];
     const alertSamples = [];
     for (const c of containers) {

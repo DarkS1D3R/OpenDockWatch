@@ -198,7 +198,7 @@ const UPTIME_DAYS_DEFAULT = 30;
 const UPTIME_DAYS_MAX = 90;
 
 // Reconstructed from history already retained for events and host_reachability - no new sampling,
-// no docker call, so no try/catch. See server/uptime.js and server/CLAUDE.md.
+// no docker call, so no try/catch. See server/uptime.js and docs/architecture/server.md.
 router.get('/hosts/:hostId/uptime', requireHost, (req, res) => {
   const hostId = req.params.hostId;
   const days = intParam(req.query.days, UPTIME_DAYS_DEFAULT, UPTIME_DAYS_MAX) || UPTIME_DAYS_DEFAULT;

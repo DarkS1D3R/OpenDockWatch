@@ -20,7 +20,7 @@ export function updateGraph(cy, elements, hostId) {
 
   // cytoscape-expand-collapse physically removes a collapsed group's children from the graph, so
   // this diff must never add them back in or it'd corrupt the plugin's bookkeeping and silently
-  // un-collapse the group. Skipped entirely while hidden; afterexpand re-syncs them. See public/CLAUDE.md.
+  // un-collapse the group. Skipped entirely while hidden; afterexpand re-syncs them. See docs/architecture/frontend.md.
   const collapsedIds = new Set(cy.nodes('.cy-expand-collapse-collapsed-node').map((n) => n.id()));
   const hiddenIds = new Set();
   if (collapsedIds.size) {
@@ -162,7 +162,7 @@ export function applyFading(cy, { selectedId, filterText } = {}) {
 
 // cy.png() only rasterizes cytoscape's own <canvas>, not the node-html-label plugin's DOM
 // overlay that renders everything inside a node box. html2canvas screenshots the real on-screen
-// DOM instead, canvas included. See public/CLAUDE.md.
+// DOM instead, canvas included. See docs/architecture/frontend.md.
 const EXPORT_SCALE = 2;
 
 export async function exportPng(cy) {
@@ -178,7 +178,7 @@ export async function exportPng(cy) {
 
   // html2canvas just copies cytoscape's existing (CSS-pixel-resolution) canvas bitmap, so asking
   // for a higher `scale` merely stretches an already-low-res source. Instead, render into a
-  // container EXPORT_SCALE times larger for a proportionally bigger real backing store - see public/CLAUDE.md.
+  // container EXPORT_SCALE times larger for a proportionally bigger real backing store - see docs/architecture/frontend.md.
   const rect = container.getBoundingClientRect();
   container.style.width = `${rect.width * EXPORT_SCALE}px`;
   container.style.height = `${rect.height * EXPORT_SCALE}px`;
@@ -211,7 +211,7 @@ export async function exportPng(cy) {
 
 // The two nodeHtmlLabel templates below build raw HTML (a real DOM overlay, not canvas), unlike
 // every other node kind's `label: 'data(label)'` in graph/style.js - so name/status/label are
-// escaped before going in. Defence-in-depth, not a live fix (CSP blocks execution). See public/CLAUDE.md.
+// escaped before going in. Defence-in-depth, not a live fix (CSP blocks execution). See docs/architecture/frontend.md.
 export function containerNodeTpl(data) {
   const name = escapeHtml(data.name);
   const status = escapeHtml(data.status);

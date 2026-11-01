@@ -1,6 +1,6 @@
 // The whole app's colour scheme (Settings -> Appearance): a dark/light/system preference in
 // localStorage, resolved to a scheme and applied as data-theme on the root, which style.css's
-// light block keys off. public/js/theme-boot.js applies it before first paint. See public/CLAUDE.md.
+// light block keys off. public/js/theme-boot.js applies it before first paint. See docs/architecture/frontend.md.
 
 export const APP_THEME_STORAGE_KEY = 'odw:appTheme';
 export const APP_THEME_CHANGE_EVENT = 'odw:themechange';

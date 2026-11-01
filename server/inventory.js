@@ -1,5 +1,5 @@
 // The Resources tab: images, volumes and networks per host, read-only. Refreshed in the background
-// and served from memory, because `system df -v` can outlast a request (see server/CLAUDE.md).
+// and served from memory, because `system df -v` can outlast a request (see docs/architecture/server.md).
 const docker = require('./docker');
 const logger = require('./logger');
 

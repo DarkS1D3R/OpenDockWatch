@@ -7,7 +7,7 @@ import { APP_THEME_CHANGE_EVENT, currentScheme } from '../lib/appTheme.js';
 
 // The Flow view: the cytoscape instance, graph/tree mode switching, edge/state filters,
 // fullscreen, tree-mode pill selection, and edge/pill tap info. Stays mounted via v-show like
-// ContainerList. See public/CLAUDE.md for the pillSelection split and the root-owned fullscreen v-model.
+// ContainerList. See docs/architecture/frontend.md for the pillSelection split and the root-owned fullscreen v-model.
 export default {
   name: 'FlowView',
   props: {

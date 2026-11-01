@@ -1,6 +1,6 @@
 // Classic (non-module) script loaded from <head>: sets data-theme before the first paint, so a
 // light-theme user never sees a dark flash while the module graph loads. Mirrors lib/appTheme.js's
-// resolveScheme; test/appTheme.test.js holds the two together. See public/CLAUDE.md.
+// resolveScheme; test/appTheme.test.js holds the two together. See docs/architecture/frontend.md.
 (function () {
   var pref = 'dark';
   try {

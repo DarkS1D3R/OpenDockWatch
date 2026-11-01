@@ -1,6 +1,6 @@
 // Asks a registry what digest a tag points at now, with one HEAD request (plus an anonymous token
 // fetch where the registry wants one). HEAD, not GET: Docker Hub counts manifest GETs against its
-// pull rate limit and HEADs not. No credentials are read or sent. See server/CLAUDE.md.
+// pull rate limit and HEADs not. No credentials are read or sent. See docs/architecture/server.md.
 const { registryApiHost, isLoopbackRegistry } = require('./imageRef');
 
 const REGISTRY_TIMEOUT_MS = 15_000;
