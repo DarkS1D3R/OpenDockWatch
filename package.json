@@ -29,22 +29,22 @@
     "build:logos": "node scripts/build-logos.js"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.2",
-    "better-sqlite3": "^13.0.3",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.1.1",
     "better-sqlite3-session-store": "^0.1.0",
-    "dotenv": "^18.0.9",
+    "dotenv": "^18.0.10",
     "express": "^5.3.0",
-    "express-rate-limit": "^8.7.2",
-    "express-session": "^1.18.0"
+    "express-rate-limit": "^8.7.4",
+    "express-session": "^1.19.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.13.0",
-    "playwright": "^1.64.1",
-    "prettier": "^3.9.10",
-    "simple-icons": "^16.36.0",
-    "supertest": "^7.3.1"
+    "globals": "^17.14.0",
+    "playwright": "^1.65.0",
+    "prettier": "^3.10.0",
+    "simple-icons": "^16.37.0",
+    "supertest": "^7.3.2"
   }
 }
