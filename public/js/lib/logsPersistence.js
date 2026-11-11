@@ -4,6 +4,9 @@ import { MAX_OPEN_LOG_PANES } from '../constants.js';
 // The streams are deliberately not preserved, only the choice. sessionStorage rather than the
 // localStorage graph/persistence.js uses next door, and nothing server-side - see docs/architecture/frontend.md.
 const KEY_PREFIX = 'odw:logs:panes:';
+// Which compose groups the side list has collapsed, per host. Same storage and lifetime as the panes.
+const COLLAPSED_KEY_PREFIX = 'odw:logs:collapsed:';
+const MAX_COLLAPSED_GROUPS = 500;
 
 const VIEW_MODES = new Set(['single', 'multi']);
 
@@ -45,6 +48,31 @@ export function saveOpenPanes(hostId, { viewMode, openIds, disabledSyncIds, main
   }
 }
 
+// Group names come from compose labels, so they are user-controlled: kept only as strings, deduped
+// and capped, and only ever compared against, never used as object keys. Exported for tests.
+export function normalizeCollapsedGroups(raw) {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((name) => typeof name === 'string' && name))].slice(0, MAX_COLLAPSED_GROUPS);
+}
+
+export function loadCollapsedGroups(hostId) {
+  if (!hostId) return [];
+  try {
+    return normalizeCollapsedGroups(JSON.parse(sessionStorage.getItem(COLLAPSED_KEY_PREFIX + hostId)));
+  } catch {
+    return [];
+  }
+}
+
+export function saveCollapsedGroups(hostId, names) {
+  if (!hostId) return;
+  try {
+    sessionStorage.setItem(COLLAPSED_KEY_PREFIX + hostId, JSON.stringify(names));
+  } catch {
+    /* sessionStorage unavailable or full - the tab still works, it just won't remember */
+  }
+}
+
 // Called on logout: sessionStorage is scoped to the tab, not the account, so "per session" has to
 // mean per sign-in. Keys are collected before removal - removing while walking by index skips
 // entries, since each removal shifts the rest down. See docs/architecture/frontend.md.
@@ -53,7 +81,7 @@ export function clearAllOpenPanes() {
     const keys = [];
     for (let i = 0; i < sessionStorage.length; i += 1) {
       const key = sessionStorage.key(i);
-      if (key && key.startsWith(KEY_PREFIX)) keys.push(key);
+      if (key && (key.startsWith(KEY_PREFIX) || key.startsWith(COLLAPSED_KEY_PREFIX))) keys.push(key);
     }
     for (const key of keys) sessionStorage.removeItem(key);
   } catch {

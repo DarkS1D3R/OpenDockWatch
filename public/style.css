@@ -2552,6 +2552,28 @@ table.containers td:nth-child(7) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.logs-tab-group-toggle {
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+/* Disabled only while a filter is active (matches always show), so it must not look switched off. */
+.logs-tab-group-toggle:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.logs-tab-group-count {
+  flex-shrink: 0;
+}
+.logs-tab-group-open {
+  flex-shrink: 0;
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+}
 .logs-tab-group-search {
   font-size: 10px;
   text-transform: none;

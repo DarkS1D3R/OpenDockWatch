@@ -1,6 +1,6 @@
 import { stateEmoji } from '../format.js';
 import { MAX_OPEN_LOG_PANES } from '../constants.js';
-import { loadOpenPanes, saveOpenPanes } from '../lib/logsPersistence.js';
+import { loadOpenPanes, saveOpenPanes, loadCollapsedGroups, saveCollapsedGroups } from '../lib/logsPersistence.js';
 import LogViewer from './LogViewer.js';
 import LogSearchPanel from './LogSearchPanel.js';
 
@@ -47,6 +47,8 @@ export default {
       // closed after a result is opened, so "Back to results" returns to the same list.
       searchProject: null,
       searchVisible: false,
+      // Compose groups folded away in the side list, by name. Remembered per host (logsPersistence.js).
+      collapsedGroups: [],
     };
   },
   computed: {
@@ -56,6 +58,21 @@ export default {
       return this.groupedContainers
         .map(([name, items]) => [name, items.filter((c) => c.name.toLowerCase().includes(q))])
         .filter(([, items]) => items.length);
+    },
+    filtering() {
+      return !!this.search.trim();
+    },
+    // One row per group for the side list. An active filter overrides collapse so its matches show;
+    // openCount lets a folded group still say it has panes open.
+    groupRows() {
+      const collapsed = new Set(this.collapsedGroups);
+      const open = new Set(this.openIds);
+      return this.filteredGroups.map(([name, items]) => ({
+        name,
+        items,
+        collapsed: !this.filtering && collapsed.has(name),
+        openCount: items.filter((c) => open.has(c.id)).length,
+      }));
     },
     allContainers() {
       return this.groupedContainers.flatMap(([, items]) => items);
@@ -81,6 +98,7 @@ export default {
     // "what did I have open here" is a question each host answers for itself.
     hostId(id) {
       this.restoreOpenPanes(id);
+      this.collapsedGroups = loadCollapsedGroups(id);
       this.closeSearch();
     },
     // Anything naming a pane is worth remembering; the scroll positions (lastSyncTsMs,
@@ -113,6 +131,7 @@ export default {
   },
   mounted() {
     this.restoreOpenPanes(this.hostId);
+    this.collapsedGroups = loadCollapsedGroups(this.hostId);
     // Arriving from the List view's "Logs" button overrides whatever was remembered: that click
     // names a container, which is a more specific request than "put back what I had".
     if (this.openContainerId) {
@@ -240,6 +259,12 @@ export default {
         if (tsMs != null) this.broadcastFrom(id, tsMs);
       }
     },
+    toggleGroup(name) {
+      this.collapsedGroups = this.collapsedGroups.includes(name)
+        ? this.collapsedGroups.filter((n) => n !== name)
+        : [...this.collapsedGroups, name];
+      saveCollapsedGroups(this.hostId, this.collapsedGroups);
+    },
     // "Ungrouped" is app.js's synthetic bucket for standalone containers - no project to search.
     isRealGroup(name) {
       return name !== 'Ungrouped';
@@ -313,33 +338,47 @@ export default {
           <button aria-label="Clear filter" v-if="search" class="filter-clear-btn" @click="search = ''" title="Clear filter">✕</button>
         </div>
         <p v-if="!filteredGroups.length" class="muted">No containers found.</p>
-        <div v-for="[groupName, items] in filteredGroups" :key="groupName" class="logs-tab-group">
+        <div v-for="g in groupRows" :key="g.name" class="logs-tab-group">
           <div class="logs-tab-group-label">
-            <span class="logs-tab-group-name">{{ groupName }}</span>
             <button
-              v-if="isRealGroup(groupName)"
+              type="button"
+              class="group-toggle logs-tab-group-toggle"
+              :aria-expanded="String(!g.collapsed)"
+              :disabled="filtering"
+              @click="toggleGroup(g.name)"
+              :title="filtering ? 'Clear the filter to collapse groups' : (g.collapsed ? 'Expand ' : 'Collapse ') + g.name"
+            >
+              <span class="chevron" :class="{ open: !g.collapsed }" aria-hidden="true">&#9656;</span>
+              <span class="logs-tab-group-name">{{ g.name }}</span>
+              <span class="logs-tab-group-count">({{ g.items.length }})</span>
+              <span v-if="g.collapsed && g.openCount" class="logs-tab-group-open">{{ g.openCount }} open</span>
+            </button>
+            <button
+              v-if="isRealGroup(g.name)"
               class="logs-tab-group-search"
-              :class="{ active: searchVisible && searchProject === groupName }" :aria-pressed="String(searchVisible && searchProject === groupName)"
-              @click="openSearch(groupName)"
+              :class="{ active: searchVisible && searchProject === g.name }" :aria-pressed="String(searchVisible && searchProject === g.name)"
+              @click="openSearch(g.name)"
               title="Search the logs of every container in this project at once"
             >Search</button>
           </div>
-          <div
-            v-for="c in items"
-            :key="c.id"
-            class="logs-tab-row row-clickable"
-            :class="{ 'row-selected': openIds.includes(c.id) }"
-            :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
-            role="button"
-            tabindex="0"
-            :aria-pressed="String(openIds.includes(c.id))"
-            @click="toggleOpen(c.id)"
-            @keydown.enter.prevent="toggleOpen(c.id)"
-            @keydown.space.prevent="toggleOpen(c.id)"
-          >
-            <span class="logs-tab-row-icon" v-html="stateIcon(c.state, c.health)"></span>
-            <span class="logs-tab-row-name">{{ c.name }}</span>
-          </div>
+          <template v-if="!g.collapsed">
+            <div
+              v-for="c in g.items"
+              :key="c.id"
+              class="logs-tab-row row-clickable"
+              :class="{ 'row-selected': openIds.includes(c.id) }"
+              :title="viewMode === 'multi' && atCap && !openIds.includes(c.id) ? 'Close a pane first - up to ' + maxPanes + ' at a time' : ''"
+              role="button"
+              tabindex="0"
+              :aria-pressed="String(openIds.includes(c.id))"
+              @click="toggleOpen(c.id)"
+              @keydown.enter.prevent="toggleOpen(c.id)"
+              @keydown.space.prevent="toggleOpen(c.id)"
+            >
+              <span class="logs-tab-row-icon" v-html="stateIcon(c.state, c.health)"></span>
+              <span class="logs-tab-row-name">{{ c.name }}</span>
+            </div>
+          </template>
         </div>
       </div>
       <div class="logs-tab-viewer">
