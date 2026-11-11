@@ -202,3 +202,46 @@ test('clearAllOpenPanes', async (t) => {
     assert.doesNotThrow(() => persistence.clearAllOpenPanes());
   });
 });
+
+// Group names are compose project labels, so this list is user-controlled as well as hand-editable.
+test('collapsed groups', async (t) => {
+  await t.test('normalizeCollapsedGroups keeps non-empty strings, deduped, and nothing else', () => {
+    assert.deepEqual(persistence.normalizeCollapsedGroups(['shop', '', 42, null, { name: 'x' }, 'web', 'shop']), ['shop', 'web']);
+  });
+
+  await t.test('anything that is not an array normalizes to nothing collapsed', () => {
+    for (const raw of [null, undefined, 'shop', 42, { shop: true }]) {
+      assert.deepEqual(persistence.normalizeCollapsedGroups(raw), [], `${JSON.stringify(raw)} should normalize to []`);
+    }
+  });
+
+  await t.test('a huge stored list is capped rather than trusted', () => {
+    const names = Array.from({ length: 2000 }, (_, i) => `g${i}`);
+    assert.equal(persistence.normalizeCollapsedGroups(names).length, 500);
+  });
+
+  await t.test('round-trips per host, and hosts do not share a list', () => {
+    store.clear();
+    persistence.saveCollapsedGroups('h1', ['shop', 'Ungrouped']);
+    assert.deepEqual(persistence.loadCollapsedGroups('h1'), ['shop', 'Ungrouped']);
+    assert.deepEqual(persistence.loadCollapsedGroups('h2'), []);
+  });
+
+  await t.test('corrupt JSON and a missing host load as nothing collapsed', () => {
+    store.clear();
+    store.set('odw:logs:collapsed:h1', '{not json');
+    assert.deepEqual(persistence.loadCollapsedGroups('h1'), []);
+    assert.deepEqual(persistence.loadCollapsedGroups(null), []);
+    persistence.saveCollapsedGroups(null, ['shop']);
+    assert.equal(store.size, 1, 'saving without a host wrote a key anyway');
+  });
+
+  await t.test('logout clears collapsed groups along with the panes', () => {
+    store.clear();
+    store.set('unrelated', 'x');
+    for (const host of ['h1', 'h2', 'h3']) persistence.saveCollapsedGroups(host, ['shop']);
+    persistence.saveOpenPanes('h1', { viewMode: 'multi', openIds: ['a'], disabledSyncIds: [], mainId: null });
+    persistence.clearAllOpenPanes();
+    assert.deepEqual([...store.keys()], ['unrelated']);
+  });
+});
