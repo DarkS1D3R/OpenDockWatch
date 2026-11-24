@@ -845,7 +845,7 @@ export default {
       <div class="log-view-wrap">
         <div v-if="loading" class="log-loading-overlay"><span class="spinner"></span> Loading…</div>
         <div v-if="pagingNote" class="log-older-note"><span v-if="paging" class="spinner"></span> {{ pagingNote }}</div>
-        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" class="log-line" :class="{ 'search-active-line': searchActive && line.id === activeHitId, 'log-line-target': line.id === targetLineId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
+        <pre class="log-view log-viewer-pane" :class="{ 'hide-ts': !showTimestamps, 'no-wrap': !wrap }" ref="logView" @scroll="onScroll"><div v-for="line in filteredLines" :key="line.id" class="log-line" :class="{ 'log-line-error': line.level === 'error', 'log-line-warn': line.level === 'warn', 'search-active-line': searchActive && line.id === activeHitId, 'log-line-target': line.id === targetLineId, 'search-line-clickable': searchActive && line.isMatch }" @click="line.isMatch && selectMatch(line.id)" v-html="line.html"></div></pre>
         <button v-show="!atBottom || detached" class="scroll-bottom-btn" @click="jumpToBottom()" :title="detached ? 'Jump to the live end of the log' : 'Scroll to bottom'">&#8595; {{ detached ? 'Latest' : 'Bottom' }}</button>
       </div>
       <log-match-pane

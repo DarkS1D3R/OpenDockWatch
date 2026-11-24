@@ -112,7 +112,7 @@ export default {
           v-for="row in rows"
           :key="row.id"
           class="log-line log-search-row"
-          :class="{ 'search-line-clickable': canOpen(row) }"
+          :class="{ 'log-line-error': row.level === 'error', 'log-line-warn': row.level === 'warn', 'search-line-clickable': canOpen(row) }"
           :title="canOpen(row) ? 'Open ' + row.containerName + ' at this line' : 'This container is no longer in the list'"
           :role="canOpen(row) ? 'button' : null"
           :tabindex="canOpen(row) ? 0 : null"
