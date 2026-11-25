@@ -23,7 +23,7 @@ A small self-hosted Docker dashboard. See containers grouped by Compose project,
 - **Podman** — supported through its Docker-compatible API.
 - **Two roles** — admin, plus an optional read-only viewer login.
 
-Full detail: [docs/features.md](docs/features.md).
+Full detail: [docs/features.md](docs/features.md). Running your own start/stop scripts per compose project: [docs/compose-scripts.md](docs/compose-scripts.md).
 
 ## Screenshots
 
