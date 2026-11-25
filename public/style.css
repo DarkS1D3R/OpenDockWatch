@@ -2234,8 +2234,10 @@ table.containers td:nth-child(7) {
   font-weight: 700;
   box-shadow: 0 0 0 1px #ff6a00;
 }
-/* The line a jump from an alert landed on - fades out after a few seconds (LogViewer clears it). */
-.log-line-target {
+/* The line a jump from an alert landed on - fades out after a few seconds (LogViewer clears it).
+   Scoped up to beat the error/warn tint below: an alert jump usually lands on an error line, and
+   the flash has to show over it. */
+.log-view .log-line.log-line-target {
   background: rgba(255, 106, 0, 0.22);
   box-shadow: inset 3px 0 0 #ff6a00;
 }
@@ -2272,6 +2274,17 @@ table.containers td:nth-child(7) {
    light background, and toward a fixed black would vanish into a dark one. */
 .log-line:nth-child(even) {
   background: color-mix(in srgb, var(--log-bg, #0d0e11) 92%, var(--log-text, var(--text)) 8%);
+}
+/* Error/warn lines (detectLogLevel) tinted toward the status tokens so they stand out without ANSI
+   colour. Ties the stripe above on specificity and wins by source order; hover and the alert-jump
+   flash outrank it. Left accent is the alert rows' pattern. */
+.log-view .log-line-error {
+  background: color-mix(in srgb, var(--log-bg, #0d0e11) 85%, var(--danger) 15%);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.log-view .log-line-warn {
+  background: color-mix(in srgb, var(--log-bg, #0d0e11) 88%, var(--warn) 12%);
+  box-shadow: inset 3px 0 0 var(--warn);
 }
 .detail-log {
   height: 600px;

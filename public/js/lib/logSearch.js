@@ -1,4 +1,4 @@
-import { buildLineMatcher, highlightLine, parseLineTsMs } from '../format.js';
+import { buildLineMatcher, detectLogLevel, highlightLine, parseLineTsMs, stripAnsi } from '../format.js';
 
 // The Logs tab's compose-wide search (LogSearchPanel): how far back to look. The server caps it at
 // 7 days; an hour is the default because tracing a request usually starts from something recent.
@@ -20,6 +20,8 @@ export function searchRows(matches, query) {
     containerId: m.containerId,
     containerName: m.containerName,
     tsMs: parseLineTsMs(m.line),
+    // Same detection the live log views use, so a matched ERROR line is tinted here too.
+    level: detectLogLevel(stripAnsi(m.line)),
     html: highlightLine(m.line, query, false, matcher),
   }));
 }

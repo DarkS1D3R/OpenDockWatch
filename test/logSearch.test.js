@@ -34,6 +34,21 @@ test('searchRows', async (t) => {
     const [row] = logSearch.searchRows([{ containerId: 'a1', containerName: 'x', line: 'no stamp here' }], 'stamp');
     assert.equal(row.tsMs, null);
   });
+
+  await t.test('carries the line level, read past ANSI colour, so error and warn rows can be tinted', () => {
+    const rows = logSearch.searchRows(
+      [
+        { containerId: 'a1', containerName: 'x', line: line(1, '\x1b[31mERROR\x1b[0m req=42 failed') },
+        { containerId: 'a1', containerName: 'x', line: line(2, 'WARN req=42 slow') },
+        { containerId: 'a1', containerName: 'x', line: line(3, 'req=42 done') },
+      ],
+      'req=42'
+    );
+    assert.deepEqual(
+      rows.map((r) => r.level),
+      ['error', 'warn', null]
+    );
+  });
 });
 
 test('searchSummary', async (t) => {

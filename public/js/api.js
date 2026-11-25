@@ -101,6 +101,11 @@ export async function apiComposeGroupAction(hostId, project, action) {
   );
 }
 
+// The last compose-script run for a project - polled after a group action answers 202 with `script`.
+export async function apiComposeScriptStatus(hostId, project) {
+  return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/compose/${encodeURIComponent(project)}/script/status`));
+}
+
 export async function apiGetContainerInspect(hostId, id) {
   return jsonOrThrow(await apiFetch(`/api/hosts/${hostId}/containers/${id}/inspect`));
 }

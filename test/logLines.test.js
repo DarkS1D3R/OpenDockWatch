@@ -105,6 +105,18 @@ test('selectLines', async (t) => {
   await t.test('tolerates being called with no options at all', () => {
     assert.equal(logLines.selectLines(sample()).length, 4);
   });
+
+  await t.test('passes each line level through, filtered or not, so the viewer can tint error and warn lines', () => {
+    const expected = ['error', 'warn', 'info', null];
+    assert.deepEqual(
+      logLines.selectLines(sample(), { levels }).map((l) => l.level),
+      expected
+    );
+    assert.deepEqual(
+      logLines.selectLines(sample(), { levels, filterText: 'o', hideNonMatching: false }).map((l) => l.level),
+      expected
+    );
+  });
 });
 
 // The Log Viewer's search cursor. These exist because the obvious implementation - a positional

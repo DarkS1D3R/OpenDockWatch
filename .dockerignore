@@ -9,6 +9,9 @@ config/hosts.json
 # (which embeds a Discord/Gotify/ntfy token). A published image would carry all of it.
 data
 
+# Admin compose scripts are mounted at runtime (COMPOSE_SCRIPTS_DIR), never baked into the image.
+compose-scripts
+
 # Dev-only, never read at runtime.
 .github
 screenshots

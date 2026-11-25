@@ -21,6 +21,16 @@ export function groupActions(containers) {
   return ['start', 'stop', 'restart'].filter((a) => offered.has(a));
 }
 
+// The error line for a finished compose-script run, or null when it succeeded. Quotes the script's
+// last output line, since that is usually the one saying what went wrong.
+export function scriptRunError(run, action, project) {
+  if (!run || run.running) return null;
+  if (!run.error && !run.timedOut && run.exitCode === 0) return null;
+  const reason = run.error || (run.timedOut ? 'timed out' : run.exitCode != null ? `exit ${run.exitCode}` : `killed by ${run.signal}`);
+  const lastLine = (run.output || '').trim().split('\n').pop();
+  return `${action} script for ${project} failed (${reason})${lastLine ? `: ${lastLine}` : ''}`;
+}
+
 const UNIT_SHORT = { second: 's', minute: 'm', hour: 'h', day: 'd', week: 'w', month: 'mo', year: 'y' };
 
 // "Up 30 minutes (healthy)" -> "Up 30m". The health suffix goes because the dot beside it says the

@@ -43,6 +43,7 @@ export function selectLines(lines, { levels = null, filterText = '', regexMode =
       id: line.id,
       html: isMatch ? highlightLine(line.text, filterText, highlightRegex, matcher) : line.baseHtml,
       tsMs: line.tsMs,
+      level: line.level,
       isMatch,
     });
   }

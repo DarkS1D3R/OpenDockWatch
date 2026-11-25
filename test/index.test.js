@@ -38,6 +38,7 @@ const db = require('../server/db');
 const docker = require('../server/docker');
 const metricsCollector = require('../server/metricsCollector');
 const imageUpdates = require('../server/imageUpdates');
+const composeScripts = require('../server/composeScripts');
 
 test.after(() => {
   db.close();
@@ -901,6 +902,110 @@ test('POST /hosts/:hostId/compose/:project/:action - compose group batch actions
 
   await t.test('it needs a session', async () => {
     assert.equal((await request(app).post(`/api/hosts/${hostId}/compose/shop/start`)).status, 401);
+  });
+});
+
+test('POST /hosts/:hostId/compose/:project/:action - a compose script replaces the batch action', async (t) => {
+  const host = loadHosts().find((h) => !h.dockerHost);
+  const scriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'odw-index-scripts-'));
+  fs.mkdirSync(path.join(scriptsDir, host.id, 'shop'), { recursive: true });
+  fs.writeFileSync(path.join(scriptsDir, host.id, 'shop', 'stop.sh'), '#!/bin/sh\n', { mode: 0o755 });
+  process.env.COMPOSE_SCRIPTS_DIR = scriptsDir;
+  t.after(() => {
+    delete process.env.COMPOSE_SCRIPTS_DIR;
+    composeScripts._runs.clear();
+    fs.rmSync(scriptsDir, { recursive: true, force: true });
+  });
+
+  const SHOP = [
+    { id: 'shopapishopap', name: 'shop-api', composeProject: 'shop', composeService: 'api' },
+    { id: 'shopdbshopdbs', name: 'shop-db', composeProject: 'shop', composeService: 'db' },
+  ];
+  // Captures the script run instead of spawning it, so each test decides when it finishes.
+  function mockScripted(t2) {
+    const pending = [];
+    t2.mock.method(docker, 'listContainers', async () => SHOP);
+    t2.mock.method(docker, 'getTopologyMeta', async () => ({ dependsOnRaw: '' }));
+    t2.mock.method(docker, 'containerAction', async () => {});
+    t2.mock.method(composeScripts, 'runScript', (opts) => {
+      const run = { action: opts.action, running: true, startedAt: Date.now(), output: '' };
+      composeScripts._runs.set(`${opts.host.id}\0${opts.project}`, run);
+      pending.push({ opts, run });
+      return run;
+    });
+    const finish = (fields) => {
+      const { opts, run } = pending.shift();
+      Object.assign(run, { running: false, finishedAt: Date.now(), exitCode: null, signal: null, timedOut: false, error: null }, fields);
+      opts.onDone(run);
+    };
+    return { pending, finish };
+  }
+  const auditRows = () => db.client.prepare("SELECT * FROM audit_log WHERE container_id LIKE 'shop%' ORDER BY id DESC LIMIT 2").all();
+
+  await t.test('answers 202 at once, and never runs the per-container batch', async (t2) => {
+    const { pending, finish } = mockScripted(t2);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${host.id}/compose/shop/stop`);
+    assert.equal(res.status, 202);
+    assert.equal(res.body.script.running, true);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].opts.scriptPath, fs.realpathSync(path.join(scriptsDir, host.id, 'shop', 'stop.sh')));
+    assert.equal(docker.containerAction.mock.callCount(), 0);
+    finish({ exitCode: 0 });
+  });
+
+  await t.test('writes a pending audit row per container before the script runs, then the result', async (t2) => {
+    const { finish } = mockScripted(t2);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await admin.post(`/api/hosts/${host.id}/compose/shop/stop`);
+    assert.deepEqual(
+      auditRows().map((r) => [r.action, r.result]),
+      [
+        ['stop', 'pending'],
+        ['stop', 'pending'],
+      ],
+      'pending rows are what alerts.js reads to keep a scripted stop from looking like a crash'
+    );
+    finish({ exitCode: 2, output: 'compose file not found\n' });
+    const rows = auditRows();
+    assert.deepEqual(
+      rows.map((r) => r.result),
+      ['error', 'error']
+    );
+    assert.match(rows[0].error, /exit 2: compose file not found/);
+  });
+
+  await t.test('409s while a script is still running for the project, for any action', async (t2) => {
+    const { finish } = mockScripted(t2);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    assert.equal((await admin.post(`/api/hosts/${host.id}/compose/shop/stop`)).status, 202);
+    assert.equal((await admin.post(`/api/hosts/${host.id}/compose/shop/stop`)).status, 409);
+    assert.equal((await admin.post(`/api/hosts/${host.id}/compose/shop/restart`)).status, 409);
+    finish({ exitCode: 0 });
+    assert.equal((await admin.post(`/api/hosts/${host.id}/compose/shop/restart`)).status, 200, 'free again once it finishes');
+  });
+
+  await t.test('falls back to the batch action when the project has no script for that action', async (t2) => {
+    const { pending } = mockScripted(t2);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    const res = await admin.post(`/api/hosts/${host.id}/compose/shop/start`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.results.length, 2);
+    assert.equal(pending.length, 0);
+  });
+
+  await t.test('the status route reports the last run, admin only', async (t2) => {
+    const { finish } = mockScripted(t2);
+    const admin = await loginAs(ADMIN_USER, ADMIN_PASSWORD);
+    await admin.post(`/api/hosts/${host.id}/compose/shop/stop`);
+    finish({ exitCode: 0, output: 'stopped\n' });
+    const res = await admin.get(`/api/hosts/${host.id}/compose/shop/script/status`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.run.running, false);
+    assert.equal(res.body.run.output, 'stopped\n');
+    assert.equal((await admin.get(`/api/hosts/${host.id}/compose/billing/script/status`)).body.run, null);
+    const viewer = await loginAs(VIEWER_USER, VIEWER_PASSWORD);
+    assert.equal((await viewer.get(`/api/hosts/${host.id}/compose/shop/script/status`)).status, 403);
   });
 });
 
