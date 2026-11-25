@@ -69,3 +69,26 @@ test('portsCell shows published ports only, deduped across IPv4/IPv6', () => {
   assert.equal(lib.portsCell('6379/tcp'), '');
   assert.equal(lib.portsCell(''), '');
 });
+
+test('scriptRunError is null for a running or clean run, and quotes the last output line otherwise', () => {
+  const done = { running: false, exitCode: 0, signal: null, timedOut: false, error: null, output: 'ok\n' };
+  assert.equal(lib.scriptRunError(null, 'stop', 'shop'), null);
+  assert.equal(lib.scriptRunError({ ...done, running: true }, 'stop', 'shop'), null);
+  assert.equal(lib.scriptRunError(done, 'stop', 'shop'), null);
+  assert.equal(
+    lib.scriptRunError({ ...done, exitCode: 1, output: 'Stopping web\nno such service: worker\n' }, 'stop', 'shop'),
+    'stop script for shop failed (exit 1): no such service: worker'
+  );
+  assert.equal(
+    lib.scriptRunError({ ...done, exitCode: null, timedOut: true, output: '' }, 'start', 'shop'),
+    'start script for shop failed (timed out)'
+  );
+  assert.equal(
+    lib.scriptRunError({ ...done, exitCode: null, signal: 'SIGKILL', output: '' }, 'start', 'shop'),
+    'start script for shop failed (killed by SIGKILL)'
+  );
+  assert.equal(
+    lib.scriptRunError({ ...done, exitCode: null, error: 'spawn EACCES', output: '' }, 'start', 'shop'),
+    'start script for shop failed (spawn EACCES)'
+  );
+});

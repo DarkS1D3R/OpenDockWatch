@@ -9,7 +9,7 @@ Rules for changing `server/**`. Each rule below is a must-keep, and most are tes
 - `docker.js`: every docker CLI call (`execFile`/`spawn`, `-H <dockerHost>` per host via `hostArgs()`), plus the exported pure parsers.
 - Background jobs: `eventWatcher.js` (`docker events`), `metricsCollector.js` (5s poll plus the derived-interval disk poll), `statsWatcher.js` (`docker stats` stream). The first two share their lifecycle code through `restartingWatcher.js`.
 - `alerts.js`: the rule engine and webhook delivery. `db.js`: one better-sqlite3 database. `auth.js`: sessions and the admin/viewer roles. `watchdog.js`: stall detection and self-exit. `logger.js`: all log output.
-- Feature modules: `uptime.js`, `overview.js`, `inventory.js`, `imageUpdates.js`/`registry.js`/`imageRef.js`, `composeGroup.js`, `prometheus.js`, `sse.js`, `hosts.js`, `views.js`.
+- Feature modules: `uptime.js`, `overview.js`, `inventory.js`, `imageUpdates.js`/`registry.js`/`imageRef.js`, `composeGroup.js`/`composeScripts.js`, `prometheus.js`, `sse.js`, `hosts.js`, `views.js`.
 
 ## Staying responsive (the core constraint)
 
@@ -49,7 +49,8 @@ Rules for changing `server/**`. Each rule below is a must-keep, and most are tes
 - Keep docker-output parsing pure and separate from the shell-out, and export it for `test/*.test.js`.
 - Call docker through the module object (`docker.listContainers(...)`), not a destructured binding, so tests can stub it.
 - A host edit is `removeHost` + `addHost`, never an in-place update.
-- Container actions, single or compose-group, go through `performContainerAction`. Its `audit_log` row is what stops the app's own stops from looking like crashes.
+- Container actions, single or compose-group, go through `performContainerAction`. Its `audit_log` row is what stops the app's own stops from looking like crashes. A compose script writes the same pending row per container before it starts ([why](../docs/architecture/server.md#compose-scripts)).
+- A compose script gets a built env (`scriptEnv`), never `process.env`: the server's env holds the session secret and password hashes.
 - An alert setting resolves `.env` default < DB value. The DB value wins even when it's empty or 0.
 - Constants the client mirrors (`ALERT_RULES`, `VALID_VIEWS` in `views.js`, the history ranges) are checked by `test/sharedConstants.test.js`. Change both sides together.
 - Claims about Docker/Podman behaviour in this codebase were verified against a real daemon. Verify new ones the same way, not from memory.

@@ -13,6 +13,7 @@ import UptimeReport from './components/UptimeReport.js';
 import ResourcesView from './components/ResourcesView.js';
 import HostsOverview from './components/HostsOverview.js';
 import { parseMemUsedBytes } from './format.js';
+import { scriptRunError } from './lib/containerRow.js';
 import { clearAllOpenPanes } from './lib/logsPersistence.js';
 import { VIEW_GROUPS, STATE_FILTER_VIEWS, groupOf, viewForGroup } from './lib/viewGroups.js';
 import { loadLogTheme, applyLogTheme } from './lib/logTheme.js';
@@ -31,10 +32,17 @@ import {
   apiAckAllAlerts,
   apiClearAlerts,
   apiComposeGroupAction,
+  apiComposeScriptStatus,
   reportClientError,
 } from './api.js';
 
 const { createApp } = Vue;
+
+// A compose script answers 202 and runs on; the button stays busy while this polls its status.
+// The cap only stops the polling - the server's own COMPOSE_SCRIPT_TIMEOUT_MS ends the script.
+const SCRIPT_POLL_MS = 2000;
+const SCRIPT_POLL_MAX_MS = 60 * 60_000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Nothing else in the client catches these - without a listener here, an exception anywhere
 // during boot (a vendor script failure, a rejected promise outside Vue's own tracking) leaves
@@ -533,8 +541,10 @@ const app = createApp({
     // getting its own row, since this button covers everything in the project at once.
     async doGroupAction(groupName, action) {
       this.groupActionInFlight = { ...this.groupActionInFlight, [groupName]: action };
+      const hostId = this.selectedHostId;
       try {
-        const { results } = await apiComposeGroupAction(this.selectedHostId, groupName, action);
+        const { results, script } = await apiComposeGroupAction(hostId, groupName, action);
+        if (script) return await this.awaitComposeScript(hostId, groupName, action, script);
         await this.fetchContainers({ fresh: true });
         const failed = results.filter((r) => !r.ok);
         if (failed.length) {
@@ -547,6 +557,23 @@ const app = createApp({
         delete next[groupName];
         this.groupActionInFlight = next;
       }
+    },
+    // Follows a compose script the server started (see doGroupAction) until it finishes, then
+    // refreshes the list and reports a failure. Polls slower while the tab is hidden.
+    async awaitComposeScript(hostId, groupName, action, run) {
+      const deadline = Date.now() + SCRIPT_POLL_MAX_MS;
+      while (run && run.running && Date.now() < deadline) {
+        await sleep(document.hidden ? HIDDEN_POLL_MS : SCRIPT_POLL_MS);
+        try {
+          ({ run } = await apiComposeScriptStatus(hostId, groupName));
+        } catch {
+          /* one failed status poll is not the script failing; try again next tick */
+        }
+      }
+      if (this.selectedHostId !== hostId) return;
+      await this.fetchContainers({ fresh: true });
+      const message = scriptRunError(run, action, groupName);
+      if (message) this.containersError = message;
     },
     // A row on the Hosts tab: switch to that host (if it isn't already the one selected), then to the
     // view the row asked for - List for the row itself, Activity for its open-alerts count.

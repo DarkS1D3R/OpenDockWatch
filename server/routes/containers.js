@@ -8,6 +8,8 @@ const db = require('../db');
 const logger = require('../logger');
 const metricsCollector = require('../metricsCollector');
 const { orderGroupLevels, mapLimit } = require('../composeGroup');
+const composeScripts = require('../composeScripts');
+const path = require('path');
 const {
   REQUEST_TIMEOUT_MS,
   tailParam,
@@ -97,6 +99,55 @@ router.post(
 // in composeGroup.js and docs/architecture/server.md.
 const COMPOSE_LEVEL_CONCURRENCY = 4;
 
+// Longest script failure detail kept on an audit row; the full (capped) output stays on the run.
+const SCRIPT_AUDIT_DETAIL_MAX = 2000;
+
+// Runs a compose project's start/stop script in the background. One pending audit_log row per
+// container, written before the script starts, so alerts.js's manual-stop suppression covers it
+// exactly as it covers a batch action. See docs/architecture/server.md#compose-scripts.
+function startComposeScript(host, project, action, scriptPath, groupContainers, username) {
+  const startedAt = Date.now();
+  const auditIds = groupContainers.map((c) =>
+    db.insertAuditLog({
+      ts: startedAt,
+      username: username || null,
+      hostId: host.id,
+      containerId: c.id,
+      containerName: c.name,
+      action,
+      result: 'pending',
+      error: null,
+    })
+  );
+  const logFields = { user: username, host: host.id, project, script: path.basename(scriptPath) };
+  logger.info(`compose_script.${action}.requested`, logFields);
+
+  return composeScripts.runScript({
+    host,
+    project,
+    action,
+    scriptPath,
+    onDone: (run) => {
+      const ok = composeScripts.runSucceeded(run);
+      const outcome = {
+        ...logFields,
+        tookMs: run.finishedAt - startedAt,
+        exitCode: run.exitCode,
+        signal: run.signal,
+        timedOut: run.timedOut,
+      };
+      let detail = null;
+      if (!ok) {
+        const reason = run.error || (run.timedOut ? 'timed out' : `exit ${run.exitCode ?? run.signal}`);
+        detail = `script ${reason}: ${run.output.trim()}`.slice(-SCRIPT_AUDIT_DETAIL_MAX);
+      }
+      for (const id of auditIds) db.updateAuditLogResult(id, ok ? 'ok' : 'error', detail);
+      if (ok) logger.info(`compose_script.${action}`, outcome);
+      else logger.error(`compose_script.${action}`, { ...outcome, error: run.error });
+    },
+  });
+}
+
 router.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost, requireContainerAction, async (req, res) => {
   const host = req.odwHost;
   const { project } = req.params;
@@ -110,6 +161,15 @@ router.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost
   }
   const groupContainers = containers.filter((c) => c.composeProject === project);
   if (!groupContainers.length) return res.status(404).json({ error: 'no such compose project on this host' });
+
+  if (composeScripts.isRunning(host.id, project)) {
+    return res.status(409).json({ error: `a script is still running for ${project}` });
+  }
+  const scriptPath = await composeScripts.resolveScript(composeScripts.scriptsDir(), host, project, action);
+  if (scriptPath) {
+    const run = startComposeScript(host, project, action, scriptPath, groupContainers, req.session.username);
+    return res.status(202).json({ project, action, script: composeScripts.publicRun(run) });
+  }
 
   // Ordering is a nicety on top of a correct-either-way action, not a precondition for it - a
   // depends_on label that fails to parse (or the docker call behind it failing outright) falls
@@ -147,6 +207,12 @@ router.post('/hosts/:hostId/compose/:project/:action', requireAdmin, requireHost
   }
 
   res.json({ project, action, results });
+});
+
+// The last script run for a project, polled by the UI after a 202. Memory only. Admin only: script
+// output can carry anything the script prints.
+router.get('/hosts/:hostId/compose/:project/script/status', requireAdmin, requireHost, (req, res) => {
+  res.json({ run: composeScripts.getRun(req.odwHost.id, req.params.project) });
 });
 
 router.get('/hosts/:hostId/containers/:id/logs', requireHost, requireContainerId, (req, res) => {

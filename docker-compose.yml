@@ -12,3 +12,5 @@ services:
       - ./config:/app/config
       - ./data:/app/data
       - ./.env:/app/.env:ro
+      # Optional: start/stop scripts per compose project - set COMPOSE_SCRIPTS_DIR=/app/compose-scripts in .env.
+      # - ./compose-scripts:/app/compose-scripts:ro
